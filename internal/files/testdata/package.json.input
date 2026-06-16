@@ -1,0 +1,8 @@
+{
+  "name": "example",
+  "version": "1.2.3",
+  "private": true,
+  "scripts": {
+    "build": "tsc"
+  }
+}

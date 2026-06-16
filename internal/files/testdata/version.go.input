@@ -1,0 +1,4 @@
+package build
+
+// Version is the current build version.
+const Version = "1.2.3"

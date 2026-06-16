@@ -32,10 +32,10 @@ completed.
 
 ## Milestone 4 — File I/O
 
-- [ ] Read a target file and locate its version token.
-- [ ] Replace only the version token, preserving surrounding formatting.
-- [ ] Write changes back in place safely (atomic write).
-- [ ] Golden-file tests confirming only the version changes.
+- [x] Read a target file and locate its version token.
+- [x] Replace only the version token, preserving surrounding formatting.
+- [x] Write changes back in place safely (atomic write).
+- [x] Golden-file tests confirming only the version changes.
 
 ## Milestone 5 — Bump Command
 
