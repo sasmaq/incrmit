@@ -10,8 +10,9 @@ import (
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
-// fixtureTree writes a tree exercising every supported file type plus files and
-// directories that must be ignored, and returns the root.
+// fixtureTree writes a tree exercising content-based detection across arbitrary
+// file names and types, plus files and directories that must be skipped, and
+// returns the root.
 func fixtureTree(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -21,8 +22,11 @@ func fixtureTree(t *testing.T) string {
 		"pyproject.toml":       "[project]\nname = \"x\"\nversion = \"3.4.5\"\n",
 		"sub/Cargo.toml":       "[package]\nname = \"x\"\nversion = \"0.1.9\"\n",
 		"sub/build_info.go":    "package build\n\nconst Version = \"7.8.9\"\n",
+		"notes.txt":            "Released version 5.6.7 yesterday.\n",
+		"app.config":           "endpoint=https://x\nversion=10.20.30\n",
+		"Dockerfile":           "FROM alpine:3.19\nLABEL version=\"8.0.1\"\n",
 		"README.md":            "no version token of interest here\n",
-		"empty/VERSION":        "not a version\n",
+		"empty/marker":         "not a version\n",
 		".git/VERSION":         "9.9.9\n",
 		"node_modules/VERSION": "9.9.9\n",
 		"vendor/pkg/VERSION":   "9.9.9\n",
@@ -37,6 +41,10 @@ func fixtureTree(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	// A binary file containing a version-like byte sequence must be ignored.
+	if err := os.WriteFile(filepath.Join(root, "logo.png"), []byte("\x89PNG\x00\x00 4.5.6"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return root
 }
 
@@ -47,8 +55,15 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("Discover: %v", err)
 	}
 
+	// Detection is content-based and works for any file name. Within a file the
+	// first MAJOR.MINOR.PATCH token wins (e.g. package.json -> 2.0.1, not the
+	// dependency's 1.0.0; Dockerfile -> 8.0.1, since "3.19" is not a full
+	// version). Results are sorted by path.
 	want := []Result{
+		{Path: "Dockerfile", Version: version.Version{Major: 8, Minor: 0, Patch: 1}},
 		{Path: "VERSION", Version: version.Version{Major: 1, Minor: 2, Patch: 3}},
+		{Path: "app.config", Version: version.Version{Major: 10, Minor: 20, Patch: 30}},
+		{Path: "notes.txt", Version: version.Version{Major: 5, Minor: 6, Patch: 7}},
 		{Path: "package.json", Version: version.Version{Major: 2, Minor: 0, Patch: 1}},
 		{Path: "pyproject.toml", Version: version.Version{Major: 3, Minor: 4, Patch: 5}},
 		{Path: "sub/Cargo.toml", Version: version.Version{Major: 0, Minor: 1, Patch: 9}},
@@ -82,18 +97,54 @@ func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 	}
 }
 
-func TestDiscoverPoetryFallback(t *testing.T) {
+func TestDiscoverArbitraryFileName(t *testing.T) {
 	root := t.TempDir()
-	body := "[tool.poetry]\nname = \"x\"\nversion = \"4.5.6\"\n"
-	if err := os.WriteFile(filepath.Join(root, "pyproject.toml"), []byte(body), 0o644); err != nil {
+	mustWrite(t, root, "anything.weirdext", "the build is 4.5.6 now\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "anything.weirdext" ||
+		got[0].Version != (version.Version{Major: 4, Minor: 5, Patch: 6}) {
+		t.Errorf("got %+v, want one 4.5.6 result for anything.weirdext", got)
+	}
+}
+
+func TestDiscoverFirstMatchWins(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "f", "current 1.2.3 and later 9.9.9\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Version != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
+		t.Errorf("got %+v, want first match 1.2.3", got)
+	}
+}
+
+func TestDiscoverIgnoresTwoComponentNumbers(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "f", "python 3.9 then 1.2.3\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Version != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
+		t.Errorf("got %+v, want 1.2.3 (3.9 is not a full version)", got)
+	}
+}
+
+func TestDiscoverSkipsBinaryFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "bin"), []byte("\x00\x01\x02 1.2.3"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Version != (version.Version{Major: 4, Minor: 5, Patch: 6}) {
-		t.Errorf("got %+v, want one 4.5.6 result", got)
+	if len(got) != 0 {
+		t.Errorf("got %+v, want 0 results (binary file should be skipped)", got)
 	}
 }
 
@@ -107,14 +158,14 @@ func TestDiscoverEmptyTree(t *testing.T) {
 	}
 }
 
-func TestDiscoverMalformedFilesSkipped(t *testing.T) {
+func TestDiscoverFilesWithoutVersionSkipped(t *testing.T) {
 	root := t.TempDir()
-	mustWrite(t, root, "package.json", "{ this is not json")
-	mustWrite(t, root, "Cargo.toml", "this is = = not toml")
-	mustWrite(t, root, "VERSION", "definitely not a version")
+	mustWrite(t, root, "a.txt", "no version here\n")
+	mustWrite(t, root, "b.json", "{ totally unrelated }")
+	mustWrite(t, root, "c", "year 2024, build 42\n")
 	got, err := Discover(root)
 	if err != nil {
-		t.Fatalf("Discover should not fail on malformed files: %v", err)
+		t.Fatalf("Discover should not fail: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("got %+v, want 0 results", got)

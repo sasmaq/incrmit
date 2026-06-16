@@ -4,14 +4,12 @@ package discovery
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -39,12 +37,14 @@ var ignoredDirs = map[string]struct{}{
 	"target":       {},
 }
 
-// goVersionRe matches a Go `const Version = "x.y.z"` declaration (the `const`
-// keyword is optional so it also matches entries inside a const block).
-var goVersionRe = regexp.MustCompile(`(?m)^\s*(?:const\s+)?Version\s*=\s*"(\d+\.\d+\.\d+)"`)
+// versionRe matches a bare MAJOR.MINOR.PATCH token bounded by non-word
+// characters, anywhere in a file's contents.
+var versionRe = regexp.MustCompile(`\b\d+\.\d+\.\d+\b`)
 
-// Discover walks the tree rooted at root and returns every target it can
-// extract a semantic version from, sorted by path for deterministic output.
+// Discover walks the tree rooted at root and returns every file that contains a
+// semantic version token, sorted by path for deterministic output. It scans the
+// contents of any text file rather than relying on file names: the first
+// MAJOR.MINOR.PATCH token found in a file is recorded as that file's version.
 func Discover(root string) ([]Result, error) {
 	var results []Result
 
@@ -61,7 +61,7 @@ func Discover(root string) ([]Result, error) {
 			return nil
 		}
 
-		v, ok := detect(path, d.Name())
+		v, ok := detect(path)
 		if !ok {
 			return nil
 		}
@@ -99,112 +99,30 @@ func Generate(results []Result) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// detect dispatches to a format-specific extractor based on the file name. It
-// is best-effort: unreadable or malformed files simply yield ok == false.
-func detect(path, name string) (version.Version, bool) {
-	switch {
-	case name == "VERSION":
-		return detectPlain(path)
-	case name == "package.json":
-		return detectPackageJSON(path)
-	case name == "pyproject.toml":
-		return detectPyproject(path)
-	case name == "Cargo.toml":
-		return detectCargo(path)
-	case strings.HasSuffix(name, ".go"):
-		return detectGoSource(path)
-	default:
-		return version.Version{}, false
-	}
-}
-
-func detectPlain(path string) (version.Version, bool) {
+// detect reads the file at path and returns the first MAJOR.MINOR.PATCH token it
+// contains. It is best-effort: unreadable and binary files yield ok == false.
+func detect(path string) (version.Version, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return version.Version{}, false
 	}
-	v, err := version.Parse(strings.TrimSpace(string(data)))
-	if err != nil {
+	if isBinary(data) {
 		return version.Version{}, false
 	}
-	return v, true
-}
-
-func detectPackageJSON(path string) (version.Version, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return version.Version{}, false
-	}
-	var pkg struct {
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return version.Version{}, false
-	}
-	return parseField(pkg.Version)
-}
-
-func detectPyproject(path string) (version.Version, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return version.Version{}, false
-	}
-	var doc struct {
-		Project struct {
-			Version string `toml:"version"`
-		} `toml:"project"`
-		Tool struct {
-			Poetry struct {
-				Version string `toml:"version"`
-			} `toml:"poetry"`
-		} `toml:"tool"`
-	}
-	if err := toml.Unmarshal(data, &doc); err != nil {
-		return version.Version{}, false
-	}
-	if doc.Project.Version != "" {
-		return parseField(doc.Project.Version)
-	}
-	return parseField(doc.Tool.Poetry.Version)
-}
-
-func detectCargo(path string) (version.Version, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return version.Version{}, false
-	}
-	var doc struct {
-		Package struct {
-			Version string `toml:"version"`
-		} `toml:"package"`
-	}
-	if err := toml.Unmarshal(data, &doc); err != nil {
-		return version.Version{}, false
-	}
-	return parseField(doc.Package.Version)
-}
-
-func detectGoSource(path string) (version.Version, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return version.Version{}, false
-	}
-	m := goVersionRe.FindSubmatch(data)
+	m := versionRe.Find(data)
 	if m == nil {
 		return version.Version{}, false
 	}
-	return parseField(string(m[1]))
-}
-
-// parseField parses a version string extracted from a structured field,
-// returning ok == false when the field is empty or not a valid version.
-func parseField(s string) (version.Version, bool) {
-	if s == "" {
-		return version.Version{}, false
-	}
-	v, err := version.Parse(s)
+	v, err := version.Parse(string(m))
 	if err != nil {
 		return version.Version{}, false
 	}
 	return v, true
+}
+
+// isBinary reports whether data looks like a binary (non-text) file. A NUL byte
+// is a reliable signal that a file is not human-readable text, so such files are
+// skipped to avoid matching version-like byte sequences in binaries.
+func isBinary(data []byte) bool {
+	return bytes.IndexByte(data, 0) >= 0
 }

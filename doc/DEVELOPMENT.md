@@ -197,13 +197,13 @@ component wins (major > minor > patch). When none is supplied, patch is used.
 
 ## 9. Version Detection Strategy
 
-- Match semantic versions with a regular expression such as
-  `\b(\d+)\.(\d+)\.(\d+)\b`.
-- For known formats, prefer a structured lookup before regex:
-  - `package.json`: the top-level `"version"` field.
-  - `pyproject.toml` / `Cargo.toml`: the `version` key in the relevant table.
-  - `VERSION`: the trimmed file contents.
-  - Go source: a `const Version = "..."` declaration.
+- Match semantic versions with a regular expression: `\b\d+\.\d+\.\d+\b`.
+- Discovery is content-based and format-agnostic: it scans the bytes of every
+  text file, regardless of name or extension, and records the first
+  `MAJOR.MINOR.PATCH` token found in each.
+- Binary files (those containing a NUL byte) are skipped so version-like byte
+  sequences in compiled artifacts are not matched.
+- Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
 - On write, replace only the matched token to preserve surrounding formatting.
 
 ## 10. Error Handling

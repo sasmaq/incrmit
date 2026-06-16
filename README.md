@@ -66,9 +66,12 @@ and bumped together so their versions stay in sync.
 
 Rather than writing the config by hand, run the `discover` command to scan the
 project for files that contain a semantic version string and generate an
-`incrmit.toml` for you. Discovery walks the directory tree, inspects common
-version-bearing files (such as `VERSION`, `package.json`, `pyproject.toml`,
-`Cargo.toml`, and Go source files), and records every match it finds.
+`incrmit.toml` for you. Discovery walks the directory tree and inspects the
+contents of every text file, recording the first `MAJOR.MINOR.PATCH` token it
+finds in each. It is not limited to specific file names or types — any file
+(`VERSION`, `package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain
+text, etc.) is matched the same way. Binary files and common noise directories
+(`.git`, `node_modules`, `vendor`, build outputs) are skipped.
 
 ```bash
 incrmit discover
