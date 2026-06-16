@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sasmaq/incrmit/internal/buildinfo"
 	"github.com/sasmaq/incrmit/internal/config"
 	"github.com/sasmaq/incrmit/internal/discovery"
 	"github.com/sasmaq/incrmit/internal/files"
@@ -42,8 +43,14 @@ const (
 // selected command, and returns a process exit code. All human-readable output
 // goes to stdout; errors go to stderr.
 func Main(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "discover" {
-		return runDiscover(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "discover":
+			return runDiscover(args[1:], stdout, stderr)
+		case "version", "--version", "-version", "-v":
+			fprintln(stdout, buildinfo.String())
+			return ExitOK
+		}
 	}
 	return runBump(args, stdout, stderr)
 }

@@ -330,3 +330,17 @@ func TestDiscoverBadFlag(t *testing.T) {
 		t.Errorf("exit = %d, want %d", code, ExitUsage)
 	}
 }
+
+func TestVersionCommand(t *testing.T) {
+	for _, arg := range []string{"version", "--version", "-version", "-v"} {
+		t.Run(arg, func(t *testing.T) {
+			code, stdout, stderr := runMain(t, "", arg)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if !strings.HasPrefix(stdout, "incrmit ") {
+				t.Errorf("stdout = %q, want prefix \"incrmit \"", stdout)
+			}
+		})
+	}
+}

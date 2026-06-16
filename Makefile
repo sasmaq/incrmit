@@ -1,9 +1,11 @@
 BINARY := incrmit
+VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo 0.1.0)
+LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 
 .PHONY: build test vet fmt fmt-check lint check clean
 
 build:
-	go build -o $(BINARY) .
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
 test:
 	go test ./...

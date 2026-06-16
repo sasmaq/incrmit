@@ -62,11 +62,11 @@ completed.
 
 ## Milestone 7 — Version Command
 
-- [ ] Embed the tool version (build-time `-ldflags` var with a sensible default).
-- [ ] Implement the `version` subcommand to print the tool version.
-- [ ] Support a `--version`/`-v` flag as an alias for the subcommand.
-- [ ] Include build metadata when available (commit, build date) via `runtime/debug`.
-- [ ] Tests asserting the version command output and exit code `0`.
+- [x] Embed the tool version (build-time `-ldflags` var with a sensible default).
+- [x] Implement the `version` subcommand to print the tool version.
+- [x] Support a `--version`/`-v` flag as an alias for the subcommand.
+- [x] Include build metadata when available (commit, build date) via `runtime/debug`.
+- [x] Tests asserting the version command output and exit code `0`.
 
 ## Milestone 8 — Error Handling and UX
 
