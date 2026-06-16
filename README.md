@@ -2,6 +2,8 @@
 
 A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it.
 
+## Version: 0.1.0
+
 ## Overview
 
 `incrmit` reads a TOML configuration file that lists one or more target files (for example a `VERSION` file, a manifest, or any text/config file containing a semantic version), locates the version value in each, and bumps it by one. The updated version is written back to every file so it can be used in release scripts, CI pipelines, or local development workflows.
@@ -13,8 +15,8 @@ A small command-line tool written in Go that parses a file, finds a version valu
 - Updates multiple files in a single run, keeping their versions in sync.
 - Parses each file and locates a semantic version (`MAJOR.MINOR.PATCH`).
 - Increments the major, minor, or patch component.
-- Writes the updated version back to the source files in place.
-- Simple, dependency-free CLI suitable for scripting and CI.
+- Writes the updated version back to the source files in place (atomic, only the version token changes).
+- Ships as a single self-contained binary with predictable exit codes for scripting and CI.
 
 ## Installation
 
@@ -28,6 +30,13 @@ Or build from source:
 git clone https://github.com/sasmaq/incrmit.git
 cd incrmit
 go build -o incrmit .
+```
+
+Or use the `Makefile`, which stamps the binary with the version (from the
+current git tag, falling back to the baked-in version):
+
+```bash
+make build
 ```
 
 ## Configuration
@@ -105,12 +114,16 @@ with the `version` subcommand or the `--version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 1.0.0
+# incrmit 0.1.0
 ```
 
-When `incrmit` is built from a tagged release the embedded version is shown;
-otherwise it falls back to the version recorded in the build's module
-information (and may include the commit and build date).
+The version is baked into the binary and can be overridden at build time (for
+example to stamp a git tag). When the Go toolchain has embedded VCS data, the
+commit and build date are appended:
+
+```text
+incrmit 0.1.0 (commit a1b2c3d4e5f6, built 2026-06-16T20:41:44Z)
+```
 
 ## Usage
 
@@ -128,6 +141,18 @@ incrmit [flags]
 | `--minor`   | `-m`  | Bump the minor version (resets patch)              | `false`        |
 | `--patch`   | `-p`  | Bump the patch version                             | `true`         |
 | `--dry-run` | `-d`  | Print the new version without writing to the files | `false`        |
+
+## Exit codes
+
+`incrmit` returns predictable exit codes so it can be used reliably in scripts
+and CI pipelines:
+
+| Code | Meaning                                                        |
+| ---- | -------------------------------------------------------------- |
+| 0    | Success.                                                       |
+| 1    | Generic runtime error (e.g. missing config, filesystem error). |
+| 2    | Invalid arguments or flags.                                    |
+| 3    | No version found, or an ambiguous/unparseable version.         |
 
 ### Examples
 
