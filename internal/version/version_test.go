@@ -117,9 +117,16 @@ func TestBumpPatch(t *testing.T) {
 
 func TestBumpDoesNotMutateReceiver(t *testing.T) {
 	v := Version{1, 2, 3}
-	v.BumpMajor()
-	v.BumpMinor()
-	v.BumpPatch()
+	// Each bump returns a new value; the receiver must stay untouched.
+	if got := v.BumpMajor(); got == v {
+		t.Errorf("BumpMajor() returned the receiver unchanged: %v", got)
+	}
+	if got := v.BumpMinor(); got == v {
+		t.Errorf("BumpMinor() returned the receiver unchanged: %v", got)
+	}
+	if got := v.BumpPatch(); got == v {
+		t.Errorf("BumpPatch() returned the receiver unchanged: %v", got)
+	}
 	if want := (Version{1, 2, 3}); v != want {
 		t.Errorf("receiver mutated: got %v, want %v", v, want)
 	}
