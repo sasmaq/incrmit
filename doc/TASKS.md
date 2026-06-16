@@ -16,11 +16,11 @@ completed.
 
 - [x] Define the `Version` type (`Major`, `Minor`, `Patch`).
 - [x] Implement parsing of `MAJOR.MINOR.PATCH` strings.
-- [ ] Implement major bump (reset minor and patch to `0`).
-- [ ] Implement minor bump (reset patch to `0`).
-- [ ] Implement patch bump.
+- [x] Implement major bump (reset minor and patch to `0`).
+- [x] Implement minor bump (reset patch to `0`).
+- [x] Implement patch bump.
 - [x] Implement `String()` formatting back to `MAJOR.MINOR.PATCH`.
-- [ ] Unit tests covering parsing, each bump, and edge cases.
+- [x] Unit tests covering parsing, each bump, and edge cases.
 
 ## Milestone 3 — Config
 

@@ -50,6 +50,21 @@ func Parse(s string) (Version, error) {
 	return Version{Major: nums[0], Minor: nums[1], Patch: nums[2]}, nil
 }
 
+// BumpMajor increments the major component and resets minor and patch to 0.
+func (v Version) BumpMajor() Version {
+	return Version{Major: v.Major + 1, Minor: 0, Patch: 0}
+}
+
+// BumpMinor increments the minor component and resets patch to 0.
+func (v Version) BumpMinor() Version {
+	return Version{Major: v.Major, Minor: v.Minor + 1, Patch: 0}
+}
+
+// BumpPatch increments the patch component.
+func (v Version) BumpPatch() Version {
+	return Version{Major: v.Major, Minor: v.Minor, Patch: v.Patch + 1}
+}
+
 // String formats the version back to MAJOR.MINOR.PATCH.
 func (v Version) String() string {
 	return strconv.Itoa(v.Major) + "." + strconv.Itoa(v.Minor) + "." + strconv.Itoa(v.Patch)
