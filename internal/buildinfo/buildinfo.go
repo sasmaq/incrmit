@@ -15,7 +15,7 @@ import (
 
 // version is the current release version. It may be overridden via -ldflags at
 // build time; see the package doc.
-var version = "0.1.0"
+var version = "0.1.3"
 
 // Version returns the resolved tool version.
 func Version() string {

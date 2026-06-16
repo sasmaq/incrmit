@@ -2,11 +2,26 @@ BINARY := incrmit
 VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo 0.1.3)
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 COVER_THRESHOLD ?= 80
+DIST := dist
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
-.PHONY: build test cover vet fmt fmt-check lint check clean
+.PHONY: build dist test cover vet fmt fmt-check lint check clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+
+dist:
+	@rm -rf $(DIST)
+	@mkdir -p $(DIST)
+	@for p in $(PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; ext=""; \
+		[ "$$os" = "windows" ] && ext=".exe"; \
+		out=$(DIST)/$(BINARY)-$(VERSION)-$$os-$$arch$$ext; \
+		echo "building $$out"; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
+			go build -ldflags "$(LDFLAGS)" -o $$out . || exit 1; \
+	done
+	@echo "binaries written to $(DIST)/"
 
 test:
 	go test ./...
@@ -34,4 +49,5 @@ check: fmt-check vet lint cover
 
 clean:
 	rm -f $(BINARY)
+	rm -rf $(DIST)
 	go clean

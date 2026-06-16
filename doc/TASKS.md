@@ -96,14 +96,10 @@ completed.
 
 ## Milestone 11 — Release
 
-- [ ] Cross-compile binaries (Linux, macOS, Windows).
-- [ ] Verify `go install` works on a tagged version.
-- [ ] Write release notes and tag the first version.
-- [ ] Confirm `README.md` examples match actual behavior.
-
-## Backlog / Future Work
-
-- [ ] Pre-release and build metadata (`-rc.1`, `+build.5`).
-- [ ] Optional git integration (tag and commit after a bump).
-- [ ] Per-file custom match patterns in the config.
-- [ ] Set an explicit version instead of incrementing.
+- [x] Cross-compile binaries (Linux, macOS, Windows) via `make dist`.
+- [x] Verify `go install` works (local `go install .` reports the right
+      version; tagged `@vX.Y.Z` install verified after the tag is pushed).
+- [x] Write release notes (`CHANGELOG.md`) for the first version `0.1.3`.
+- [ ] Tag the first version: `git tag v0.1.3 && git push origin v0.1.3`
+      (left to the maintainer).
+- [x] Confirm `README.md` examples match actual behavior.

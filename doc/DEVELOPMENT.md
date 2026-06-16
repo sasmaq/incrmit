@@ -255,11 +255,24 @@ incrmit/
 
 ## 13. Build and Release
 
-- Build: `go build -o incrmit .`
-- Test: `go test ./...`
+- Build: `make build` (stamps the version via `-ldflags`) or `go build -o incrmit .`.
+- Test: `go test ./...` (or `make check` for fmt/vet/lint/coverage).
 - Lint: `go vet ./...` and `gofmt`/`golangci-lint`.
-- Release: cross-compile per platform; publish binaries and `go install`
-  support via tagged versions.
+- Cross-compile: `make dist` builds static binaries for
+  `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, and
+  `windows/amd64` into `dist/`, named `incrmit-<version>-<os>-<arch>`.
+
+Release checklist:
+
+1. Reconcile the version everywhere (`internal/buildinfo/buildinfo.go`,
+   `README.md`, `Makefile` fallback, `incrmit.toml`). These files are kept in
+   sync by `incrmit` itself, so a `make build && ./incrmit --<component>` bump
+   updates them together.
+2. Update `CHANGELOG.md` with the release section.
+3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. `make dist VERSION=X.Y.Z` and attach the `dist/` artifacts to the release.
+5. Verify install: `go install github.com/sasmaq/incrmit@vX.Y.Z` then
+   `incrmit version`.
 
 ## 14. Future Work
 
