@@ -3,18 +3,11 @@
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/sasmaq/incrmit/internal/cli"
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "incrmit:", err)
-		os.Exit(1)
-	}
-}
-
-func run(args []string) error {
-	_ = args
-	return nil
+	os.Exit(cli.Main(os.Args[1:], os.Stdout, os.Stderr))
 }

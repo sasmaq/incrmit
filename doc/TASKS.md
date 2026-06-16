@@ -39,14 +39,14 @@ completed.
 
 ## Milestone 5 — Bump Command
 
-- [ ] Parse flags: `--config`/`-c`, `--file`/`-f`, `--major`/`-M`,
+- [x] Parse flags: `--config`/`-c`, `--file`/`-f`, `--major`/`-M`,
       `--minor`/`-m`, `--patch`/`-p`, `--dry-run`/`-d`.
-- [ ] Resolve the bump component (highest of major/minor/patch wins).
-- [ ] Resolve targets from `--file` or the config.
-- [ ] Apply the bump to each target.
-- [ ] Implement `--dry-run` preview (`old -> new`).
-- [ ] Print a clear summary of updated files.
-- [ ] Integration tests for default, `--file`, and `--dry-run` flows.
+- [x] Resolve the bump component (highest of major/minor/patch wins).
+- [x] Resolve targets from `--file` or the config.
+- [x] Apply the bump to each target.
+- [x] Implement `--dry-run` preview (`old -> new`).
+- [x] Print a clear summary of updated files.
+- [x] Integration tests for default, `--file`, and `--dry-run` flows.
 
 ## Milestone 6 — Discovery
 
