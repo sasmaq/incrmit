@@ -85,7 +85,16 @@ completed.
 - [x] Add a `-update` golden-file flag to regenerate expected outputs.
 - [x] Wire `go test ./...` into CI as a required gate.
 
-## Milestone 10 — Release
+## Milestone 10 — Config Self-Maintenance
+
+- [ ] After a successful bump, update the `version` field of each entry in
+      `incrmit.toml` to the new version (keep the config in sync).
+- [ ] Skip the config update on `--dry-run` (preview only, write nothing).
+- [ ] Exclude the config file from discovery (`incrmit.toml` and the discover
+      `--output` path) so it is never added as a target.
+- [ ] Tests for config self-bump and discovery exclusion.
+
+## Milestone 11 — Release
 
 - [ ] Cross-compile binaries (Linux, macOS, Windows).
 - [ ] Verify `go install` works on a tagged version.
