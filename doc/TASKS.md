@@ -24,11 +24,11 @@ completed.
 
 ## Milestone 3 — Config
 
-- [ ] Define `Config` and `FileEntry` structs with TOML tags.
-- [ ] Load and parse `incrmit.toml`.
-- [ ] Validate entries (non-empty paths, existing files).
-- [ ] Resolve the default config path (`incrmit.toml`).
-- [ ] Unit tests for valid and invalid config files.
+- [x] Define `Config` and `FileEntry` structs with TOML tags.
+- [x] Load and parse `incrmit.toml`.
+- [x] Validate entries (non-empty paths, existing files).
+- [x] Resolve the default config path (`incrmit.toml`).
+- [x] Unit tests for valid and invalid config files.
 
 ## Milestone 4 — File I/O
 
