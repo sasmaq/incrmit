@@ -77,13 +77,13 @@ completed.
 
 ## Milestone 9 — Testing
 
-- [ ] Set up a shared `testdata/` layout for fixtures and golden files.
-- [ ] Add table-driven test helpers and shared assertion utilities.
-- [ ] Run the suite with the race detector (`go test -race ./...`).
-- [ ] Measure coverage (`go test -cover ./...`) and set a target threshold.
-- [ ] Add end-to-end CLI tests that build the binary and assert exit codes.
-- [ ] Add a `-update` golden-file flag to regenerate expected outputs.
-- [ ] Wire `go test ./...` into CI as a required gate.
+- [x] Set up a shared `testdata/` layout for fixtures and golden files.
+- [x] Add table-driven test helpers and shared assertion utilities.
+- [x] Run the suite with the race detector (`go test -race ./...`).
+- [x] Measure coverage (`go test -cover ./...`) and set a target threshold.
+- [x] Add end-to-end CLI tests that build the binary and assert exit codes.
+- [x] Add a `-update` golden-file flag to regenerate expected outputs.
+- [x] Wire `go test ./...` into CI as a required gate.
 
 ## Milestone 10 — Release
 
