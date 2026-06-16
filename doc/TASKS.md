@@ -100,7 +100,7 @@ completed.
 - [x] Verify `go install` works (local `go install .` reports the right
       version; tagged `@vX.Y.Z` install verified after the tag is pushed).
 - [x] Write release notes (`CHANGELOG.md`) for the first version `0.1.3`.
-- [ ] Tag the first version: `git tag v0.1.3 && git push origin v0.1.3`
+- [x] Tag the first version: `git tag v0.1.3 && git push origin v0.1.3`
       (left to the maintainer).
 - [x] Confirm `README.md` examples match actual behavior.
 

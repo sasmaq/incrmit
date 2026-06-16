@@ -1,5 +1,7 @@
 BINARY := incrmit
-VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo 0.1.3)
+# Static version, kept in sync by incrmit itself (see incrmit.toml). Override on
+# the command line for one-off builds, e.g. `make build VERSION=1.2.3`.
+VERSION ?= 0.1.3
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 COVER_THRESHOLD ?= 80
 DIST := dist
