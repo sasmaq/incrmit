@@ -19,13 +19,13 @@ A small command-line tool written in Go that parses a file, finds a version valu
 ## Installation
 
 ```bash
-go install github.com/incrmit/incrmit@latest
+go install github.com/sasmaq/incrmit@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/incrmit/incrmit.git
+git clone https://github.com/sasmaq/incrmit.git
 cd incrmit
 go build -o incrmit .
 ```

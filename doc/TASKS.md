@@ -6,7 +6,7 @@ completed.
 
 ## Milestone 1 — Project Setup
 
-- [ ] Initialize the Go module (`go mod init github.com/incrmit/incrmit`).
+- [ ] Initialize the Go module (`go mod init github.com/sasmaq/incrmit`).
 - [ ] Create the project layout (`main.go`, `internal/`, `doc/`).
 - [ ] Add `.gitignore` for build artifacts and editor files.
 - [ ] Set up `go vet`, `gofmt`, and `golangci-lint`.
