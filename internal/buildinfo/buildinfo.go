@@ -30,47 +30,7 @@ func Version() string {
 	return "dev"
 }
 
-// String returns a human-readable version line, including VCS commit and build
-// time when the Go toolchain embedded them in the binary.
+// String returns a human-readable version line, e.g. "incrmit 0.1.0".
 func String() string {
-	s := "incrmit " + Version()
-
-	revision, buildTime, modified := vcsInfo()
-	if revision == "" {
-		return s
-	}
-
-	short := revision
-	if len(short) > 12 {
-		short = short[:12]
-	}
-	if modified {
-		short += "-dirty"
-	}
-	s += " (commit " + short
-	if buildTime != "" {
-		s += ", built " + buildTime
-	}
-	s += ")"
-	return s
-}
-
-// vcsInfo extracts the VCS revision, build time, and dirty flag from the
-// embedded build settings, if present.
-func vcsInfo() (revision, buildTime string, modified bool) {
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "", "", false
-	}
-	for _, s := range bi.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			revision = s.Value
-		case "vcs.time":
-			buildTime = s.Value
-		case "vcs.modified":
-			modified = s.Value == "true"
-		}
-	}
-	return revision, buildTime, modified
+	return "incrmit " + Version()
 }

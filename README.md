@@ -117,13 +117,7 @@ incrmit -v
 # incrmit 0.1.0
 ```
 
-The version is baked into the binary and can be overridden at build time (for
-example to stamp a git tag). When the Go toolchain has embedded VCS data, the
-commit and build date are appended:
-
-```text
-incrmit 0.1.0 (commit a1b2c3d4e5f6, built 2026-06-16T20:41:44Z)
-```
+The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).
 
 ## Usage
 
