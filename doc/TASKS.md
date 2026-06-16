@@ -6,8 +6,8 @@ completed.
 
 ## Milestone 1 — Project Setup
 
-- [ ] Initialize the Go module (`go mod init github.com/sasmaq/incrmit`).
-- [ ] Create the project layout (`main.go`, `internal/`, `doc/`).
+- [x] Initialize the Go module (`go mod init github.com/sasmaq/incrmit`).
+- [x] Create the project layout (`main.go`, `internal/`, `doc/`).
 - [ ] Add `.gitignore` for build artifacts and editor files.
 - [ ] Set up `go vet`, `gofmt`, and `golangci-lint`.
 - [ ] Add a basic CI workflow (build, test, lint).
@@ -67,7 +67,17 @@ completed.
 - [ ] Surface filesystem and permission errors clearly.
 - [ ] Implement exit codes (`0`, `1`, `2`, `3`) per the design doc.
 
-## Milestone 8 — Release
+## Milestone 8 — Testing
+
+- [ ] Set up a shared `testdata/` layout for fixtures and golden files.
+- [ ] Add table-driven test helpers and shared assertion utilities.
+- [ ] Run the suite with the race detector (`go test -race ./...`).
+- [ ] Measure coverage (`go test -cover ./...`) and set a target threshold.
+- [ ] Add end-to-end CLI tests that build the binary and assert exit codes.
+- [ ] Add a `-update` golden-file flag to regenerate expected outputs.
+- [ ] Wire `go test ./...` into CI as a required gate.
+
+## Milestone 9 — Release
 
 - [ ] Cross-compile binaries (Linux, macOS, Windows).
 - [ ] Verify `go install` works on a tagged version.
