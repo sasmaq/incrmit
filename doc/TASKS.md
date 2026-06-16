@@ -50,15 +50,15 @@ completed.
 
 ## Milestone 6 — Discovery
 
-- [ ] Implement the `discover` subcommand and its flags
+- [x] Implement the `discover` subcommand and its flags
       (`--path`/`-P`, `--output`/`-o`, `--dry-run`/`-d`).
-- [ ] Walk the directory tree, skipping ignored dirs
+- [x] Walk the directory tree, skipping ignored dirs
       (`.git`, `node_modules`, `vendor`, build outputs).
-- [ ] Detect versions in `VERSION`, `package.json`, `pyproject.toml`,
+- [x] Detect versions in `VERSION`, `package.json`, `pyproject.toml`,
       `Cargo.toml`, and Go source files.
-- [ ] Generate `incrmit.toml` with discovered paths and versions.
-- [ ] Implement `--dry-run` to print findings without writing.
-- [ ] Tests over a fixture tree covering each supported file type.
+- [x] Generate `incrmit.toml` with discovered paths and versions.
+- [x] Implement `--dry-run` to print findings without writing.
+- [x] Tests over a fixture tree covering each supported file type.
 
 ## Milestone 7 — Version Command
 

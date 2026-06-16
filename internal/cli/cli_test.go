@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sasmaq/incrmit/internal/config"
 )
 
 // runMain invokes Main with the given args inside dir (as the working
@@ -250,12 +252,81 @@ func TestUnexpectedArg(t *testing.T) {
 	}
 }
 
-func TestDiscoverNotImplemented(t *testing.T) {
-	code, _, stderr := runMain(t, "", "discover")
-	if code != ExitError {
-		t.Errorf("exit = %d, want %d", code, ExitError)
+func TestDiscoverWritesConfig(t *testing.T) {
+	dir := project(t, "", map[string]string{
+		"VERSION":      "1.2.3\n",
+		"sub/pkg.json": "ignored: not a package.json name\n",
+	})
+
+	code, stdout, stderr := runMain(t, dir, "discover")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "not implemented") {
+	if !strings.Contains(stdout, "Wrote incrmit.toml") {
+		t.Errorf("stdout = %q", stdout)
+	}
+
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading generated config: %v", err)
+	}
+	if len(cfg.Files) != 1 || cfg.Files[0].Path != "VERSION" || cfg.Files[0].Version != "1.2.3" {
+		t.Errorf("config files = %+v", cfg.Files)
+	}
+}
+
+func TestDiscoverDryRun(t *testing.T) {
+	dir := project(t, "", map[string]string{"VERSION": "1.2.3\n"})
+
+	code, stdout, stderr := runMain(t, dir, "discover", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "VERSION: 1.2.3") || !strings.Contains(stdout, "no config written") {
+		t.Errorf("stdout = %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "incrmit.toml")); !os.IsNotExist(err) {
+		t.Errorf("dry-run wrote a config file (err = %v)", err)
+	}
+}
+
+func TestDiscoverCustomOutputAndPath(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "VERSION"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "release", "incrmit.toml")
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runMain(t, "", "discover", "--path", srcDir, "--output", out)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("expected config at %s: %v", out, err)
+	}
+}
+
+func TestDiscoverNoFindings(t *testing.T) {
+	dir := project(t, "", map[string]string{"README.md": "nothing here\n"})
+	code, _, stderr := runMain(t, dir, "discover")
+	if code != ExitNoVersion {
+		t.Errorf("exit = %d, want %d", code, ExitNoVersion)
+	}
+	if !strings.Contains(stderr, "no version-bearing files") {
 		t.Errorf("stderr = %q", stderr)
+	}
+}
+
+func TestDiscoverBadFlag(t *testing.T) {
+	code, _, _ := runMain(t, "", "discover", "--nope")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/sasmaq/incrmit/internal/config"
+	"github.com/sasmaq/incrmit/internal/discovery"
 	"github.com/sasmaq/incrmit/internal/files"
 	"github.com/sasmaq/incrmit/internal/version"
 )
@@ -41,11 +42,8 @@ const (
 // selected command, and returns a process exit code. All human-readable output
 // goes to stdout; errors go to stderr.
 func Main(args []string, stdout, stderr io.Writer) int {
-	// The discover subcommand is added in a later milestone; dispatch is
-	// structured so it can slot in here.
 	if len(args) > 0 && args[0] == "discover" {
-		fprintln(stderr, "incrmit: discover is not implemented yet")
-		return ExitError
+		return runDiscover(args[1:], stdout, stderr)
 	}
 	return runBump(args, stdout, stderr)
 }
@@ -225,6 +223,90 @@ func resolveTargets(opts bumpOptions) ([]target, error) {
 		targets = append(targets, target{display: f.Path, fsPath: fsPath})
 	}
 	return targets, nil
+}
+
+type discoverOptions struct {
+	path   string
+	output string
+	dryRun bool
+}
+
+func runDiscover(args []string, stdout, stderr io.Writer) int {
+	opts, code := parseDiscoverFlags(args, stderr)
+	if code == exitSilentFlag {
+		return ExitOK
+	}
+	if code != ExitOK {
+		return code
+	}
+
+	results, err := discovery.Discover(opts.path)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return classify(err)
+	}
+	if len(results) == 0 {
+		fprintf(stderr, "incrmit: no version-bearing files found under %s\n", opts.path)
+		return ExitNoVersion
+	}
+
+	if opts.dryRun {
+		fprintf(stdout, "Discovered %d file(s) under %s (no config written):\n", len(results), opts.path)
+		for _, r := range results {
+			fprintf(stdout, "  %s: %s\n", r.Path, r.Version)
+		}
+		return ExitOK
+	}
+
+	data, err := discovery.Generate(results)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return ExitError
+	}
+	if err := files.WriteAtomic(opts.output, data); err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return classify(err)
+	}
+
+	fprintf(stdout, "Wrote %s with %d file(s):\n", opts.output, len(results))
+	for _, r := range results {
+		fprintf(stdout, "  %s: %s\n", r.Path, r.Version)
+	}
+	return ExitOK
+}
+
+func parseDiscoverFlags(args []string, stderr io.Writer) (discoverOptions, int) {
+	var opts discoverOptions
+	fs := flag.NewFlagSet("incrmit discover", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fprintln(stderr, "usage: incrmit discover [flags]")
+		fprintln(stderr, "\nScan a directory tree for version-bearing files and generate a config.")
+		fprintln(stderr, "\nFlags:")
+		fprintln(stderr, "  -P, --path string    root directory to scan (default \".\")")
+		fprintln(stderr, "  -o, --output string  path to write the generated config (default \"incrmit.toml\")")
+		fprintln(stderr, "  -d, --dry-run        print discovered files without writing the config")
+	}
+
+	fs.StringVar(&opts.path, "path", ".", "root directory to scan")
+	fs.StringVar(&opts.path, "P", ".", "root directory to scan (shorthand)")
+	fs.StringVar(&opts.output, "output", config.DefaultPath, "path to write the generated config")
+	fs.StringVar(&opts.output, "o", config.DefaultPath, "path to write the generated config (shorthand)")
+	fs.BoolVar(&opts.dryRun, "dry-run", false, "print discovered files without writing the config")
+	fs.BoolVar(&opts.dryRun, "d", false, "print discovered files without writing the config (shorthand)")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return opts, exitSilentFlag
+		}
+		return opts, ExitUsage
+	}
+	if fs.NArg() > 0 {
+		fprintf(stderr, "incrmit: unexpected argument %q\n", fs.Arg(0))
+		fs.Usage()
+		return opts, ExitUsage
+	}
+	return opts, ExitOK
 }
 
 // classify maps an error to the appropriate process exit code.
