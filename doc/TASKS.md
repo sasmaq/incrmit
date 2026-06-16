@@ -8,9 +8,9 @@ completed.
 
 - [x] Initialize the Go module (`go mod init github.com/sasmaq/incrmit`).
 - [x] Create the project layout (`main.go`, `internal/`, `doc/`).
-- [ ] Add `.gitignore` for build artifacts and editor files.
-- [ ] Set up `go vet`, `gofmt`, and `golangci-lint`.
-- [ ] Add a basic CI workflow (build, test, lint).
+- [x] Add `.gitignore` for build artifacts and editor files.
+- [x] Set up `go vet`, `gofmt`, and `golangci-lint`.
+- [x] Add a basic CI workflow (build, test, lint).
 
 ## Milestone 2 — Version Core
 

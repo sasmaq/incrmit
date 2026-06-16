@@ -1,0 +1,27 @@
+# Compiled binaries
+/incrmit
+/incrmit.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build / dist output
+/dist/
+/build/
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Editor / OS files
+.DS_Store
+*.swp
+*~
+.idea/
