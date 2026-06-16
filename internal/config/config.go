@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -25,6 +26,17 @@ type Config struct {
 type FileEntry struct {
 	Path    string `toml:"path"`
 	Version string `toml:"version,omitempty"`
+}
+
+// Marshal renders the config as TOML bytes, with a header noting that the file
+// is tool-maintained.
+func Marshal(c *Config) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteString("# incrmit.toml (maintained by incrmit)\n\n")
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return nil, fmt.Errorf("config: encoding: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // ResolvePath returns path when it is non-empty, otherwise DefaultPath. It lets

@@ -91,7 +91,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 
 	bump, label := resolveBump(opts.major, opts.minor, opts.patch)
 
-	targets, err := resolveTargets(opts)
+	targets, cfgPath, err := resolveTargets(opts)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -158,6 +158,24 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		}
 		if err := files.WriteAtomic(p.fsPath, updated); err != nil {
 			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", p.display, err))
+			return classify(err)
+		}
+	}
+
+	// Keep the config in sync: record each target's new version so the next bump
+	// reads the correct current version. Only done in config mode (not --file).
+	if cfgPath != "" {
+		updated := &config.Config{Files: make([]config.FileEntry, len(plans))}
+		for i, p := range plans {
+			updated.Files[i] = config.FileEntry{Path: p.display, Version: p.newVer.String()}
+		}
+		data, err := config.Marshal(updated)
+		if err != nil {
+			fprintln(stderr, "incrmit:", err)
+			return ExitError
+		}
+		if err := files.WriteAtomic(cfgPath, data); err != nil {
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", cfgPath, err))
 			return classify(err)
 		}
 	}
@@ -237,20 +255,21 @@ type target struct {
 	knownVer string // current version recorded in the config ("" if none)
 }
 
-// resolveTargets returns the files to bump: either the single --file target or
-// every entry in the config. Config-relative paths are resolved against the
-// directory containing the config file. When a config entry records a version,
-// it is carried through so the bump can target that exact version and avoid
+// resolveTargets returns the files to bump and the config path they came from
+// (empty in --file mode). It uses either the single --file target or every
+// entry in the config. Config-relative paths are resolved against the directory
+// containing the config file. When a config entry records a version, it is
+// carried through so the bump can target that exact version and avoid
 // re-scanning files that contain several version-like strings.
-func resolveTargets(opts bumpOptions) ([]target, error) {
+func resolveTargets(opts bumpOptions) ([]target, string, error) {
 	if opts.file != "" {
-		return []target{{display: opts.file, fsPath: opts.file}}, nil
+		return []target{{display: opts.file, fsPath: opts.file}}, "", nil
 	}
 
 	cfgPath := config.ResolvePath(opts.configPath)
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	baseDir := filepath.Dir(cfgPath)
@@ -266,7 +285,7 @@ func resolveTargets(opts bumpOptions) ([]target, error) {
 			knownVer: f.Version,
 		})
 	}
-	return targets, nil
+	return targets, cfgPath, nil
 }
 
 type discoverOptions struct {
@@ -289,6 +308,7 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
 	}
+	results = excludeOutput(results, opts.path, opts.output)
 	if len(results) == 0 {
 		fprintf(stderr, "incrmit: no version-bearing files found under %s\n", opts.path)
 		return ExitNoVersion
@@ -351,6 +371,26 @@ func parseDiscoverFlags(args []string, stderr io.Writer) (discoverOptions, int) 
 		return opts, ExitUsage
 	}
 	return opts, ExitOK
+}
+
+// excludeOutput drops any discovered result that refers to the config file the
+// discover command is about to write, so the generated config never lists
+// itself as a target. (Files literally named incrmit.toml are already skipped
+// during the walk; this also covers a custom --output path.)
+func excludeOutput(results []discovery.Result, root, output string) []discovery.Result {
+	outAbs, err := filepath.Abs(output)
+	if err != nil {
+		return results
+	}
+	filtered := make([]discovery.Result, 0, len(results))
+	for _, r := range results {
+		rAbs, err := filepath.Abs(filepath.Join(root, r.Path))
+		if err == nil && rAbs == outAbs {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	return filtered
 }
 
 // classify maps an error to the appropriate process exit code.

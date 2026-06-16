@@ -61,6 +61,11 @@ func Discover(root string) ([]Result, error) {
 			return nil
 		}
 
+		// Never treat the config file itself as a discovered target.
+		if d.Name() == config.DefaultPath {
+			return nil
+		}
+
 		v, ok := detect(path)
 		if !ok {
 			return nil

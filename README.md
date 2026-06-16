@@ -2,7 +2,7 @@
 
 A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it.
 
-## Version: 0.1.1
+## Version: 0.1.2
 
 ## Overview
 
@@ -62,6 +62,12 @@ path = "internal/version/version.go"
 Each `[[files]]` entry describes one file to update. Every listed file is parsed
 and bumped together so their versions stay in sync.
 
+An entry may also record a `version`, which pins the exact value to bump (useful
+for files that contain several version-like strings). After a successful bump,
+`incrmit` rewrites `incrmit.toml` so each entry's `version` reflects the new
+value, keeping the config in step with the files it manages. A `--dry-run`
+previews the change and writes nothing — neither the targets nor the config.
+
 ## Discovery
 
 Rather than writing the config by hand, run the `discover` command to scan the
@@ -71,7 +77,9 @@ contents of every text file, recording the first `MAJOR.MINOR.PATCH` token it
 finds in each. It is not limited to specific file names or types — any file
 (`VERSION`, `package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain
 text, etc.) is matched the same way. Binary files and common noise directories
-(`.git`, `node_modules`, `vendor`, build outputs) are skipped.
+(`.git`, `node_modules`, `vendor`, build outputs) are skipped, as is the config
+file itself (`incrmit.toml` and the `--output` path), so it is never listed as a
+target.
 
 ```bash
 incrmit discover
@@ -117,7 +125,7 @@ with the `version` subcommand or the `--version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.1
+# incrmit 0.1.2
 ```
 
 The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).

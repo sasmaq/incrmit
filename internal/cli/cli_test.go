@@ -153,6 +153,79 @@ func TestBumpDryRun(t *testing.T) {
 	}
 }
 
+func TestBumpSyncsConfigVersions(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n[[files]]\npath = \"pkg.json\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{
+		"VERSION":  "1.2.3\n",
+		"pkg.json": "{\n  \"version\": \"1.2.3\"\n}\n",
+	})
+
+	code, _, stderr := runMain(t, dir, "--minor")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	for _, f := range cfg.Files {
+		if f.Version != "1.3.0" {
+			t.Errorf("config %s version = %q, want 1.3.0", f.Path, f.Version)
+		}
+	}
+}
+
+// A repeated bump only works when the config's recorded version is updated to
+// match the file after each run; otherwise the second run cannot find the old
+// version in the changed file.
+func TestBumpRepeatedRunsStayInSync(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+
+	for run := 1; run <= 3; run++ {
+		code, _, stderr := runMain(t, dir)
+		if code != ExitOK {
+			t.Fatalf("run %d: exit = %d, stderr = %q", run, code, stderr)
+		}
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "VERSION"))
+	if string(got) != "1.2.6\n" {
+		t.Errorf("VERSION = %q, want \"1.2.6\\n\"", got)
+	}
+	cfg, _ := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if cfg.Files[0].Version != "1.2.6" {
+		t.Errorf("config version = %q, want 1.2.6", cfg.Files[0].Version)
+	}
+}
+
+func TestBumpDryRunLeavesConfigUntouched(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+	before, _ := os.ReadFile(filepath.Join(dir, "incrmit.toml"))
+
+	code, _, stderr := runMain(t, dir, "--minor", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "incrmit.toml"))
+	if string(before) != string(after) {
+		t.Errorf("dry-run rewrote config:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+// --file mode has no config to maintain; the bump must not create one.
+func TestBumpFileModeDoesNotWriteConfig(t *testing.T) {
+	dir := project(t, "", map[string]string{"VERSION": "1.2.3\n"})
+	code, _, stderr := runMain(t, "", "--file", filepath.Join(dir, "VERSION"))
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "incrmit.toml")); !os.IsNotExist(err) {
+		t.Errorf("--file mode created a config (err = %v)", err)
+	}
+}
+
 func TestBumpDryRunShort(t *testing.T) {
 	dir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
 	code, stdout, _ := runMain(t, dir, "-d")
@@ -272,6 +345,50 @@ func TestDiscoverWritesConfig(t *testing.T) {
 	}
 	if len(cfg.Files) != 1 || cfg.Files[0].Path != "VERSION" || cfg.Files[0].Version != "1.2.3" {
 		t.Errorf("config files = %+v", cfg.Files)
+	}
+}
+
+// A pre-existing incrmit.toml must never list itself as a target.
+func TestDiscoverExcludesConfigFile(t *testing.T) {
+	dir := project(t, "# stale\n[[files]]\npath = \"x\"\nversion = \"0.0.1\"\n", map[string]string{
+		"VERSION": "1.2.3\n",
+	})
+
+	code, _, stderr := runMain(t, dir, "discover")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	for _, f := range cfg.Files {
+		if f.Path == "incrmit.toml" {
+			t.Fatalf("config listed itself as a target: %+v", cfg.Files)
+		}
+	}
+}
+
+// A custom --output path that does not end in incrmit.toml is still excluded.
+func TestDiscoverExcludesCustomOutput(t *testing.T) {
+	dir := project(t, "", map[string]string{
+		"VERSION":  "1.2.3\n",
+		"conf.cfg": "1.0.0\n",
+	})
+	out := filepath.Join(dir, "conf.cfg")
+
+	code, _, stderr := runMain(t, "", "discover", "--path", dir, "--output", out)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	cfg, err := config.Load(out)
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	for _, f := range cfg.Files {
+		if filepath.Base(f.Path) == "conf.cfg" {
+			t.Fatalf("config listed the output file as a target: %+v", cfg.Files)
+		}
 	}
 }
 

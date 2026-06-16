@@ -1,5 +1,5 @@
 BINARY := incrmit
-VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo 0.1.1)
+VERSION ?= $(shell git describe --tags --dirty 2>/dev/null || echo 0.1.2)
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 COVER_THRESHOLD ?= 80
 

@@ -87,12 +87,12 @@ completed.
 
 ## Milestone 10 — Config Self-Maintenance
 
-- [ ] After a successful bump, update the `version` field of each entry in
+- [x] After a successful bump, update the `version` field of each entry in
       `incrmit.toml` to the new version (keep the config in sync).
-- [ ] Skip the config update on `--dry-run` (preview only, write nothing).
-- [ ] Exclude the config file from discovery (`incrmit.toml` and the discover
+- [x] Skip the config update on `--dry-run` (preview only, write nothing).
+- [x] Exclude the config file from discovery (`incrmit.toml` and the discover
       `--output` path) so it is never added as a target.
-- [ ] Tests for config self-bump and discovery exclusion.
+- [x] Tests for config self-bump and discovery exclusion.
 
 ## Milestone 11 — Release
 

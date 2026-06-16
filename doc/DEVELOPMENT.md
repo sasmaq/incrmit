@@ -183,13 +183,17 @@ component wins (major > minor > patch). When none is supplied, patch is used.
    - Read the file and locate the version string.
    - Parse it into a `Version`.
    - Apply the bump.
-4. If `--dry-run`, print `old -> new` for each target and exit.
-5. Otherwise write each updated file in place and report results.
+4. If `--dry-run`, print `old -> new` for each target and exit (no writes).
+5. Otherwise write each updated file in place.
+6. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
+   `version` records the new value, keeping the config in sync for the next run.
+7. Report results.
 
 ### 8.2 Discover
 
 1. Walk the tree from `--path`, skipping ignored directories
-   (e.g. `.git`, `node_modules`, `vendor`, build outputs).
+   (e.g. `.git`, `node_modules`, `vendor`, build outputs) and the config file
+   (`incrmit.toml` by name, plus the resolved `--output` path).
 2. For each candidate file, attempt to extract a semantic version.
 3. Collect matches as `FileEntry` records (path + detected version).
 4. If `--dry-run`, print the findings and exit.

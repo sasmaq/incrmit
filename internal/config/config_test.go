@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -134,5 +135,112 @@ func TestValidateAbsolutePath(t *testing.T) {
 	cfg := &Config{Files: []FileEntry{{Path: target}}}
 	if err := cfg.Validate("/some/other/base"); err != nil {
 		t.Errorf("Validate() with absolute path = %v, want nil", err)
+	}
+}
+
+// Validation errors should name the specific problem so users can fix the
+// config without guessing.
+func TestValidateErrorMessages(t *testing.T) {
+	dir := t.TempDir()
+	// The duplicate check only fires once the first entry passes the existence
+	// check, so the target must exist on disk.
+	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte("1.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name string
+		cfg  *Config
+		want string
+	}{
+		{"no files", &Config{}, "no files listed"},
+		{"empty path", &Config{Files: []FileEntry{{Path: ""}}}, "empty path"},
+		{
+			"duplicate",
+			&Config{Files: []FileEntry{{Path: "VERSION"}, {Path: "VERSION"}}},
+			"duplicate path",
+		},
+		{"missing", &Config{Files: []FileEntry{{Path: "nope"}}}, "does not exist"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate(dir)
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error containing %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Validate() error = %q, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// Load must distinguish a missing file (NotExistError) from other read errors,
+// such as the path resolving to a directory.
+func TestLoadReadErrorNotMissing(t *testing.T) {
+	dir := t.TempDir()
+	_, err := Load(dir) // a directory, not a file
+	if err == nil {
+		t.Fatal("Load(dir) = nil error, want error")
+	}
+	if IsNotExist(err) {
+		t.Errorf("IsNotExist(%v) = true, want false (not a missing-file error)", err)
+	}
+}
+
+func TestNotExistErrorMessage(t *testing.T) {
+	err := &NotExistError{Path: "some/incrmit.toml"}
+	msg := err.Error()
+	if !strings.Contains(msg, "some/incrmit.toml") || !strings.Contains(msg, "incrmit discover") {
+		t.Errorf("Error() = %q, want it to mention the path and `incrmit discover`", msg)
+	}
+}
+
+func TestMarshalRoundTrip(t *testing.T) {
+	cfg := &Config{Files: []FileEntry{
+		{Path: "VERSION", Version: "1.2.3"},
+		{Path: "sub/pkg.json", Version: "1.2.3"},
+	}}
+
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "# incrmit.toml (maintained by incrmit)") {
+		t.Errorf("Marshal() output missing header:\n%s", data)
+	}
+
+	// Write it out and load it back to confirm it is valid, parseable TOML.
+	dir := t.TempDir()
+	for _, f := range cfg.Files {
+		p := filepath.Join(dir, f.Path)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("1.2.3\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfgPath := filepath.Join(dir, "incrmit.toml")
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() of marshaled config: %v", err)
+	}
+	if len(got.Files) != 2 || got.Files[0] != cfg.Files[0] || got.Files[1] != cfg.Files[1] {
+		t.Errorf("round-trip mismatch: got %+v, want %+v", got.Files, cfg.Files)
+	}
+}
+
+// An empty Version must be omitted from the encoded output (omitempty), not
+// written as version = "".
+func TestMarshalOmitsEmptyVersion(t *testing.T) {
+	data, err := Marshal(&Config{Files: []FileEntry{{Path: "VERSION"}}})
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	if strings.Contains(string(data), "version") {
+		t.Errorf("Marshal() included an empty version field:\n%s", data)
 	}
 }

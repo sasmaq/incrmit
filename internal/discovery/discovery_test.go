@@ -79,6 +79,30 @@ func TestDiscover(t *testing.T) {
 	}
 }
 
+// The config file itself must never be reported as a target, even though it is
+// a text file containing version tokens.
+func TestDiscoverSkipsConfigFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, config.DefaultPath), []byte("[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range got {
+		if r.Path == config.DefaultPath {
+			t.Fatalf("Discover returned the config file: %+v", got)
+		}
+	}
+	if len(got) != 1 || got[0].Path != "VERSION" {
+		t.Errorf("got %+v, want only VERSION", got)
+	}
+}
+
 func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 	root := fixtureTree(t)
 	got, err := Discover(root)
