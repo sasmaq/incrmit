@@ -2,7 +2,7 @@
 
 A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it.
 
-## Version: 0.1.0
+## Version: 0.1.1
 
 ## Overview
 
@@ -117,7 +117,7 @@ with the `version` subcommand or the `--version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.0
+# incrmit 0.1.1
 ```
 
 The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).

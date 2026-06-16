@@ -17,6 +17,10 @@ import (
 // ErrNoVersion is returned when a file contains no semantic version token.
 var ErrNoVersion = errors.New("files: no semantic version found")
 
+// ErrVersionNotFound is returned by SetKnownVersion when the expected current
+// version is not present in the file (e.g. the config is out of sync).
+var ErrVersionNotFound = errors.New("files: expected version not found")
+
 // versionRe matches a bare MAJOR.MINOR.PATCH token bounded by non-word
 // characters. It deliberately does not understand any file format; structured
 // detection for specific formats lives in the discovery package.
@@ -68,24 +72,44 @@ func SetVersion(data []byte, newVer version.Version) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	curToken := cur.String()
-	newToken := newVer.String()
+	out, _ := replaceToken(data, cur.String(), newVer.String())
+	return out, nil
+}
 
+// SetKnownVersion replaces every occurrence of oldVer's token with newVer's
+// token, leaving any other version-like strings in the file untouched. Unlike
+// SetVersion it does not require the file to contain a single unambiguous
+// version, so it is used when the current version is known from configuration.
+// It returns ErrVersionNotFound if oldVer's token does not appear in data.
+func SetKnownVersion(data []byte, oldVer, newVer version.Version) ([]byte, error) {
+	out, n := replaceToken(data, oldVer.String(), newVer.String())
+	if n == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrVersionNotFound, oldVer)
+	}
+	return out, nil
+}
+
+// replaceToken rewrites every whole-token occurrence of oldToken (matched on
+// version-token boundaries) with newToken, returning the result and the number
+// of replacements made.
+func replaceToken(data []byte, oldToken, newToken string) ([]byte, int) {
 	locs := versionRe.FindAllIndex(data, -1)
 	var b strings.Builder
 	b.Grow(len(data))
 	prev := 0
+	count := 0
 	for _, loc := range locs {
 		start, end := loc[0], loc[1]
-		if string(data[start:end]) != curToken {
+		if string(data[start:end]) != oldToken {
 			continue
 		}
 		b.Write(data[prev:start])
 		b.WriteString(newToken)
 		prev = end
+		count++
 	}
 	b.Write(data[prev:])
-	return []byte(b.String()), nil
+	return []byte(b.String()), count
 }
 
 // ReadVersion reads path and returns the semantic version it contains.

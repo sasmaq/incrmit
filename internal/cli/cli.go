@@ -113,10 +113,23 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", tgt.display, err))
 			return classify(err)
 		}
-		oldVer, err := files.FindVersion(data)
-		if err != nil {
-			fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
-			return classify(err)
+
+		// Prefer the version recorded in the config: it pins the exact token to
+		// bump, so files containing several version-like strings are handled
+		// unambiguously. Fall back to scanning the file when none is recorded.
+		var oldVer version.Version
+		if tgt.knownVer != "" {
+			oldVer, err = version.Parse(tgt.knownVer)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: invalid version %q in config: %v\n", tgt.display, tgt.knownVer, err)
+				return ExitNoVersion
+			}
+		} else {
+			oldVer, err = files.FindVersion(data)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
+				return classify(err)
+			}
 		}
 		plans = append(plans, plan{
 			display: tgt.display,
@@ -135,9 +148,10 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 
-	// Phase 2: write each planned change atomically.
+	// Phase 2: write each planned change atomically. Replace the exact known
+	// old version token so only that version is rewritten.
 	for _, p := range plans {
-		updated, err := files.SetVersion(p.data, p.newVer)
+		updated, err := files.SetKnownVersion(p.data, p.oldVer, p.newVer)
 		if err != nil {
 			fprintf(stderr, "incrmit: %s: %v\n", p.display, err)
 			return classify(err)
@@ -218,13 +232,16 @@ func resolveBump(major, minor, patch bool) (func(version.Version) version.Versio
 }
 
 type target struct {
-	display string // path as the user/config sees it
-	fsPath  string // resolved filesystem path
+	display  string // path as the user/config sees it
+	fsPath   string // resolved filesystem path
+	knownVer string // current version recorded in the config ("" if none)
 }
 
 // resolveTargets returns the files to bump: either the single --file target or
 // every entry in the config. Config-relative paths are resolved against the
-// directory containing the config file.
+// directory containing the config file. When a config entry records a version,
+// it is carried through so the bump can target that exact version and avoid
+// re-scanning files that contain several version-like strings.
 func resolveTargets(opts bumpOptions) ([]target, error) {
 	if opts.file != "" {
 		return []target{{display: opts.file, fsPath: opts.file}}, nil
@@ -243,7 +260,11 @@ func resolveTargets(opts bumpOptions) ([]target, error) {
 		if !filepath.IsAbs(fsPath) {
 			fsPath = filepath.Join(baseDir, fsPath)
 		}
-		targets = append(targets, target{display: f.Path, fsPath: fsPath})
+		targets = append(targets, target{
+			display:  f.Path,
+			fsPath:   fsPath,
+			knownVer: f.Version,
+		})
 	}
 	return targets, nil
 }
@@ -336,7 +357,9 @@ func parseDiscoverFlags(args []string, stderr io.Writer) (discoverOptions, int) 
 func classify(err error) int {
 	var ambiguous *files.AmbiguousError
 	switch {
-	case errors.Is(err, files.ErrNoVersion), errors.As(err, &ambiguous):
+	case errors.Is(err, files.ErrNoVersion),
+		errors.Is(err, files.ErrVersionNotFound),
+		errors.As(err, &ambiguous):
 		return ExitNoVersion
 	default:
 		return ExitError

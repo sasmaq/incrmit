@@ -331,6 +331,59 @@ func TestDiscoverBadFlag(t *testing.T) {
 	}
 }
 
+func TestBumpUsesConfigVersionForAmbiguousFile(t *testing.T) {
+	// README-like file with several version-like strings; the config pins the
+	// one to bump, so it must not fail as ambiguous.
+	body := "[[files]]\npath = \"README.md\"\nversion = \"0.1.0\"\n"
+	dir := project(t, body, map[string]string{
+		"README.md": "title 0.1.0\nexample 1.2.3 -> 1.2.4\nrelease 2.0.0\n",
+	})
+
+	code, stdout, stderr := runMain(t, dir, "--minor")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "0.1.0 -> 0.2.0") {
+		t.Errorf("stdout = %q", stdout)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "README.md"))
+	want := "title 0.2.0\nexample 1.2.3 -> 1.2.4\nrelease 2.0.0\n"
+	if string(got) != want {
+		t.Errorf("README.md = %q, want %q (only the config version should change)", got, want)
+	}
+}
+
+func TestBumpConfigVersionNotInFile(t *testing.T) {
+	// The config records a version that is not present in the file.
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"9.9.9\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+
+	code, _, stderr := runMain(t, dir)
+	if code != ExitNoVersion {
+		t.Errorf("exit = %d, want %d", code, ExitNoVersion)
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("stderr = %q", stderr)
+	}
+	// File must be untouched.
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("VERSION changed: %q", got)
+	}
+}
+
+func TestBumpInvalidConfigVersion(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"not-a-version\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+
+	code, _, stderr := runMain(t, dir)
+	if code != ExitNoVersion {
+		t.Errorf("exit = %d, want %d", code, ExitNoVersion)
+	}
+	if !strings.Contains(stderr, "invalid version") {
+		t.Errorf("stderr = %q", stderr)
+	}
+}
+
 func TestBumpFileDoesNotExist(t *testing.T) {
 	dir := t.TempDir()
 	code, _, stderr := runMain(t, "", "--file", filepath.Join(dir, "missing"))

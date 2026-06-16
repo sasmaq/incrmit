@@ -128,6 +128,44 @@ func TestSetVersionRepeatedToken(t *testing.T) {
 	}
 }
 
+func TestSetKnownVersion(t *testing.T) {
+	// A file with several distinct versions; only the known one is rewritten.
+	in := []byte("title 0.1.0\nexample 1.2.3 -> 1.2.4\n")
+	out, err := SetKnownVersion(in,
+		version.Version{Major: 0, Minor: 1, Patch: 0},
+		version.Version{Major: 0, Minor: 2, Patch: 0})
+	if err != nil {
+		t.Fatalf("SetKnownVersion: %v", err)
+	}
+	want := "title 0.2.0\nexample 1.2.3 -> 1.2.4\n"
+	if string(out) != want {
+		t.Errorf("SetKnownVersion = %q, want %q", out, want)
+	}
+}
+
+func TestSetKnownVersionAllOccurrences(t *testing.T) {
+	in := []byte("a 1.2.3 b 1.2.3 c 4.5.6\n")
+	out, err := SetKnownVersion(in,
+		version.Version{Major: 1, Minor: 2, Patch: 3},
+		version.Version{Major: 1, Minor: 2, Patch: 4})
+	if err != nil {
+		t.Fatalf("SetKnownVersion: %v", err)
+	}
+	if want := "a 1.2.4 b 1.2.4 c 4.5.6\n"; string(out) != want {
+		t.Errorf("SetKnownVersion = %q, want %q", out, want)
+	}
+}
+
+func TestSetKnownVersionNotFound(t *testing.T) {
+	in := []byte("only 1.2.3 here\n")
+	_, err := SetKnownVersion(in,
+		version.Version{Major: 9, Minor: 9, Patch: 9},
+		version.Version{Major: 9, Minor: 9, Patch: 10})
+	if !errors.Is(err, ErrVersionNotFound) {
+		t.Errorf("err = %v, want ErrVersionNotFound", err)
+	}
+}
+
 func TestWriteAtomicPreservesMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "VERSION")
