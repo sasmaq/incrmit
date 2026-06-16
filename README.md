@@ -96,6 +96,22 @@ incrmit discover --path ./src --dry-run
 incrmit discover --output release/incrmit.toml
 ```
 
+## Version
+
+Print the version of the `incrmit` tool itself (not a target file's version)
+with the `version` subcommand or the `--version` / `-v` flag:
+
+```bash
+incrmit version
+incrmit --version
+incrmit -v
+# incrmit 1.0.0
+```
+
+When `incrmit` is built from a tagged release the embedded version is shown;
+otherwise it falls back to the version recorded in the build's module
+information (and may include the commit and build date).
+
 ## Usage
 
 ```bash

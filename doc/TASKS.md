@@ -60,14 +60,22 @@ completed.
 - [ ] Implement `--dry-run` to print findings without writing.
 - [ ] Tests over a fixture tree covering each supported file type.
 
-## Milestone 7 — Error Handling and UX
+## Milestone 7 — Version Command
+
+- [ ] Embed the tool version (build-time `-ldflags` var with a sensible default).
+- [ ] Implement the `version` subcommand to print the tool version.
+- [ ] Support a `--version`/`-v` flag as an alias for the subcommand.
+- [ ] Include build metadata when available (commit, build date) via `runtime/debug`.
+- [ ] Tests asserting the version command output and exit code `0`.
+
+## Milestone 8 — Error Handling and UX
 
 - [ ] Friendly message when the config is missing (suggest `discover`).
 - [ ] Handle "no version found" and ambiguous matches.
 - [ ] Surface filesystem and permission errors clearly.
 - [ ] Implement exit codes (`0`, `1`, `2`, `3`) per the design doc.
 
-## Milestone 8 — Testing
+## Milestone 9 — Testing
 
 - [ ] Set up a shared `testdata/` layout for fixtures and golden files.
 - [ ] Add table-driven test helpers and shared assertion utilities.
@@ -77,7 +85,7 @@ completed.
 - [ ] Add a `-update` golden-file flag to regenerate expected outputs.
 - [ ] Wire `go test ./...` into CI as a required gate.
 
-## Milestone 9 — Release
+## Milestone 10 — Release
 
 - [ ] Cross-compile binaries (Linux, macOS, Windows).
 - [ ] Verify `go install` works on a tagged version.
