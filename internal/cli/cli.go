@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -28,6 +29,21 @@ func fprintf(w io.Writer, format string, a ...any) {
 
 func fprintln(w io.Writer, a ...any) {
 	_, _ = fmt.Fprintln(w, a...)
+}
+
+// fsErrorMessage renders a clear, consistent message for a filesystem error,
+// calling out permission and missing-file cases explicitly rather than relying
+// on the (often path-duplicated) raw OS error text. action is a verb such as
+// "reading" or "writing"; display is the path as the user knows it.
+func fsErrorMessage(action, display string, err error) string {
+	switch {
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Sprintf("%s %s: permission denied", action, display)
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Sprintf("%s %s: file does not exist", action, display)
+	default:
+		return fmt.Sprintf("%s %s: %v", action, display, err)
+	}
 }
 
 // Exit codes, per doc/DEVELOPMENT.md section 10.
@@ -94,7 +110,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	for _, tgt := range targets {
 		data, err := os.ReadFile(tgt.fsPath)
 		if err != nil {
-			fprintf(stderr, "incrmit: reading %s: %v\n", tgt.display, err)
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", tgt.display, err))
 			return classify(err)
 		}
 		oldVer, err := files.FindVersion(data)
@@ -127,7 +143,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 			return classify(err)
 		}
 		if err := files.WriteAtomic(p.fsPath, updated); err != nil {
-			fprintf(stderr, "incrmit: %s: %v\n", p.display, err)
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", p.display, err))
 			return classify(err)
 		}
 	}
@@ -271,7 +287,7 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return ExitError
 	}
 	if err := files.WriteAtomic(opts.output, data); err != nil {
-		fprintln(stderr, "incrmit:", err)
+		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", opts.output, err))
 		return classify(err)
 	}
 

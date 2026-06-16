@@ -331,6 +331,113 @@ func TestDiscoverBadFlag(t *testing.T) {
 	}
 }
 
+func TestBumpFileDoesNotExist(t *testing.T) {
+	dir := t.TempDir()
+	code, _, stderr := runMain(t, "", "--file", filepath.Join(dir, "missing"))
+	if code != ExitError {
+		t.Errorf("exit = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr, "file does not exist") {
+		t.Errorf("stderr = %q, want a clear missing-file message", stderr)
+	}
+}
+
+func TestBumpUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: file permissions are not enforced")
+	}
+	dir := project(t, "", map[string]string{"VERSION": "1.2.3\n"})
+	target := filepath.Join(dir, "VERSION")
+	if err := os.Chmod(target, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(target, 0o644) })
+
+	code, _, stderr := runMain(t, "", "--file", target)
+	if code != ExitError {
+		t.Errorf("exit = %d, want %d (stderr %q)", code, ExitError, stderr)
+	}
+	if !strings.Contains(stderr, "permission denied") {
+		t.Errorf("stderr = %q, want a clear permission message", stderr)
+	}
+}
+
+func TestBumpWriteToReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions are not enforced")
+	}
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "ro")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(sub, "VERSION")
+	if err := os.WriteFile(target, []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make the directory read-only so the atomic temp-file create fails.
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+
+	code, _, stderr := runMain(t, "", "--file", target)
+	if code != ExitError {
+		t.Errorf("exit = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr, "writing") {
+		t.Errorf("stderr = %q, want a clear write-error message", stderr)
+	}
+	// The original file must be untouched.
+	got, _ := os.ReadFile(target)
+	if string(got) != "1.2.3\n" {
+		t.Errorf("file changed despite write failure: %q", got)
+	}
+}
+
+func TestHelpExitsZero(t *testing.T) {
+	for _, args := range [][]string{{"-h"}, {"--help"}, {"discover", "-h"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, _, stderr := runMain(t, "", args...)
+			if code != ExitOK {
+				t.Errorf("exit = %d, want %d", code, ExitOK)
+			}
+			if !strings.Contains(stderr, "usage:") {
+				t.Errorf("stderr = %q, want usage text", stderr)
+			}
+		})
+	}
+}
+
+func TestExitCodeMatrix(t *testing.T) {
+	noVerDir := project(t, "", map[string]string{"F": "no version\n"})
+	ambDir := project(t, "", map[string]string{"F": "a=1.2.3 b=4.5.6\n"})
+	okDir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
+	missingCfgDir := t.TempDir()
+
+	tests := []struct {
+		name string
+		dir  string
+		args []string
+		want int
+	}{
+		{"success", okDir, nil, ExitOK},
+		{"usage-bad-flag", "", []string{"--nope"}, ExitUsage},
+		{"usage-stray-arg", "", []string{"surprise"}, ExitUsage},
+		{"generic-missing-config", missingCfgDir, nil, ExitError},
+		{"noversion", "", []string{"--file", filepath.Join(noVerDir, "F")}, ExitNoVersion},
+		{"ambiguous", "", []string{"--file", filepath.Join(ambDir, "F")}, ExitNoVersion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, _ := runMain(t, tt.dir, tt.args...)
+			if code != tt.want {
+				t.Errorf("exit = %d, want %d", code, tt.want)
+			}
+		})
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
 	for _, arg := range []string{"version", "--version", "-version", "-v"} {
 		t.Run(arg, func(t *testing.T) {

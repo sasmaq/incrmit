@@ -70,10 +70,10 @@ completed.
 
 ## Milestone 8 — Error Handling and UX
 
-- [ ] Friendly message when the config is missing (suggest `discover`).
-- [ ] Handle "no version found" and ambiguous matches.
-- [ ] Surface filesystem and permission errors clearly.
-- [ ] Implement exit codes (`0`, `1`, `2`, `3`) per the design doc.
+- [x] Friendly message when the config is missing (suggest `discover`).
+- [x] Handle "no version found" and ambiguous matches.
+- [x] Surface filesystem and permission errors clearly.
+- [x] Implement exit codes (`0`, `1`, `2`, `3`) per the design doc.
 
 ## Milestone 9 — Testing
 
