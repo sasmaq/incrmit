@@ -32,6 +32,18 @@ pick the archive for your OS and architecture (for example
 `PATH`. Each release includes a `checksums.txt` with SHA-256 hashes of the
 archives.
 
+On Debian or Ubuntu, install from the `.deb` attached to the release:
+
+```bash
+sudo dpkg -i incrmit_0.1.4_amd64.deb   # or incrmit_0.1.4_arm64.deb on arm64
+man incrmit
+```
+
+Build a `.deb` locally with `make deb` (requires
+[nFPM](https://nfpm.goreleaser.com/):
+`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0`).
+Packages are written to `dist/` as `incrmit_<version>_<arch>.deb`.
+
 Pushing a `vX.Y.Z` tag to `main` triggers the release workflow, which runs the
 same fmt/vet/test/lint gates as CI, builds cross-compiled archives for Linux,
 macOS, and Windows (`amd64` and `arm64`), and publishes a GitHub Release with

@@ -53,6 +53,9 @@ jobs:
           go-version: stable
           cache: true
 
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
+
       - name: Resolve version from tag
         id: version
         run: |
@@ -83,6 +86,7 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
             dist/checksums.txt
           fail_on_unmatched_files: true
           generate_release_notes: false

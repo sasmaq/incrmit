@@ -142,31 +142,31 @@ completed.
       optionally, depends on the existing build/test/lint CI passing.
 - [x] Document the tag-to-release flow in `README.md` / `doc/DEVELOPMENT.md`
       (push a `vX.Y.Z` tag → CI publishes the release).
-- [ ] Verify end-to-end on a test tag (e.g. `v0.0.0-test`) and confirm
+- [x] Verify end-to-end on a test tag (e.g. `v0.0.0-test`) and confirm
       `go install github.com/sasmaq/incrmit@vX.Y.Z` resolves the release.
 
 ## Milestone 14 — Debian Package (.deb)
 
-- [ ] Choose a packaging approach (e.g. `nfpm`, a `debian/` tree with
+- [x] Choose a packaging approach (e.g. `nfpm`, a `debian/` tree with
       `debhelper`, or a `dpkg-deb`-based Makefile recipe) and document the
       rationale in `doc/DEVELOPMENT.md`.
-- [ ] Add packaging metadata: package name (`incrmit`), version (from `VERSION`),
+- [x] Add packaging metadata: package name (`incrmit`), version (from `VERSION`),
       architecture (`amd64`, `arm64`), maintainer, short and long description,
       homepage, and license.
-- [ ] Install the binary to `/usr/bin/incrmit` with mode `0755`; no bundled
+- [x] Install the binary to `/usr/bin/incrmit` with mode `0755`; no bundled
       runtime dependencies beyond what a static Go binary needs.
-- [ ] Build `.deb` artifacts for Linux `amd64` and `arm64`, reusing the same
+- [x] Build `.deb` artifacts for Linux `amd64` and `arm64`, reusing the same
       `-ldflags` version stamping as `make build` / `make dist`.
-- [ ] Add a `make deb` (or `make package-deb`) target that writes packages under
+- [x] Add a `make deb` (or `make package-deb`) target that writes packages under
       `dist/` alongside the existing release archives.
-- [ ] Include a man page (`incrmit(1)`) in the package and install it under
+- [x] Include a man page (`incrmit(1)`) in the package and install it under
       `/usr/share/man/man1/` (source can live in `doc/man/incrmit.1`).
-- [ ] Verify locally: `sudo dpkg -i dist/incrmit_*.deb`, then `incrmit version`
+- [x] Verify locally: `sudo dpkg -i dist/incrmit_*.deb`, then `incrmit version`
       and a smoke bump with `--dry-run`; confirm `dpkg -r incrmit` removes the
       binary cleanly.
-- [ ] Attach the `.deb` files to GitHub Releases (extend the Milestone 13
+- [x] Attach the `.deb` files to GitHub Releases (extend the Milestone 13
       release workflow or document a manual upload step until CI is wired).
-- [ ] Document Debian install and build instructions in `README.md` (e.g.
+- [x] Document Debian install and build instructions in `README.md` (e.g.
       `sudo dpkg -i incrmit_<version>_amd64.deb` and `make deb`).
 
 ## Milestone 15 — RPM Package (.rpm)

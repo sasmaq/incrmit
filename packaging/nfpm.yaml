@@ -1,0 +1,30 @@
+# nFPM configuration for Debian (.deb) packages.
+# See doc/DEVELOPMENT.md for rationale. VERSION, DEB_ARCH, and DIST are set by
+# `make deb` (defaults: VERSION from Makefile, DEB_ARCH per loop, DIST=dist).
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/static/schema.json
+
+name: incrmit
+arch: ${DEB_ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Saleh Almaqwashy <37103211+sasmaq@users.noreply.github.com>
+description: |
+  incrmit bumps semantic versions across one or more files.
+  .
+  incrmit reads a TOML configuration listing target files, finds
+  MAJOR.MINOR.PATCH tokens, increments major/minor/patch, and writes changes
+  back atomically. Suitable for release scripts and CI pipelines.
+homepage: https://github.com/sasmaq/incrmit
+license: MIT
+contents:
+  - src: ${DIST}/incrmit-${VERSION}-linux-${DEB_ARCH}
+    dst: /usr/bin/incrmit
+    expand: true
+    file_info:
+      mode: 0755
+  - src: doc/man/incrmit.1
+    dst: /usr/share/man/man1/incrmit.1
+    file_info:
+      mode: 0644

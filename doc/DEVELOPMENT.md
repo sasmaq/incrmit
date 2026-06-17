@@ -296,8 +296,41 @@ incrmit/
   `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, and
   `windows/amd64` into `dist/`, named `incrmit-<version>-<os>-<arch>`.
 - Release packages: `make release VERSION=X.Y.Z` runs `dist`, then creates
-  per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) and
-  `dist/checksums.txt` (SHA-256 of each archive).
+  per-platform archives (`.tar.gz` on Unix, `.zip` on Windows), Linux `.deb`
+  packages for `amd64` and `arm64`, and `dist/checksums.txt` (SHA-256 of each
+  artifact).
+- Debian packages: `make deb VERSION=X.Y.Z` builds `incrmit_<version>_<arch>.deb`
+  files under `dist/` using [nFPM](https://nfpm.goreleaser.com/) and
+  `packaging/nfpm.yaml`. Requires `nfpm` on `PATH` (install with
+  `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0`). The package
+  installs `/usr/bin/incrmit` and `/usr/share/man/man1/incrmit.1`.
+
+### Debian packaging (`.deb`)
+
+**Approach:** [nFPM](https://nfpm.goreleaser.com/) with `packaging/nfpm.yaml`.
+
+**Rationale:** A full `debian/` tree with `debhelper` is aimed at distro
+maintainers and adds Ruby/shell packaging overhead for a single static binary.
+A raw `dpkg-deb` Makefile recipe is lightweight but duplicates metadata and
+file-layout logic we will need again for RPM (Milestone 15). nFPM is a
+zero-dependency Go tool that reads one YAML file, cross-builds `.deb` (and
+later `.rpm`) from any host, and matches how many Go projects ship Linux
+packages.
+
+**Layout:** The `.deb` installs the version-stamped Linux binary to
+`/usr/bin/incrmit` (mode `0755`) and the man page from `doc/man/incrmit.1` to
+`/usr/share/man/man1/incrmit.1`. No runtime dependencies beyond the static Go
+binary.
+
+**Local verification:**
+
+```bash
+make deb VERSION=X.Y.Z
+sudo dpkg -i dist/incrmit_X.Y.Z_amd64.deb   # or _arm64.deb on arm64
+incrmit version
+incrmit --dry-run
+sudo dpkg -r incrmit
+```
 
 ### Automated release (CI)
 
@@ -309,8 +342,8 @@ pushed (not on branch pushes). It:
    passes it to `make release VERSION=…`.
 3. Extracts the matching `CHANGELOG.md` section with `scripts/changelog-notes.sh`.
 4. Creates a GitHub Release via `softprops/action-gh-release`, uploading the
-   archives and `checksums.txt`. The workflow uses the built-in `GITHUB_TOKEN`
-   with `contents: write` (no extra secrets).
+   archives, `.deb` packages, and `checksums.txt`. The workflow uses the built-in
+   `GITHUB_TOKEN` with `contents: write` (no extra secrets).
 
 Release checklist:
 

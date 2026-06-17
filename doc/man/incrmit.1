@@ -1,0 +1,130 @@
+.\" incrmit man page. Source: doc/man/incrmit.1
+.Dd June 18, 2026
+.Dt INCRMIT 1
+.Os
+.Sh NAME
+.Nm incrmit
+.Nd increment semantic versions across one or more files
+.Sh SYNOPSIS
+.Nm incrmit
+.Op Fl c Ar config
+.Op Fl f Ar file
+.Op Fl M | m | p
+.Op Fl d
+.Pp
+.Nm incrmit
+.Cm discover
+.Op Fl P Ar path
+.Op Fl o Ar output
+.Op Fl d
+.Pp
+.Nm incrmit
+.Cm version
+.Pp
+.Nm incrmit
+.Cm help
+.Op Ar command
+.Sh DESCRIPTION
+.Nm
+reads a TOML configuration file that lists one or more target files containing a
+semantic version
+.Pq MAJOR.MINOR.PATCH ,
+locates the version token in each file, increments the major, minor, or patch
+component, and writes the new value back atomically.
+Only the version token is changed; surrounding file contents and permissions
+are preserved.
+.Pp
+When no subcommand is given, the default action is to bump versions in the
+configured files.
+.Sh COMMANDS
+.Bl -tag -width Ds
+.It Cm bump
+Default command.
+Bump the semantic version in configured files.
+.It Cm discover
+Scan a directory tree for version-bearing files and write
+.Pa incrmit.toml .
+.It Cm version
+Print the
+.Nm
+tool version.
+The
+.Fl version ,
+.Fl v ,
+and
+.Fl -version
+flags are aliases.
+.It Cm help
+Show an overview, or detailed help for
+.Cm bump ,
+.Cm discover ,
+.Cm version ,
+or
+.Cm help .
+.El
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl c , Fl -config Ar path
+Path to the TOML config file.
+Default:
+.Pa incrmit.toml .
+.It Fl f , Fl -file Ar path
+Bump the version in a single file, skipping the config.
+.It Fl M , Fl -major
+Bump the major version (resets minor and patch).
+.It Fl m , Fl -minor
+Bump the minor version (resets patch).
+.It Fl p , Fl -patch
+Bump the patch version.
+This is the default when no major/minor flag is given.
+.It Fl d , Fl -dry-run
+Print the new version without writing files.
+.It Fl P , Fl -path Ar dir
+.Dq discover only.
+Root directory to scan.
+Default: current directory.
+.It Fl o , Fl -output Ar path
+.Dq discover only.
+Path for the generated config.
+Default:
+.Pa incrmit.toml .
+.It Fl h , Fl -help
+Show help.
+For the default command and
+.Cm discover ,
+explicit help is printed to stdout; usage errors print help to stderr.
+.El
+.Sh FILES
+.Bl -tag -width Pa
+.It Pa incrmit.toml
+Default configuration listing target files and optional pinned version values.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It 0
+Success.
+.It 1
+Generic runtime error (for example missing config or filesystem error).
+.It 2
+Invalid arguments or flags.
+.It 3
+No version found, or an ambiguous or unparseable version.
+.El
+.Sh EXAMPLES
+Bump the patch version in all configured files:
+.Pp
+.Dl incrmit
+.Pp
+Preview a minor bump without writing:
+.Pp
+.Dl incrmit -m -d
+.Pp
+Generate a config from the current tree:
+.Pp
+.Dl incrmit discover
+.Pp
+Show tool version:
+.Pp
+.Dl incrmit version
+.Sh SEE ALSO
+.Lk https://github.com/sasmaq/incrmit
