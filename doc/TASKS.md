@@ -144,3 +144,77 @@ completed.
       (push a `vX.Y.Z` tag → CI publishes the release).
 - [ ] Verify end-to-end on a test tag (e.g. `v0.0.0-test`) and confirm
       `go install github.com/sasmaq/incrmit@vX.Y.Z` resolves the release.
+
+## Milestone 14 — Debian Package (.deb)
+
+- [ ] Choose a packaging approach (e.g. `nfpm`, a `debian/` tree with
+      `debhelper`, or a `dpkg-deb`-based Makefile recipe) and document the
+      rationale in `doc/DEVELOPMENT.md`.
+- [ ] Add packaging metadata: package name (`incrmit`), version (from `VERSION`),
+      architecture (`amd64`, `arm64`), maintainer, short and long description,
+      homepage, and license.
+- [ ] Install the binary to `/usr/bin/incrmit` with mode `0755`; no bundled
+      runtime dependencies beyond what a static Go binary needs.
+- [ ] Build `.deb` artifacts for Linux `amd64` and `arm64`, reusing the same
+      `-ldflags` version stamping as `make build` / `make dist`.
+- [ ] Add a `make deb` (or `make package-deb`) target that writes packages under
+      `dist/` alongside the existing release archives.
+- [ ] Include a man page (`incrmit(1)`) in the package and install it under
+      `/usr/share/man/man1/` (source can live in `doc/man/incrmit.1`).
+- [ ] Verify locally: `sudo dpkg -i dist/incrmit_*.deb`, then `incrmit version`
+      and a smoke bump with `--dry-run`; confirm `dpkg -r incrmit` removes the
+      binary cleanly.
+- [ ] Attach the `.deb` files to GitHub Releases (extend the Milestone 13
+      release workflow or document a manual upload step until CI is wired).
+- [ ] Document Debian install and build instructions in `README.md` (e.g.
+      `sudo dpkg -i incrmit_<version>_amd64.deb` and `make deb`).
+
+## Milestone 15 — RPM Package (.rpm)
+
+- [ ] Choose a packaging approach (e.g. `nfpm`, an `incrmit.spec` for
+      `rpmbuild`, or `fpm`) and document the rationale in `doc/DEVELOPMENT.md`
+      (reuse the same tool as `.deb` when practical).
+- [ ] Add RPM metadata: package name (`incrmit`), version (from `VERSION`),
+      release suffix (e.g. `1`), target architectures (`x86_64`, `aarch64`),
+      summary, description, license, URL, and packager/maintainer fields.
+- [ ] Install the binary to `/usr/bin/incrmit` with mode `0755`; no bundled
+      runtime dependencies beyond what a static Go binary needs.
+- [ ] Build `.rpm` artifacts for Linux `x86_64` and `aarch64`, reusing the same
+      `-ldflags` version stamping as `make build` / `make dist`.
+- [ ] Add a `make rpm` (or `make package-rpm`) target that writes packages under
+      `dist/` alongside the existing release archives.
+- [ ] Include the shared man page (`incrmit(1)`) under `/usr/share/man/man1/`.
+- [ ] Verify locally: `sudo rpm -i dist/incrmit-*.rpm` (or `sudo dnf install
+      ./dist/incrmit-*.rpm`), then `incrmit version` and a smoke bump with
+      `--dry-run`; confirm `sudo rpm -e incrmit` removes the binary cleanly.
+- [ ] Attach the `.rpm` files to GitHub Releases (extend the Milestone 13
+      release workflow or document a manual upload step until CI is wired).
+- [ ] Document RPM install and build instructions in `README.md` (e.g.
+      `sudo rpm -i incrmit-<version>-1.x86_64.rpm` and `make rpm`).
+
+## Milestone 16 — macOS Package (.pkg)
+
+- [ ] Choose a packaging approach (e.g. `pkgbuild` / `productbuild`, or a helper
+      such as `nfpm` or `fpm`) and document the rationale in
+      `doc/DEVELOPMENT.md`.
+- [ ] Add package metadata: identifier (e.g. `com.github.sasmaq.incrmit`),
+      version (from `VERSION`), title, description, and install location
+      (`/usr/local/bin/incrmit`).
+- [ ] Build `.pkg` artifacts for macOS `amd64` and `arm64` (or a single
+      universal binary via `lipo`), reusing the same `-ldflags` version stamping
+      as `make build` / `make dist`.
+- [ ] Add a `make pkg` (or `make package-pkg`) target that writes packages under
+      `dist/` alongside the existing release archives.
+- [ ] Include the shared man page (`incrmit(1)`) under
+      `/usr/local/share/man/man1/`.
+- [ ] Verify locally: `sudo installer -pkg dist/incrmit-*.pkg -target /`, then
+      `incrmit version` and a smoke bump with `--dry-run`; confirm uninstall
+      removes the binary (document the removal steps if no uninstaller is
+      shipped).
+- [ ] Attach the `.pkg` files to GitHub Releases (extend the Milestone 13
+      release workflow or document a manual upload step until CI is wired).
+- [ ] Document macOS install and build instructions in `README.md` (e.g.
+      `sudo installer -pkg incrmit-<version>-darwin-arm64.pkg -target /` and
+      `make pkg`).
+- [ ] Optional: codesign and notarize the `.pkg` (and binary) with Apple
+      Developer ID credentials to reduce Gatekeeper warnings on distribution.
