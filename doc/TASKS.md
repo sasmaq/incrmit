@@ -171,25 +171,25 @@ completed.
 
 ## Milestone 15 — RPM Package (.rpm)
 
-- [ ] Choose a packaging approach (e.g. `nfpm`, an `incrmit.spec` for
+- [x] Choose a packaging approach (e.g. `nfpm`, an `incrmit.spec` for
       `rpmbuild`, or `fpm`) and document the rationale in `doc/DEVELOPMENT.md`
       (reuse the same tool as `.deb` when practical).
-- [ ] Add RPM metadata: package name (`incrmit`), version (from `VERSION`),
+- [x] Add RPM metadata: package name (`incrmit`), version (from `VERSION`),
       release suffix (e.g. `1`), target architectures (`x86_64`, `aarch64`),
       summary, description, license, URL, and packager/maintainer fields.
-- [ ] Install the binary to `/usr/bin/incrmit` with mode `0755`; no bundled
+- [x] Install the binary to `/usr/bin/incrmit` with mode `0755`; no bundled
       runtime dependencies beyond what a static Go binary needs.
-- [ ] Build `.rpm` artifacts for Linux `x86_64` and `aarch64`, reusing the same
+- [x] Build `.rpm` artifacts for Linux `x86_64` and `aarch64`, reusing the same
       `-ldflags` version stamping as `make build` / `make dist`.
-- [ ] Add a `make rpm` (or `make package-rpm`) target that writes packages under
+- [x] Add a `make rpm` (or `make package-rpm`) target that writes packages under
       `dist/` alongside the existing release archives.
-- [ ] Include the shared man page (`incrmit(1)`) under `/usr/share/man/man1/`.
-- [ ] Verify locally: `sudo rpm -i dist/incrmit-*.rpm` (or `sudo dnf install
+- [x] Include the shared man page (`incrmit(1)`) under `/usr/share/man/man1/`.
+- [x] Verify locally: `sudo rpm -i dist/incrmit-*.rpm` (or `sudo dnf install
       ./dist/incrmit-*.rpm`), then `incrmit version` and a smoke bump with
       `--dry-run`; confirm `sudo rpm -e incrmit` removes the binary cleanly.
-- [ ] Attach the `.rpm` files to GitHub Releases (extend the Milestone 13
+- [x] Attach the `.rpm` files to GitHub Releases (extend the Milestone 13
       release workflow or document a manual upload step until CI is wired).
-- [ ] Document RPM install and build instructions in `README.md` (e.g.
+- [x] Document RPM install and build instructions in `README.md` (e.g.
       `sudo rpm -i incrmit-<version>-1.x86_64.rpm` and `make rpm`).
 
 ## Milestone 16 — macOS Package (.pkg)

@@ -35,14 +35,26 @@ archives.
 On Debian or Ubuntu, install from the `.deb` attached to the release:
 
 ```bash
-sudo dpkg -i incrmit_0.1.4_amd64.deb   # or incrmit_0.1.4_arm64.deb on arm64
+sudo dpkg -i incrmit_0.1.4-1_amd64.deb   # or incrmit_0.1.4-1_arm64.deb on arm64
 man incrmit
 ```
 
 Build a `.deb` locally with `make deb` (requires
 [nFPM](https://nfpm.goreleaser.com/):
 `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0`).
-Packages are written to `dist/` as `incrmit_<version>_<arch>.deb`.
+Packages are written to `dist/` as `incrmit_<version>-1_<arch>.deb`.
+
+On Fedora, RHEL, or other RPM-based systems, install from the `.rpm` attached
+to the release:
+
+```bash
+sudo rpm -i incrmit-0.1.4-1.x86_64.rpm   # or incrmit-0.1.4-1.aarch64.rpm on arm64
+# or: sudo dnf install ./incrmit-0.1.4-1.x86_64.rpm
+man incrmit
+```
+
+Build an `.rpm` locally with `make rpm` (same nFPM prerequisite as `make deb`).
+Packages are written to `dist/` as `incrmit-<version>-1.<arch>.rpm`.
 
 Pushing a `vX.Y.Z` tag to `main` triggers the release workflow, which runs the
 same fmt/vet/test/lint gates as CI, builds cross-compiled archives for Linux,

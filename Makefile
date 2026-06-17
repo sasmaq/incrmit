@@ -10,7 +10,7 @@ LINUX_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries deb checksums release test cover vet fmt fmt-check lint check clean
+.PHONY: build dist dist-archives linux-binaries deb rpm checksums release test cover vet fmt fmt-check lint check clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -44,7 +44,7 @@ dist-archives: dist
 			echo "archive $(DIST)/$$archive.tar.gz"; \
 		fi; \
 	done
-# linux-binaries builds stamped Linux binaries when missing from dist/ (used by deb).
+# linux-binaries builds stamped Linux binaries when missing from dist/ (used by deb/rpm).
 linux-binaries:
 	@mkdir -p $(DIST)
 	@for arch in $(LINUX_ARCHES); do \
@@ -64,15 +64,35 @@ deb: linux-binaries
 	}
 	@for arch in $(LINUX_ARCHES); do \
 		echo "packaging deb for $$arch"; \
-		DIST=$(DIST) VERSION=$(VERSION) DEB_ARCH=$$arch \
+		DIST=$(DIST) VERSION=$(VERSION) LINUX_ARCH=$$arch PKG_ARCH=$$arch \
 			$(NFPM) pkg -f $(NFPM_CONFIG) --packager deb --target $(DIST) || exit 1; \
 	done
 	@echo "debs written to $(DIST)/"
 
+# rpm packages Linux x86_64 and aarch64 binaries with nfpm (see packaging/nfpm.yaml).
+rpm: linux-binaries
+	@command -v $(NFPM) >/dev/null 2>&1 || { \
+		echo "nfpm not found; install with: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0" >&2; \
+		exit 1; \
+	}
+	@for arch in $(LINUX_ARCHES); do \
+		case $$arch in \
+			amd64) pkg_arch=x86_64 ;; \
+			arm64) pkg_arch=aarch64 ;; \
+			*) echo "unsupported arch $$arch" >&2; exit 1 ;; \
+		esac; \
+		echo "packaging rpm for $$pkg_arch"; \
+		DIST=$(DIST) VERSION=$(VERSION) LINUX_ARCH=$$arch PKG_ARCH=$$pkg_arch \
+			$(NFPM) pkg -f $(NFPM_CONFIG) --packager rpm --target $(DIST) || exit 1; \
+	done
+	@echo "rpms written to $(DIST)/"
+
 checksums:
 	@cd $(DIST) && { \
 		rm -f checksums.txt; \
-		for f in $(BINARY)-$(VERSION)-*.tar.gz $(BINARY)-$(VERSION)-*.zip $(BINARY)_$(VERSION)_*.deb; do \
+		for f in $(BINARY)-$(VERSION)-*.tar.gz $(BINARY)-$(VERSION)-*.zip \
+			$(BINARY)_$(VERSION)-*.deb $(BINARY)_$(VERSION)_*.deb \
+			$(BINARY)-$(VERSION)-*.rpm; do \
 			[ -f "$$f" ] || continue; \
 			if command -v sha256sum >/dev/null 2>&1; then \
 				sha256sum "$$f"; \
@@ -83,8 +103,8 @@ checksums:
 	}
 	@echo "checksums written to $(DIST)/checksums.txt"
 
-# release builds cross-compiled binaries, archives, .deb packages, and checksums for CI.
-release: dist-archives deb checksums
+# release builds cross-compiled binaries, archives, Linux packages, and checksums for CI.
+release: dist-archives deb rpm checksums
 
 test:
 	go test ./...

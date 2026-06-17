@@ -297,13 +297,14 @@ incrmit/
   `windows/amd64` into `dist/`, named `incrmit-<version>-<os>-<arch>`.
 - Release packages: `make release VERSION=X.Y.Z` runs `dist`, then creates
   per-platform archives (`.tar.gz` on Unix, `.zip` on Windows), Linux `.deb`
-  packages for `amd64` and `arm64`, and `dist/checksums.txt` (SHA-256 of each
-  artifact).
-- Debian packages: `make deb VERSION=X.Y.Z` builds `incrmit_<version>_<arch>.deb`
+  and `.rpm` packages, and `dist/checksums.txt` (SHA-256 of each artifact).
+- Debian packages: `make deb VERSION=X.Y.Z` builds `incrmit_<version>-1_<arch>.deb`
   files under `dist/` using [nFPM](https://nfpm.goreleaser.com/) and
   `packaging/nfpm.yaml`. Requires `nfpm` on `PATH` (install with
   `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0`). The package
   installs `/usr/bin/incrmit` and `/usr/share/man/man1/incrmit.1`.
+- RPM packages: `make rpm VERSION=X.Y.Z` builds `incrmit-<version>-1.<arch>.rpm`
+  files (`x86_64`, `aarch64`) under `dist/` using the same nFPM config.
 
 ### Debian packaging (`.deb`)
 
@@ -312,10 +313,9 @@ incrmit/
 **Rationale:** A full `debian/` tree with `debhelper` is aimed at distro
 maintainers and adds Ruby/shell packaging overhead for a single static binary.
 A raw `dpkg-deb` Makefile recipe is lightweight but duplicates metadata and
-file-layout logic we will need again for RPM (Milestone 15). nFPM is a
-zero-dependency Go tool that reads one YAML file, cross-builds `.deb` (and
-later `.rpm`) from any host, and matches how many Go projects ship Linux
-packages.
+file-layout logic across formats. nFPM is a zero-dependency Go tool that reads
+one YAML file, cross-builds `.deb` and `.rpm` from any host, and matches how
+many Go projects ship Linux packages.
 
 **Layout:** The `.deb` installs the version-stamped Linux binary to
 `/usr/bin/incrmit` (mode `0755`) and the man page from `doc/man/incrmit.1` to
@@ -326,10 +326,35 @@ binary.
 
 ```bash
 make deb VERSION=X.Y.Z
-sudo dpkg -i dist/incrmit_X.Y.Z_amd64.deb   # or _arm64.deb on arm64
+sudo dpkg -i dist/incrmit_X.Y.Z-1_amd64.deb   # or _arm64.deb on arm64
 incrmit version
 incrmit --dry-run
 sudo dpkg -r incrmit
+```
+
+### RPM packaging (`.rpm`)
+
+**Approach:** Same [nFPM](https://nfpm.goreleaser.com/) config as `.deb`
+(`packaging/nfpm.yaml`), with top-level `release: "1"` and RPM architecture
+names (`x86_64`, `aarch64`) mapped from the Go Linux builds (`amd64`, `arm64`).
+
+**Rationale:** An `incrmit.spec` plus `rpmbuild` is the traditional Fedora/RHEL
+path but adds spec-file and build-root ceremony for a single binary. Reusing nFPM
+keeps metadata, file layout, and the man page in one place alongside `.deb`.
+
+**Layout:** Same as `.deb` — `/usr/bin/incrmit` and
+`/usr/share/man/man1/incrmit.1`. Package files are named
+`incrmit-<version>-1.x86_64.rpm` and `incrmit-<version>-1.aarch64.rpm`.
+
+**Local verification:**
+
+```bash
+make rpm VERSION=X.Y.Z
+sudo rpm -i dist/incrmit-X.Y.Z-1.x86_64.rpm   # or .aarch64.rpm on arm64
+# or: sudo dnf install ./dist/incrmit-X.Y.Z-1.x86_64.rpm
+incrmit version
+incrmit --dry-run
+sudo rpm -e incrmit
 ```
 
 ### Automated release (CI)
@@ -342,8 +367,8 @@ pushed (not on branch pushes). It:
    passes it to `make release VERSION=…`.
 3. Extracts the matching `CHANGELOG.md` section with `scripts/changelog-notes.sh`.
 4. Creates a GitHub Release via `softprops/action-gh-release`, uploading the
-   archives, `.deb` packages, and `checksums.txt`. The workflow uses the built-in
-   `GITHUB_TOKEN` with `contents: write` (no extra secrets).
+   archives, `.deb` and `.rpm` packages, and `checksums.txt`. The workflow uses
+   the built-in `GITHUB_TOKEN` with `contents: write` (no extra secrets).
 
 Release checklist:
 
