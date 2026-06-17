@@ -28,7 +28,8 @@ cd incrmit
 go build -o incrmit .
 ```
 
-Or use the `Makefile`, which stamps the binary with the version (from the baked-in version):
+Or use the `Makefile`, which stamps the binary with the version via `-ldflags`
+(recommended over a plain `go build` when producing release binaries):
 
 ```bash
 make build
@@ -53,13 +54,13 @@ to a different path.
   version = "0.1.0"
 
 [[files]]
-  path = "internal/version/version.go"
+  path = "internal/buildinfo/buildinfo.go"
   version = "0.1.0"
 ```
 
 Each `[[files]]` entry describes one file to update. Every listed file is parsed and bumped together so their versions stay in sync.
 
-An entry also record a `version`, which pins the exact value to bump (useful for files that contain several version-like strings). After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's `version` reflects the new value, keeping the config in step with the files it manages.
+An entry may also record a `version`, which pins the exact value to bump (useful for files that contain several version-like strings). When `version` is omitted, `incrmit` scans the file for the first `MAJOR.MINOR.PATCH` token. After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's `version` reflects the new value, keeping the config in step with the files it manages.
 
 A `--dry-run` previews the change and writes nothing — neither the targets nor the config.
 
@@ -67,11 +68,9 @@ A `--dry-run` previews the change and writes nothing — neither the targets nor
 
 Rather than writing the config by hand, run the `discover` command to scan the project for files that contain a semantic version string and generate an `incrmit.toml` for you.
 
-Discovery walks the directory tree and inspects the contents of every text file, recording the first `MAJOR.MINOR.PATCH` token it finds in each. It is not limited to specific file names or types — any file
-(`VERSION`, `package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain text, etc.) is matched the same way.
+Discovery walks the directory tree and inspects the contents of every text file, recording the first `MAJOR.MINOR.PATCH` token it finds in each. It is not limited to specific file names or types — any file (`VERSION`, `package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain text, etc.) is matched the same way.
 
-Binary files and common noise directories (`.git`, `node_modules`, `vendor`, build outputs) are skipped, as is the config file itself (`incrmit.toml` and the `--output` path), so it is never listed as a
-target.
+Binary files and common noise directories (`.git`, `node_modules`, `vendor`, build outputs) are skipped, as is the config file itself (`incrmit.toml` and the `--output` path), so it is never listed as a target.
 
 ```bash
 incrmit discover
@@ -111,7 +110,7 @@ incrmit discover --output release/incrmit.toml
 ## Version
 
 Print the version of the `incrmit` tool itself (not a target file's version)
-with the `version` subcommand or the `--version` / `-v` flag:
+with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 
 ```bash
 incrmit version
@@ -139,16 +138,9 @@ incrmit [flags]
 | `--patch`   | `-p`  | Bump the patch version                             | `true`         |
 | `--dry-run` | `-d`  | Print the new version without writing to the files | `false`        |
 
-## Exit codes
+When no `--major`, `--minor`, or `--patch` flag is given, a patch bump is applied. If more than one component flag is supplied, the highest wins (major > minor > patch).
 
-`incrmit` returns predictable exit codes so it can be used reliably in scripts and CI pipelines:
-
-| Code | Meaning                                                        |
-| ---- | -------------------------------------------------------------- |
-| 0    | Success.                                                       |
-| 1    | Generic runtime error (e.g. missing config, filesystem error). |
-| 2    | Invalid arguments or flags.                                    |
-| 3    | No version found, or an ambiguous/unparseable version.         |
+Using `--file` bypasses the config entirely: only that file is updated and `incrmit.toml` is not rewritten.
 
 ### Examples
 
@@ -204,3 +196,29 @@ Preview the change without writing it:
 incrmit --dry-run
 incrmit -d
 ```
+
+## Help
+
+Pass `-h` or `--help` to print usage for the default bump command or for
+`discover`:
+
+```bash
+incrmit -h
+incrmit discover --help
+```
+
+## Exit codes
+
+`incrmit` returns predictable exit codes so it can be used reliably in scripts and CI pipelines:
+
+| Code | Meaning                                                        |
+| ---- | -------------------------------------------------------------- |
+| 0    | Success.                                                       |
+| 1    | Generic runtime error (e.g. missing config, filesystem error). |
+| 2    | Invalid arguments or flags.                                    |
+| 3    | No version found, or an ambiguous/unparseable version.         |
+
+## Further reading
+
+- [CHANGELOG.md](CHANGELOG.md) — release history.
+- [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) — architecture, design, and release checklist.
