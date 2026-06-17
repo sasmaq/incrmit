@@ -127,20 +127,20 @@ completed.
 
 ## Milestone 13 — Automated Release (CI)
 
-- [ ] Add a `release` GitHub Actions workflow triggered on tag pushes matching
+- [x] Add a `release` GitHub Actions workflow triggered on tag pushes matching
       `v*` (`on: push: tags: ['v*']`).
-- [ ] Derive the version from the tag (`${GITHUB_REF_NAME}`) and pass it to
+- [x] Derive the version from the tag (`${GITHUB_REF_NAME}`) and pass it to
       `make dist VERSION=…` so binaries are stamped with the released version.
-- [ ] Cross-compile the release matrix (Linux, macOS, Windows; amd64 + arm64)
+- [x] Cross-compile the release matrix (Linux, macOS, Windows; amd64 + arm64)
       and produce per-platform archives plus a `checksums.txt` (SHA-256).
-- [ ] Create the GitHub Release for the tag and upload the built artifacts
+- [x] Create the GitHub Release for the tag and upload the built artifacts
       (e.g. `softprops/action-gh-release` or `gh release create`), using the
       matching `CHANGELOG.md` section as the release notes.
-- [ ] Grant the workflow `contents: write` permission and use the built-in
+- [x] Grant the workflow `contents: write` permission and use the built-in
       `GITHUB_TOKEN` (no extra secrets required).
-- [ ] Guard the release job so it only runs on tags (not branch pushes) and,
+- [x] Guard the release job so it only runs on tags (not branch pushes) and,
       optionally, depends on the existing build/test/lint CI passing.
-- [ ] Document the tag-to-release flow in `README.md` / `doc/DEVELOPMENT.md`
+- [x] Document the tag-to-release flow in `README.md` / `doc/DEVELOPMENT.md`
       (push a `vX.Y.Z` tag → CI publishes the release).
 - [ ] Verify end-to-end on a test tag (e.g. `v0.0.0-test`) and confirm
       `go install github.com/sasmaq/incrmit@vX.Y.Z` resolves the release.

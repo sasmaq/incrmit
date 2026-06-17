@@ -292,9 +292,25 @@ incrmit/
 - Build: `make build` (stamps the version via `-ldflags`) or `go build -o incrmit .`.
 - Test: `go test ./...` (or `make check` for fmt/vet/lint/coverage).
 - Lint: `go vet ./...` and `gofmt`/`golangci-lint`.
-- Cross-compile: `make dist` builds static binaries for
+- Cross-compile: `make dist VERSION=X.Y.Z` builds static binaries for
   `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, and
   `windows/amd64` into `dist/`, named `incrmit-<version>-<os>-<arch>`.
+- Release packages: `make release VERSION=X.Y.Z` runs `dist`, then creates
+  per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) and
+  `dist/checksums.txt` (SHA-256 of each archive).
+
+### Automated release (CI)
+
+The `.github/workflows/release.yml` workflow runs when a tag matching `v*` is
+pushed (not on branch pushes). It:
+
+1. Runs the same validation gates as CI (fmt, vet, test, coverage, lint).
+2. Derives the version from `${GITHUB_REF_NAME}` (strips the `v` prefix) and
+   passes it to `make release VERSION=…`.
+3. Extracts the matching `CHANGELOG.md` section with `scripts/changelog-notes.sh`.
+4. Creates a GitHub Release via `softprops/action-gh-release`, uploading the
+   archives and `checksums.txt`. The workflow uses the built-in `GITHUB_TOKEN`
+   with `contents: write` (no extra secrets).
 
 Release checklist:
 
@@ -302,11 +318,17 @@ Release checklist:
    `README.md`, `Makefile` fallback, `incrmit.toml`). These files are kept in
    sync by `incrmit` itself, so a `make build && ./incrmit --<component>` bump
    updates them together.
-2. Update `CHANGELOG.md` with the release section.
+2. Update `CHANGELOG.md` with a `## [X.Y.Z]` section (the release workflow
+   fails if this section is missing).
 3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-4. `make dist VERSION=X.Y.Z` and attach the `dist/` artifacts to the release.
+4. Wait for the release workflow to finish; it publishes the GitHub Release
+   automatically.
 5. Verify install: `go install github.com/sasmaq/incrmit@vX.Y.Z` then
    `incrmit version`.
+
+To smoke-test the pipeline before a real release, push a disposable tag such as
+`v0.0.0-test` (delete the tag and GitHub Release afterward). Confirm the
+workflow uploads the expected archives and that `go install` resolves the tag.
 
 ## 14. Future Work
 

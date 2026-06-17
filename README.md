@@ -20,6 +20,23 @@ A small command-line tool written in Go that parses a file, finds a version valu
 
 ## Installation
 
+Install a released version with Go (requires Go 1.26 or later):
+
+```bash
+go install github.com/sasmaq/incrmit@v0.1.4
+```
+
+Or download a pre-built binary from [GitHub Releases](https://github.com/sasmaq/incrmit/releases):
+pick the archive for your OS and architecture (for example
+`incrmit-0.1.4-linux-amd64.tar.gz`), extract it, and place the binary on your
+`PATH`. Each release includes a `checksums.txt` with SHA-256 hashes of the
+archives.
+
+Pushing a `vX.Y.Z` tag to `main` triggers the release workflow, which runs the
+same fmt/vet/test/lint gates as CI, builds cross-compiled archives for Linux,
+macOS, and Windows (`amd64` and `arm64`), and publishes a GitHub Release with
+the matching `CHANGELOG.md` section as the release notes.
+
 Build from source:
 
 ```bash
