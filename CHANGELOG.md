@@ -5,6 +5,31 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-06-18
+
+### Added
+
+- `help` subcommand (`incrmit help [command]`) with per-command help for `bump`,
+  `discover`, `version`, and `help`.
+- Centralized help text so `-h` / `--help` and `incrmit help` stay in sync across
+  all commands.
+- GitHub Actions release workflow triggered by pushing a `v*` tag: runs CI
+  gates, builds cross-compiled archives, and publishes a GitHub Release with
+  notes extracted from this changelog.
+- `make dist-archives` and `make release` targets that package per-platform
+  `.tar.gz` / `.zip` archives and a `checksums.txt` with SHA-256 hashes.
+- `scripts/changelog-notes.sh` to extract the matching section from
+  `CHANGELOG.md` for release notes.
+
+### Changed
+
+- Explicit `-h` / `--help` on `bump` and `discover` now prints help to stdout;
+  usage errors still print help to stderr.
+- Unknown subcommands are rejected with a clear error instead of being treated as
+  bump flags.
+- README and development docs updated for the help commands and tag-to-release
+  flow.
+
 ## [0.1.3] - 2026-06-17
 
 First public release.
@@ -33,4 +58,5 @@ First public release.
 - Cross-compiled release binaries for Linux, macOS, and Windows
   (`make dist`), and version stamping via `-ldflags` (`make build`).
 
+[0.1.4]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.3
