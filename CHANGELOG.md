@@ -5,6 +5,26 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-06-18
+
+### Added
+
+- Debian (`.deb`) packages for Linux `amd64` and `arm64`, built with
+  [nFPM](https://nfpm.goreleaser.com/) via `make deb` and `packaging/nfpm.yaml`.
+- RPM (`.rpm`) packages for Linux `x86_64` and `aarch64`, built with the same
+  nFPM config via `make rpm`.
+- `incrmit(1)` man page (`doc/man/incrmit.1`), installed under
+  `/usr/share/man/man1/` in both Linux package formats.
+- `make deb` and `make rpm` targets; `make release` now also produces Linux
+  packages and includes them in `dist/checksums.txt`.
+
+### Changed
+
+- Release workflow uploads `.deb` and `.rpm` artifacts alongside existing
+  archives.
+- README and development docs updated with Debian and RPM install and build
+  instructions.
+
 ## [0.1.4] - 2026-06-18
 
 ### Added
@@ -58,5 +78,6 @@ First public release.
 - Cross-compiled release binaries for Linux, macOS, and Windows
   (`make dist`), and version stamping via `-ldflags` (`make build`).
 
+[0.1.5]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.3

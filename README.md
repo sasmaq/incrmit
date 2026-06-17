@@ -2,7 +2,7 @@
 
 A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it (increment + commit).
 
-## Version: 0.1.4
+## Version: 0.1.5
 
 ## Overview
 
@@ -28,7 +28,7 @@ go install github.com/sasmaq/incrmit@v0.1.4
 
 Or download a pre-built binary from [GitHub Releases](https://github.com/sasmaq/incrmit/releases):
 pick the archive for your OS and architecture (for example
-`incrmit-0.1.4-linux-amd64.tar.gz`), extract it, and place the binary on your
+`incrmit-0.1.5-linux-amd64.tar.gz`), extract it, and place the binary on your
 `PATH`. Each release includes a `checksums.txt` with SHA-256 hashes of the
 archives.
 
@@ -48,8 +48,8 @@ On Fedora, RHEL, or other RPM-based systems, install from the `.rpm` attached
 to the release:
 
 ```bash
-sudo rpm -i incrmit-0.1.4-1.x86_64.rpm   # or incrmit-0.1.4-1.aarch64.rpm on arm64
-# or: sudo dnf install ./incrmit-0.1.4-1.x86_64.rpm
+sudo rpm -i incrmit-0.1.5-1.x86_64.rpm   # or incrmit-0.1.5-1.aarch64.rpm on arm64
+# or: sudo dnf install ./incrmit-0.1.5-1.x86_64.rpm
 man incrmit
 ```
 
@@ -157,7 +157,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.4
+# incrmit 0.1.5
 ```
 
 The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).
