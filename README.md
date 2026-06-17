@@ -20,48 +20,67 @@ A small command-line tool written in Go that parses a file, finds a version valu
 
 ## Installation
 
-Install a released version with Go (requires Go 1.26 or later):
+### Download from GitHub Releases
+
+Pre-built binaries and Linux packages are published on
+[GitHub Releases](https://github.com/sasmaq/incrmit/releases). Open the latest
+`vX.Y.Z` release and download the asset that matches your platform, or fetch one
+directly (replace `X.Y.Z` with the release version):
+
+| Platform | Asset |
+| -------- | ----- |
+| Linux amd64 | `incrmit-X.Y.Z-linux-amd64.tar.gz` or `incrmit_X.Y.Z-1_amd64.deb` |
+| Linux arm64 | `incrmit-X.Y.Z-linux-arm64.tar.gz` or `incrmit_X.Y.Z-1_arm64.deb` |
+| macOS amd64 | `incrmit-X.Y.Z-darwin-amd64.tar.gz` |
+| macOS arm64 | `incrmit-X.Y.Z-darwin-arm64.tar.gz` |
+| Windows amd64 | `incrmit-X.Y.Z-windows-amd64.zip` |
+| Fedora / RHEL x86_64 | `incrmit-X.Y.Z-1.x86_64.rpm` |
+| Fedora / RHEL aarch64 | `incrmit-X.Y.Z-1.aarch64.rpm` |
+
+Each release includes `checksums.txt` with SHA-256 hashes of every artifact.
+
+**Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.1.4
+VERSION=0.1.5
+curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
+tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
+sudo install -m 0755 incrmit /usr/local/bin/
 ```
 
-Or download a pre-built binary from [GitHub Releases](https://github.com/sasmaq/incrmit/releases):
-pick the archive for your OS and architecture (for example
-`incrmit-0.1.5-linux-amd64.tar.gz`), extract it, and place the binary on your
-`PATH`. Each release includes a `checksums.txt` with SHA-256 hashes of the
-archives.
-
-On Debian or Ubuntu, install from the `.deb` attached to the release:
+**Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-sudo dpkg -i incrmit_0.1.4-1_amd64.deb   # or incrmit_0.1.4-1_arm64.deb on arm64
+VERSION=0.1.5
+curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
+sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
 ```
 
-Build a `.deb` locally with `make deb` (requires
-[nFPM](https://nfpm.goreleaser.com/):
-`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0`).
-Packages are written to `dist/` as `incrmit_<version>-1_<arch>.deb`.
-
-On Fedora, RHEL, or other RPM-based systems, install from the `.rpm` attached
-to the release:
+**Fedora, RHEL, or other RPM-based systems** — download the `.rpm` from the
+release page, then install:
 
 ```bash
-sudo rpm -i incrmit-0.1.5-1.x86_64.rpm   # or incrmit-0.1.5-1.aarch64.rpm on arm64
-# or: sudo dnf install ./incrmit-0.1.5-1.x86_64.rpm
+VERSION=0.1.5
+curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
+sudo rpm -i "incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
+# or: sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"
 man incrmit
 ```
 
-Build an `.rpm` locally with `make rpm` (same nFPM prerequisite as `make deb`).
-Packages are written to `dist/` as `incrmit-<version>-1.<arch>.rpm`.
+To build `.deb` or `.rpm` packages locally instead of downloading them, see
+[doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm`; requires
+[nFPM](https://nfpm.goreleaser.com/)).
 
-Pushing a `vX.Y.Z` tag to `main` triggers the release workflow, which runs the
-same fmt/vet/test/lint gates as CI, builds cross-compiled archives for Linux,
-macOS, and Windows (`amd64` and `arm64`), and publishes a GitHub Release with
-the matching `CHANGELOG.md` section as the release notes.
+### Install with Go
 
-Build from source:
+Requires Go 1.26 or later:
+
+```bash
+go install github.com/sasmaq/incrmit@v0.1.5
+```
+
+### Build from source
 
 ```bash
 git clone https://github.com/sasmaq/incrmit.git
