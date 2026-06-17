@@ -106,23 +106,23 @@ completed.
 
 ## Milestone 12 — Help Command
 
-- [ ] Add a `help` subcommand that prints a top-level overview (tool name,
+- [x] Add a `help` subcommand that prints a top-level overview (tool name,
       one-line description, and a list of commands: default bump, `discover`,
       `version`, and `help`).
-- [ ] Support command-specific help: `incrmit help discover`, `incrmit help
+- [x] Support command-specific help: `incrmit help discover`, `incrmit help
       version`, and `incrmit help` (or `incrmit help bump`) for the default
       bump flags — reusing the same text as each command's `-h` / `--help`
       output.
-- [ ] Route `-h` / `--help` at the top level (with no subcommand) to the same
+- [x] Route `-h` / `--help` at the top level (with no subcommand) to the same
       overview as `incrmit help` (exit code `0`).
-- [ ] Handle unknown subcommands with a clear error and a hint to run
+- [x] Handle unknown subcommands with a clear error and a hint to run
       `incrmit help` (exit code `2`).
-- [ ] Centralize usage/help text in one place so bump, discover, version, and
+- [x] Centralize usage/help text in one place so bump, discover, version, and
       `help` stay in sync (avoid duplicated `fs.Usage` strings).
-- [ ] Tests for `help`, `help <command>`, top-level `-h` / `--help`, and
+- [x] Tests for `help`, `help <command>`, top-level `-h` / `--help`, and
       unknown-command messaging (assert output content and exit code `0` or
       `2` as appropriate).
-- [ ] Document the `help` subcommand and top-level `-h` / `--help` in
+- [x] Document the `help` subcommand and top-level `-h` / `--help` in
       `README.md` and `doc/DEVELOPMENT.md`.
 
 ## Milestone 13 — Automated Release (CI)

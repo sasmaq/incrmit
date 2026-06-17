@@ -145,6 +145,41 @@ func TestE2EVersion(t *testing.T) {
 	}
 }
 
+func TestE2EHelp(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"help", []string{"help"}, "incrmit"},
+		{"top-level-h", []string{"-h"}, "usage:"},
+		{"top-level-help", []string{"--help"}, "usage:"},
+		{"help-discover", []string{"help", "discover"}, "Scan a directory tree"},
+		{"help-version", []string{"help", "version"}, "Print the incrmit tool version"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runBin(t, t.TempDir(), tt.args...)
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if !strings.Contains(stdout, tt.want) {
+				t.Errorf("stdout = %q, want to contain %q", stdout, tt.want)
+			}
+		})
+	}
+}
+
+func TestE2EUnknownCommand(t *testing.T) {
+	code, _, stderr := runBin(t, t.TempDir(), "bogus")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "unknown command") {
+		t.Errorf("stderr = %q, want unknown-command message", stderr)
+	}
+}
+
 func TestE2EExitCodes(t *testing.T) {
 	noVer := t.TempDir()
 	writeFile(t, noVer, "F", "no version here\n")

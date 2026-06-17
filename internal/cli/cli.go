@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sasmaq/incrmit/internal/buildinfo"
 	"github.com/sasmaq/incrmit/internal/config"
@@ -29,6 +30,10 @@ func fprintf(w io.Writer, format string, a ...any) {
 
 func fprintln(w io.Writer, a ...any) {
 	_, _ = fmt.Fprintln(w, a...)
+}
+
+func fprint(w io.Writer, s string) {
+	_, _ = io.WriteString(w, s)
 }
 
 // fsErrorMessage renders a clear, consistent message for a filesystem error,
@@ -52,7 +57,7 @@ const (
 	ExitError      = 1  // generic runtime error
 	ExitUsage      = 2  // invalid arguments or flags
 	ExitNoVersion  = 3  // no version found / parse failure
-	exitSilentFlag = -1 // flag package already printed help/usage
+	exitSilentFlag = -1 // help was printed; exit successfully without running
 )
 
 // Main is the entry point used by package main. It parses args, runs the
@@ -63,12 +68,45 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		switch args[0] {
 		case "discover":
 			return runDiscover(args[1:], stdout, stderr)
-		case "version", "--version", "-version", "-v":
+		case "version":
+			return runVersion(args[1:], stdout, stderr)
+		case "--version", "-version", "-v":
 			fprintln(stdout, buildinfo.String())
 			return ExitOK
+		case "help":
+			return runHelp(args[1:], stdout, stderr)
+		case "-h", "--help", "-help":
+			fprint(stdout, overviewHelp)
+			return ExitOK
+		}
+		// A non-flag first argument that is not a known subcommand is an
+		// unknown command. (Anything starting with "-" falls through to the
+		// default bump command so its flags are parsed there.)
+		if !strings.HasPrefix(args[0], "-") {
+			fprintf(stderr, "incrmit: unknown command %q\n", args[0])
+			fprintln(stderr, "Run 'incrmit help' to see available commands.")
+			return ExitUsage
 		}
 	}
 	return runBump(args, stdout, stderr)
+}
+
+// runVersion implements the `version` subcommand. It prints the tool version,
+// or this command's help when asked with -h / --help.
+func runVersion(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "-h", "--help", "-help":
+			fprint(stdout, versionHelp)
+			return ExitOK
+		default:
+			fprintf(stderr, "incrmit: unexpected argument %q\n", args[0])
+			fprint(stderr, versionHelp)
+			return ExitUsage
+		}
+	}
+	fprintln(stdout, buildinfo.String())
+	return ExitOK
 }
 
 type bumpOptions struct {
@@ -81,7 +119,7 @@ type bumpOptions struct {
 }
 
 func runBump(args []string, stdout, stderr io.Writer) int {
-	opts, code := parseBumpFlags(args, stderr)
+	opts, code := parseBumpFlags(args, stdout, stderr)
 	if code != exitSilentFlag && code != ExitOK {
 		return code
 	}
@@ -189,23 +227,15 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 
 // parseBumpFlags registers the bump flags (each with a long and short name)
 // and parses args. It returns the populated options and an exit code: ExitOK to
-// proceed, ExitUsage on a parse error, or exitSilentFlag when -h/-help was
-// handled by the flag package.
-func parseBumpFlags(args []string, stderr io.Writer) (bumpOptions, int) {
+// proceed, ExitUsage on a parse error (help printed to stderr), or
+// exitSilentFlag when -h/--help was requested (help printed to stdout).
+func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) {
 	var opts bumpOptions
 	fs := flag.NewFlagSet("incrmit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		fprintln(stderr, "usage: incrmit [flags]")
-		fprintln(stderr, "\nBump the semantic version in the configured files.")
-		fprintln(stderr, "\nFlags:")
-		fprintln(stderr, "  -c, --config string  path to the TOML config file (default \"incrmit.toml\")")
-		fprintln(stderr, "  -f, --file string    bump the version in one file (skips config)")
-		fprintln(stderr, "  -M, --major          bump the major version (resets minor and patch)")
-		fprintln(stderr, "  -m, --minor          bump the minor version (resets patch)")
-		fprintln(stderr, "  -p, --patch          bump the patch version (default)")
-		fprintln(stderr, "  -d, --dry-run        print the new version without writing")
-	}
+	// Help and usage are rendered explicitly below from the centralized text
+	// so an explicit -h/--help can go to stdout while errors go to stderr.
+	fs.Usage = func() {}
 
 	fs.StringVar(&opts.configPath, "config", "", "path to the TOML config file")
 	fs.StringVar(&opts.configPath, "c", "", "path to the TOML config file (shorthand)")
@@ -222,13 +252,15 @@ func parseBumpFlags(args []string, stderr io.Writer) (bumpOptions, int) {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fprint(stdout, bumpHelp)
 			return opts, exitSilentFlag
 		}
+		fprint(stderr, bumpHelp)
 		return opts, ExitUsage
 	}
 	if fs.NArg() > 0 {
 		fprintf(stderr, "incrmit: unexpected argument %q\n", fs.Arg(0))
-		fs.Usage()
+		fprint(stderr, bumpHelp)
 		return opts, ExitUsage
 	}
 	return opts, ExitOK
@@ -295,7 +327,7 @@ type discoverOptions struct {
 }
 
 func runDiscover(args []string, stdout, stderr io.Writer) int {
-	opts, code := parseDiscoverFlags(args, stderr)
+	opts, code := parseDiscoverFlags(args, stdout, stderr)
 	if code == exitSilentFlag {
 		return ExitOK
 	}
@@ -339,18 +371,13 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func parseDiscoverFlags(args []string, stderr io.Writer) (discoverOptions, int) {
+func parseDiscoverFlags(args []string, stdout, stderr io.Writer) (discoverOptions, int) {
 	var opts discoverOptions
 	fs := flag.NewFlagSet("incrmit discover", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		fprintln(stderr, "usage: incrmit discover [flags]")
-		fprintln(stderr, "\nScan a directory tree for version-bearing files and generate a config.")
-		fprintln(stderr, "\nFlags:")
-		fprintln(stderr, "  -P, --path string    root directory to scan (default \".\")")
-		fprintln(stderr, "  -o, --output string  path to write the generated config (default \"incrmit.toml\")")
-		fprintln(stderr, "  -d, --dry-run        print discovered files without writing the config")
-	}
+	// Help and usage are rendered explicitly below from the centralized text
+	// so an explicit -h/--help can go to stdout while errors go to stderr.
+	fs.Usage = func() {}
 
 	fs.StringVar(&opts.path, "path", ".", "root directory to scan")
 	fs.StringVar(&opts.path, "P", ".", "root directory to scan (shorthand)")
@@ -361,13 +388,15 @@ func parseDiscoverFlags(args []string, stderr io.Writer) (discoverOptions, int) 
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fprint(stdout, discoverHelp)
 			return opts, exitSilentFlag
 		}
+		fprint(stderr, discoverHelp)
 		return opts, ExitUsage
 	}
 	if fs.NArg() > 0 {
 		fprintf(stderr, "incrmit: unexpected argument %q\n", fs.Arg(0))
-		fs.Usage()
+		fprint(stderr, discoverHelp)
 		return opts, ExitUsage
 	}
 	return opts, ExitOK

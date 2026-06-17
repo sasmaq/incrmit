@@ -171,6 +171,40 @@ incrmit discover [flags]
 If more than one of `--major`, `--minor`, `--patch` is supplied, the highest
 component wins (major > minor > patch). When none is supplied, patch is used.
 
+### Version command
+
+```text
+incrmit version
+```
+
+Prints the tool version. The `--version`, `-version`, and `-v` flags are
+aliases for the subcommand.
+
+### Help command
+
+```text
+incrmit help [command]
+```
+
+| Invocation                | Output                                              |
+| ------------------------- | --------------------------------------------------- |
+| `incrmit help`            | Top-level overview listing every command.           |
+| `incrmit help bump`       | The default bump command's flags.                   |
+| `incrmit help discover`   | The discover command's flags.                       |
+| `incrmit help version`    | The version command's help.                         |
+| `incrmit help help`       | The help command's own usage.                       |
+| `incrmit -h` / `--help`   | Same overview as `incrmit help` (no subcommand).    |
+| `incrmit <cmd> -h`        | The same help text as `incrmit help <cmd>`.         |
+
+Help requested explicitly is written to stdout and exits `0`. An unknown
+command prints an error and a hint to run `incrmit help` to stderr and exits
+`2` (invalid arguments).
+
+All usage and help text lives in one place (`internal/cli/help.go`) so the
+`-h` / `--help` output and the `help` command stay in sync; the commands'
+`flag.FlagSet` usage handlers and the `help` dispatch both reference those
+shared strings rather than duplicating them.
+
 ## 8. Processing Flow
 
 ### 8.1 Bump

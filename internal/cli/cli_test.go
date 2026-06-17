@@ -315,8 +315,10 @@ func TestBadFlag(t *testing.T) {
 	}
 }
 
+// A stray positional argument in bump context (after a flag, so it is not
+// treated as a subcommand) is reported as an unexpected argument.
 func TestUnexpectedArg(t *testing.T) {
-	code, _, stderr := runMain(t, "", "surprise")
+	code, _, stderr := runMain(t, "", "--minor", "surprise")
 	if code != ExitUsage {
 		t.Errorf("exit = %d, want %d", code, ExitUsage)
 	}
@@ -565,17 +567,116 @@ func TestBumpWriteToReadOnlyDir(t *testing.T) {
 	}
 }
 
+// Explicit help requests exit 0 and print usage text to stdout (not stderr).
 func TestHelpExitsZero(t *testing.T) {
-	for _, args := range [][]string{{"-h"}, {"--help"}, {"discover", "-h"}} {
+	for _, args := range [][]string{
+		{"-h"}, {"--help"}, {"-help"},
+		{"discover", "-h"}, {"discover", "--help"},
+		{"version", "-h"},
+		{"--minor", "-h"}, // help requested in bump context
+	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			code, _, stderr := runMain(t, "", args...)
+			code, stdout, stderr := runMain(t, "", args...)
 			if code != ExitOK {
-				t.Errorf("exit = %d, want %d", code, ExitOK)
+				t.Errorf("exit = %d, want %d (stderr %q)", code, ExitOK, stderr)
 			}
-			if !strings.Contains(stderr, "usage:") {
-				t.Errorf("stderr = %q, want usage text", stderr)
+			if !strings.Contains(stdout, "usage:") {
+				t.Errorf("stdout = %q, want usage text", stdout)
 			}
 		})
+	}
+}
+
+// `incrmit help` prints the top-level overview listing every command.
+func TestHelpOverview(t *testing.T) {
+	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, stdout, stderr := runMain(t, "", args...)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			for _, want := range []string{"incrmit", "discover", "version", "help"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("overview missing %q: %q", want, stdout)
+				}
+			}
+		})
+	}
+}
+
+// `incrmit help <command>` reuses the same text as the command's own -h/--help.
+func TestHelpForCommand(t *testing.T) {
+	tests := []struct {
+		command string
+		want    string
+	}{
+		{"bump", "Bump the semantic version"},
+		{"discover", "Scan a directory tree"},
+		{"version", "Print the incrmit tool version"},
+		{"help", "Show the incrmit overview"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			code, viaHelp, stderr := runMain(t, "", "help", tt.command)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if !strings.Contains(viaHelp, tt.want) {
+				t.Errorf("help %s = %q, want to contain %q", tt.command, viaHelp, tt.want)
+			}
+		})
+	}
+}
+
+// `incrmit help <command>` and `incrmit <command> -h` produce identical text,
+// confirming the centralized help is reused rather than duplicated. (For bump,
+// the flag form is `--minor -h` because a bare top-level -h shows the overview.)
+func TestHelpMatchesFlagHelp(t *testing.T) {
+	tests := []struct {
+		command  string
+		flagArgs []string
+	}{
+		{"bump", []string{"--minor", "-h"}},
+		{"discover", []string{"discover", "-h"}},
+		{"version", []string{"version", "-h"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			_, viaHelp, _ := runMain(t, "", "help", tt.command)
+			_, viaFlag, _ := runMain(t, "", tt.flagArgs...)
+			if viaHelp != viaFlag {
+				t.Errorf("help %s = %q, flag help = %q (should match)", tt.command, viaHelp, viaFlag)
+			}
+		})
+	}
+}
+
+func TestHelpUnknownCommand(t *testing.T) {
+	code, stdout, stderr := runMain(t, "", "help", "bogus")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "unknown command") {
+		t.Errorf("stderr = %q, want unknown-command message", stderr)
+	}
+	if !strings.Contains(stderr, "incrmit help") {
+		t.Errorf("stderr = %q, want hint to run 'incrmit help'", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty on error", stdout)
+	}
+}
+
+func TestUnknownSubcommand(t *testing.T) {
+	code, _, stderr := runMain(t, "", "frobnicate")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "unknown command") {
+		t.Errorf("stderr = %q, want unknown-command message", stderr)
+	}
+	if !strings.Contains(stderr, "incrmit help") {
+		t.Errorf("stderr = %q, want hint to run 'incrmit help'", stderr)
 	}
 }
 

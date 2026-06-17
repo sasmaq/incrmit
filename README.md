@@ -199,13 +199,29 @@ incrmit -d
 
 ## Help
 
-Pass `-h` or `--help` to print usage for the default bump command or for
-`discover`:
+Run `incrmit help` for a top-level overview that lists every command, or
+`incrmit help <command>` for details on a specific one. Each command also
+responds to `-h` / `--help` with the same text:
 
 ```bash
-incrmit -h
-incrmit discover --help
+incrmit help              # overview of all commands
+incrmit help discover     # help for the discover command
+incrmit help version      # help for the version command
+incrmit help bump         # the default bump command's flags
 ```
+
+Top-level `-h` / `--help` (with no subcommand) prints the same overview as
+`incrmit help`, while passing `-h` / `--help` to a command prints that command's
+help:
+
+```bash
+incrmit -h                # same as `incrmit help`
+incrmit discover --help   # same as `incrmit help discover`
+```
+
+All of the above exit with code `0`. An unknown command (for example
+`incrmit frobnicate`) prints an error with a hint to run `incrmit help` and
+exits with code `2`.
 
 ## Exit codes
 
