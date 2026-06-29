@@ -21,10 +21,14 @@ var ErrNoVersion = errors.New("files: no semantic version found")
 // version is not present in the file (e.g. the config is out of sync).
 var ErrVersionNotFound = errors.New("files: expected version not found")
 
-// versionRe matches a bare MAJOR.MINOR.PATCH token bounded by non-word
-// characters. It deliberately does not understand any file format; structured
-// detection for specific formats lives in the discovery package.
-var versionRe = regexp.MustCompile(`\b\d+\.\d+\.\d+\b`)
+// versionRe matches a MAJOR.MINOR.PATCH token, optionally prefixed by a single
+// leading "v" or "V", bounded by non-word characters. It deliberately does not
+// understand any file format; structured detection for specific formats lives
+// in the discovery package. The leading \b keeps the optional prefix from being
+// taken out of the middle of a word (so "rev1.2.3" is not matched), and a
+// "v"-prefixed token is treated as distinct from its bare form so the exact
+// written token is what gets rewritten.
+var versionRe = regexp.MustCompile(`\b[vV]?\d+\.\d+\.\d+\b`)
 
 // AmbiguousError reports that a file contains more than one distinct version
 // token, so a generic replacement cannot pick one safely.

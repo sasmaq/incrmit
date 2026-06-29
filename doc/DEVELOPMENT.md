@@ -235,10 +235,26 @@ shared strings rather than duplicating them.
 
 ## 9. Version Detection Strategy
 
-- Match semantic versions with a regular expression: `\b\d+\.\d+\.\d+\b`.
+- Match semantic versions with a regular expression: `\b[vV]?\d+\.\d+\.\d+\b`.
+  The same pattern is used by both `discovery` (scanning) and `files`
+  (rewriting) so the two never disagree about what counts as a token.
+- An optional single leading `v` or `V` is recognized (e.g. `v1.2.3`). Because
+  the leading `\b` sits before the optional `[vV]`, the prefix is only consumed
+  at a word boundary: look-alikes where the letter is part of a longer word
+  (`rev1.2.3`, `dev1.2.3`) match neither the prefix nor the trailing digits, so
+  they are rejected entirely. RE2 (Go's `regexp`) has no look-behind, so this
+  boundary placement is what distinguishes a real prefix from an embedded one.
+- The prefix is carried on the `version.Version` value (a `Prefix` field, the
+  last struct field so existing keyed/zero literals are unaffected). `Parse`
+  records it, `String` re-emits it, and the bump methods preserve it. This makes
+  the whole pipeline prefix-aware for free: the prefix round-trips through the
+  config `version` string and is re-detected from the file on each bump, so no
+  separate config field is needed. A `v`-prefixed token and its bare form are
+  therefore distinct tokens (a file containing both `v1.2.3` and `1.2.3` is
+  ambiguous), and a bump rewrites only the exact written token.
 - Discovery is content-based and format-agnostic: it scans the bytes of every
   text file, regardless of name or extension, and records the first
-  `MAJOR.MINOR.PATCH` token found in each.
+  `[v]MAJOR.MINOR.PATCH` token found in each.
 - Binary files (those containing a NUL byte) are skipped so version-like byte
   sequences in compiled artifacts are not matched.
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.

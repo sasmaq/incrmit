@@ -80,8 +80,12 @@ func TestFindVersion(t *testing.T) {
 		{"plain", "1.2.3", version.Version{Major: 1, Minor: 2, Patch: 3}},
 		{"with-newline", "1.2.3\n", version.Version{Major: 1, Minor: 2, Patch: 3}},
 		{"quoted", `version = "4.5.6"`, version.Version{Major: 4, Minor: 5, Patch: 6}},
-		{"repeated-same", "v1.2.3 ... 1.2.3", version.Version{Major: 1, Minor: 2, Patch: 3}},
+		{"repeated-same", "1.2.3 ... 1.2.3", version.Version{Major: 1, Minor: 2, Patch: 3}},
 		{"surrounded-text", "Release 10.0.42 is out", version.Version{Major: 10, Minor: 0, Patch: 42}},
+		{"v-prefix", "tag v1.2.3 here", version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
+		{"V-prefix", "V2.0.1", version.Version{Major: 2, Minor: 0, Patch: 1, Prefix: "V"}},
+		{"repeated-same-v", "v1.2.3 ... v1.2.3", version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
+		{"rev-near-miss-ignored", "rev1.2.3 and 4.5.6", version.Version{Major: 4, Minor: 5, Patch: 6}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,6 +156,48 @@ func TestSetKnownVersionAllOccurrences(t *testing.T) {
 		t.Fatalf("SetKnownVersion: %v", err)
 	}
 	if want := "a 1.2.4 b 1.2.4 c 4.5.6\n"; string(out) != want {
+		t.Errorf("SetKnownVersion = %q, want %q", out, want)
+	}
+}
+
+// A "v"-prefixed token and its bare form are distinct version tokens, so a file
+// containing both is ambiguous rather than a repeated single version.
+func TestFindVersionPrefixedAndBareAreAmbiguous(t *testing.T) {
+	in := []byte("docs say v1.2.3 but file has 1.2.3\n")
+	_, err := FindVersion(in)
+	var ae *AmbiguousError
+	if !errors.As(err, &ae) {
+		t.Fatalf("FindVersion error = %v, want *AmbiguousError", err)
+	}
+}
+
+// SetVersion preserves the original "v" prefix when rewriting the token.
+func TestSetVersionPreservesPrefix(t *testing.T) {
+	in := []byte("release = \"v1.2.3\"\n")
+	cur, err := FindVersion(in)
+	if err != nil {
+		t.Fatalf("FindVersion: %v", err)
+	}
+	out, err := SetVersion(in, cur.BumpMinor())
+	if err != nil {
+		t.Fatalf("SetVersion: %v", err)
+	}
+	if want := "release = \"v1.3.0\"\n"; string(out) != want {
+		t.Errorf("SetVersion = %q, want %q", out, want)
+	}
+}
+
+// SetKnownVersion only rewrites the exact written token: a bare known version is
+// not matched against a "v"-prefixed occurrence and vice versa.
+func TestSetKnownVersionDistinguishesPrefix(t *testing.T) {
+	in := []byte("bare 1.2.3 and tag v1.2.3\n")
+	out, err := SetKnownVersion(in,
+		version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"},
+		version.Version{Major: 1, Minor: 2, Patch: 4, Prefix: "v"})
+	if err != nil {
+		t.Fatalf("SetKnownVersion: %v", err)
+	}
+	if want := "bare 1.2.3 and tag v1.2.4\n"; string(out) != want {
 		t.Errorf("SetKnownVersion = %q, want %q", out, want)
 	}
 }

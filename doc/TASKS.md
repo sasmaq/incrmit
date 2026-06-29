@@ -221,20 +221,20 @@ completed.
 
 ## Milestone 17 — Discover `v`-prefixed Versions
 
-- [ ] Recognize an optional leading `v` (and `V`) before `MAJOR.MINOR.PATCH`
+- [x] Recognize an optional leading `v` (and `V`) before `MAJOR.MINOR.PATCH`
       during discovery (e.g. `v1.2.3`), so tags and `VERSION`-style files using a
       `v` prefix are detected.
-- [ ] Update the version token detection/regex in discovery to match `vX.Y.Z`
+- [x] Update the version token detection/regex in discovery to match `vX.Y.Z`
       without matching unrelated tokens (e.g. avoid `rev1.2.3` or `dev1.2.3`).
-- [ ] Preserve the original `v` prefix when writing the discovered version to
+- [x] Preserve the original `v` prefix when writing the discovered version to
       `incrmit.toml` and when bumping in place (a `v1.2.3` token bumps to
       `v1.2.4`, a bare `1.2.3` stays bare).
-- [ ] Decide and document how the prefix is represented in config/state (e.g.
+- [x] Decide and document how the prefix is represented in config/state (e.g.
       store the prefix per entry or infer it from the existing token on bump).
-- [ ] Extend `--dry-run` discovery output to show the `v`-prefixed findings.
-- [ ] Add fixtures and tests covering `vX.Y.Z` and `VX.Y.Z` detection, prefix
+- [x] Extend `--dry-run` discovery output to show the `v`-prefixed findings.
+- [x] Add fixtures and tests covering `vX.Y.Z` and `VX.Y.Z` detection, prefix
       preservation on bump, and rejection of near-miss tokens (`rev`, `dev`).
-- [ ] Document `v`-prefix support in `README.md` and `doc/DEVELOPMENT.md`.
+- [x] Document `v`-prefix support in `README.md` and `doc/DEVELOPMENT.md`.
 
 ## Milestone 18 — Ignore IPv4 Addresses
 

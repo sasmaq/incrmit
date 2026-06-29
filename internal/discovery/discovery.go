@@ -37,9 +37,13 @@ var ignoredDirs = map[string]struct{}{
 	"target":       {},
 }
 
-// versionRe matches a bare MAJOR.MINOR.PATCH token bounded by non-word
-// characters, anywhere in a file's contents.
-var versionRe = regexp.MustCompile(`\b\d+\.\d+\.\d+\b`)
+// versionRe matches a MAJOR.MINOR.PATCH token, optionally prefixed by a single
+// leading "v" or "V", bounded by non-word characters, anywhere in a file's
+// contents. The leading \b before the optional [vV] means the prefix is only
+// consumed at a word boundary, so a "v" embedded in a longer word is not taken
+// as a prefix: tokens like "rev1.2.3" or "dev1.2.3" are rejected entirely (the
+// digits are not at a word boundary either), while "v1.2.3" and "1.2.3" match.
+var versionRe = regexp.MustCompile(`\b[vV]?\d+\.\d+\.\d+\b`)
 
 // Discover walks the tree rooted at root and returns every file that contains a
 // semantic version token, sorted by path for deterministic output. It scans the

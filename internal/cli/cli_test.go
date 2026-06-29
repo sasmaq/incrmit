@@ -66,6 +66,81 @@ func TestBumpDefaultPatch(t *testing.T) {
 	}
 }
 
+// A "v"-prefixed token bumps to a "v"-prefixed token, and the config self-sync
+// records the prefixed version so repeated runs stay consistent.
+func TestBumpPreservesVPrefix(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"v1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "v1.2.3\n"})
+
+	code, stdout, stderr := runMain(t, dir, "--minor")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "v1.3.0\n" {
+		t.Errorf("VERSION = %q, want \"v1.3.0\\n\"", got)
+	}
+	if !strings.Contains(stdout, "v1.2.3 -> v1.3.0") {
+		t.Errorf("stdout missing prefixed summary: %q", stdout)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if cfg.Files[0].Version != "v1.3.0" {
+		t.Errorf("config version = %q, want v1.3.0", cfg.Files[0].Version)
+	}
+}
+
+// In --file mode (no config) a bare "v" prefix in the file is detected and
+// preserved through the bump.
+func TestBumpFileModePreservesVPrefix(t *testing.T) {
+	dir := project(t, "", map[string]string{"VERSION": "current V0.9.0\n"})
+	target := filepath.Join(dir, "VERSION")
+
+	code, stdout, stderr := runMain(t, "", "--file", target, "--major")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "current V1.0.0\n" {
+		t.Errorf("VERSION = %q, want \"current V1.0.0\\n\"", got)
+	}
+	if !strings.Contains(stdout, "V0.9.0 -> V1.0.0") {
+		t.Errorf("stdout = %q", stdout)
+	}
+}
+
+// discover --dry-run surfaces the "v" prefix in its findings, and the generated
+// config carries it so a subsequent bump preserves it end to end.
+func TestDiscoverThenBumpVPrefix(t *testing.T) {
+	dir := project(t, "", map[string]string{"VERSION": "v2.3.4\n"})
+
+	code, stdout, stderr := runMain(t, dir, "discover", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("discover dry-run exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "VERSION: v2.3.4") {
+		t.Errorf("dry-run stdout = %q, want prefixed finding", stdout)
+	}
+
+	if code, _, stderr := runMain(t, dir, "discover"); code != ExitOK {
+		t.Fatalf("discover exit = %d, stderr = %q", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if cfg.Files[0].Version != "v2.3.4" {
+		t.Errorf("generated config version = %q, want v2.3.4", cfg.Files[0].Version)
+	}
+
+	if code, _, stderr := runMain(t, dir); code != ExitOK {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "v2.3.5\n" {
+		t.Errorf("VERSION = %q, want \"v2.3.5\\n\"", got)
+	}
+}
+
 func TestBumpComponentResolution(t *testing.T) {
 	tests := []struct {
 		name string

@@ -158,6 +158,85 @@ func TestDiscoverIgnoresTwoComponentNumbers(t *testing.T) {
 	}
 }
 
+func TestDiscoverVPrefix(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "VERSION", "v1.2.3\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}
+	if len(got) != 1 || got[0].Version != want {
+		t.Fatalf("got %+v, want one %q result", got, want)
+	}
+	if got[0].Version.String() != "v1.2.3" {
+		t.Errorf("Version.String() = %q, want %q", got[0].Version.String(), "v1.2.3")
+	}
+}
+
+func TestDiscoverUppercaseVPrefix(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "tag.txt", "current tag is V10.0.42\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := version.Version{Major: 10, Minor: 0, Patch: 42, Prefix: "V"}
+	if len(got) != 1 || got[0].Version != want {
+		t.Errorf("got %+v, want one %q result", got, want)
+	}
+}
+
+// Tokens where "v"/"V" is part of a longer word (rev, dev, Rev) must not be read
+// as a prefixed version, and their trailing digits must not be matched either.
+func TestDiscoverRejectsNearMissPrefixes(t *testing.T) {
+	for _, body := range []string{"rev1.2.3\n", "dev1.2.3\n", "Rev1.2.3 build\n", "abcv1.2.3\n"} {
+		root := t.TempDir()
+		mustWrite(t, root, "f", body)
+		got, err := Discover(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("body %q: got %+v, want 0 results (near-miss prefix)", body, got)
+		}
+	}
+}
+
+// A bare version preceded by other words is still detected; only an immediately
+// attached non-boundary "v" is rejected.
+func TestDiscoverBareAlongsideNearMiss(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "f", "rev1.0.0 is bogus, real version 2.3.4\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := version.Version{Major: 2, Minor: 3, Patch: 4}
+	if len(got) != 1 || got[0].Version != want {
+		t.Errorf("got %+v, want one %q result", got, want)
+	}
+}
+
+// The discovered prefix survives into the generated config's version string.
+func TestGeneratePreservesPrefix(t *testing.T) {
+	results := []Result{
+		{Path: "VERSION", Version: version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
+		{Path: "bare", Version: version.Version{Major: 4, Minor: 5, Patch: 6}},
+	}
+	data, err := Generate(results)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, `version = "v1.2.3"`) {
+		t.Errorf("generated config missing v-prefixed version:\n%s", out)
+	}
+	if !strings.Contains(out, `version = "4.5.6"`) {
+		t.Errorf("generated config missing bare version:\n%s", out)
+	}
+}
+
 func TestDiscoverSkipsBinaryFiles(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "bin"), []byte("\x00\x01\x02 1.2.3"), 0o644); err != nil {

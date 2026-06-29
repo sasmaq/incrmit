@@ -8,14 +8,17 @@ func TestParse(t *testing.T) {
 		in   string
 		want Version
 	}{
-		{"simple", "1.2.3", Version{1, 2, 3}},
-		{"zeros", "0.0.0", Version{0, 0, 0}},
-		{"multi-digit", "10.20.30", Version{10, 20, 30}},
-		{"leading-space", "  1.2.3", Version{1, 2, 3}},
-		{"trailing-space", "1.2.3  ", Version{1, 2, 3}},
-		{"surrounding-space", "  10.0.42  ", Version{10, 0, 42}},
-		{"leading-zeros", "01.02.03", Version{1, 2, 3}},
-		{"large", "2147483647.0.0", Version{2147483647, 0, 0}},
+		{"simple", "1.2.3", Version{Major: 1, Minor: 2, Patch: 3}},
+		{"zeros", "0.0.0", Version{Major: 0, Minor: 0, Patch: 0}},
+		{"multi-digit", "10.20.30", Version{Major: 10, Minor: 20, Patch: 30}},
+		{"leading-space", "  1.2.3", Version{Major: 1, Minor: 2, Patch: 3}},
+		{"trailing-space", "1.2.3  ", Version{Major: 1, Minor: 2, Patch: 3}},
+		{"surrounding-space", "  10.0.42  ", Version{Major: 10, Minor: 0, Patch: 42}},
+		{"leading-zeros", "01.02.03", Version{Major: 1, Minor: 2, Patch: 3}},
+		{"large", "2147483647.0.0", Version{Major: 2147483647, Minor: 0, Patch: 0}},
+		{"v-prefix", "v1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
+		{"V-prefix", "V1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Prefix: "V"}},
+		{"v-prefix-spaced", "  v10.0.42  ", Version{Major: 10, Minor: 0, Patch: 42, Prefix: "v"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,7 +55,8 @@ func TestParseErrors(t *testing.T) {
 		{"inner-space", "1. 2.3"},
 		{"trailing-text", "1.2.3-rc.1"},
 		{"build-metadata", "1.2.3+build.5"},
-		{"v-prefix", "v1.2.3"},
+		{"prefix-only", "v"},
+		{"prefix-no-version", "vx.y.z"},
 		{"float", "1.2"},
 		{"comma", "1,2,3"},
 	}
@@ -70,10 +74,11 @@ func TestBumpMajor(t *testing.T) {
 		in   Version
 		want Version
 	}{
-		{Version{1, 2, 3}, Version{2, 0, 0}},
-		{Version{0, 0, 0}, Version{1, 0, 0}},
-		{Version{1, 0, 0}, Version{2, 0, 0}},
-		{Version{9, 9, 9}, Version{10, 0, 0}},
+		{Version{Major: 1, Minor: 2, Patch: 3}, Version{Major: 2, Minor: 0, Patch: 0}},
+		{Version{Major: 0, Minor: 0, Patch: 0}, Version{Major: 1, Minor: 0, Patch: 0}},
+		{Version{Major: 1, Minor: 0, Patch: 0}, Version{Major: 2, Minor: 0, Patch: 0}},
+		{Version{Major: 9, Minor: 9, Patch: 9}, Version{Major: 10, Minor: 0, Patch: 0}},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}, Version{Major: 2, Minor: 0, Patch: 0, Prefix: "v"}},
 	}
 	for _, tt := range tests {
 		if got := tt.in.BumpMajor(); got != tt.want {
@@ -87,10 +92,11 @@ func TestBumpMinor(t *testing.T) {
 		in   Version
 		want Version
 	}{
-		{Version{1, 2, 3}, Version{1, 3, 0}},
-		{Version{0, 0, 0}, Version{0, 1, 0}},
-		{Version{1, 0, 5}, Version{1, 1, 0}},
-		{Version{2, 9, 9}, Version{2, 10, 0}},
+		{Version{Major: 1, Minor: 2, Patch: 3}, Version{Major: 1, Minor: 3, Patch: 0}},
+		{Version{Major: 0, Minor: 0, Patch: 0}, Version{Major: 0, Minor: 1, Patch: 0}},
+		{Version{Major: 1, Minor: 0, Patch: 5}, Version{Major: 1, Minor: 1, Patch: 0}},
+		{Version{Major: 2, Minor: 9, Patch: 9}, Version{Major: 2, Minor: 10, Patch: 0}},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "V"}, Version{Major: 1, Minor: 3, Patch: 0, Prefix: "V"}},
 	}
 	for _, tt := range tests {
 		if got := tt.in.BumpMinor(); got != tt.want {
@@ -104,9 +110,10 @@ func TestBumpPatch(t *testing.T) {
 		in   Version
 		want Version
 	}{
-		{Version{1, 2, 3}, Version{1, 2, 4}},
-		{Version{0, 0, 0}, Version{0, 0, 1}},
-		{Version{1, 2, 9}, Version{1, 2, 10}},
+		{Version{Major: 1, Minor: 2, Patch: 3}, Version{Major: 1, Minor: 2, Patch: 4}},
+		{Version{Major: 0, Minor: 0, Patch: 0}, Version{Major: 0, Minor: 0, Patch: 1}},
+		{Version{Major: 1, Minor: 2, Patch: 9}, Version{Major: 1, Minor: 2, Patch: 10}},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}, Version{Major: 1, Minor: 2, Patch: 4, Prefix: "v"}},
 	}
 	for _, tt := range tests {
 		if got := tt.in.BumpPatch(); got != tt.want {
@@ -116,7 +123,7 @@ func TestBumpPatch(t *testing.T) {
 }
 
 func TestBumpDoesNotMutateReceiver(t *testing.T) {
-	v := Version{1, 2, 3}
+	v := Version{Major: 1, Minor: 2, Patch: 3}
 	// Each bump returns a new value; the receiver must stay untouched.
 	if got := v.BumpMajor(); got == v {
 		t.Errorf("BumpMajor() returned the receiver unchanged: %v", got)
@@ -127,7 +134,7 @@ func TestBumpDoesNotMutateReceiver(t *testing.T) {
 	if got := v.BumpPatch(); got == v {
 		t.Errorf("BumpPatch() returned the receiver unchanged: %v", got)
 	}
-	if want := (Version{1, 2, 3}); v != want {
+	if want := (Version{Major: 1, Minor: 2, Patch: 3}); v != want {
 		t.Errorf("receiver mutated: got %v, want %v", v, want)
 	}
 }
@@ -137,9 +144,11 @@ func TestString(t *testing.T) {
 		in   Version
 		want string
 	}{
-		{Version{1, 2, 3}, "1.2.3"},
-		{Version{0, 0, 0}, "0.0.0"},
-		{Version{10, 20, 30}, "10.20.30"},
+		{Version{Major: 1, Minor: 2, Patch: 3}, "1.2.3"},
+		{Version{Major: 0, Minor: 0, Patch: 0}, "0.0.0"},
+		{Version{Major: 10, Minor: 20, Patch: 30}, "10.20.30"},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}, "v1.2.3"},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "V"}, "V1.2.3"},
 	}
 	for _, tt := range tests {
 		if got := tt.in.String(); got != tt.want {
@@ -149,7 +158,7 @@ func TestString(t *testing.T) {
 }
 
 func TestParseStringRoundTrip(t *testing.T) {
-	inputs := []string{"0.0.0", "1.2.3", "10.20.30", "100.0.1"}
+	inputs := []string{"0.0.0", "1.2.3", "10.20.30", "100.0.1", "v1.2.3", "V0.1.9"}
 	for _, in := range inputs {
 		v, err := Parse(in)
 		if err != nil {

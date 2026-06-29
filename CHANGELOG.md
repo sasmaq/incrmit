@@ -5,7 +5,7 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.6] - 2026-06-29
+## [0.1.7] - 2026-06-29
 
 ### Added
 
@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/usr/local/bin/incrmit` and `/usr/local/share/man/man1/incrmit.1`.
 - A `release-macos` job in the release workflow builds and uploads the `.pkg`
   installers (on a macOS runner) alongside the existing release artifacts.
+- Support for an optional leading `v`/`V` prefix on version tokens (e.g.
+  `v1.2.3`). Discovery detects and records the prefix in `incrmit.toml`, and an
+  in-place bump preserves it (`v1.2.3` → `v1.2.4`; a bare `1.2.3` stays bare).
+  A prefix is only recognized at a word boundary, so look-alikes such as
+  `rev1.2.3` and `dev1.2.3` are not treated as versions.
 
 ## [0.1.5] - 2026-06-18
 
@@ -88,7 +93,7 @@ First public release.
 - Cross-compiled release binaries for Linux, macOS, and Windows
   (`make dist`), and version stamping via `-ldflags` (`make build`).
 
-[0.1.6]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.6
+[0.1.7]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.7
 [0.1.5]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.4
 [0.1.3]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.3
