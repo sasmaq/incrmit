@@ -484,6 +484,31 @@ func TestDiscoverDryRun(t *testing.T) {
 	}
 }
 
+// discover --dry-run must not report IPv4 addresses: a file holding only an IP
+// yields no findings, while a real version on the same line is shown alone.
+func TestDiscoverDryRunExcludesIPv4(t *testing.T) {
+	dir := project(t, "", map[string]string{
+		"hosts.cfg": "gateway 192.168.1.1\nmask 255.255.255.255\n",
+		"app.cfg":   "listen 10.0.0.1 version 2.3.4\n",
+	})
+
+	code, stdout, stderr := runMain(t, dir, "discover", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, "hosts.cfg") {
+		t.Errorf("dry-run reported an IPv4-only file: %q", stdout)
+	}
+	if !strings.Contains(stdout, "app.cfg: 2.3.4") {
+		t.Errorf("dry-run missing the real version: %q", stdout)
+	}
+	for _, ipPart := range []string{"192.168", "10.0.0.1", "255.255"} {
+		if strings.Contains(stdout, ipPart) {
+			t.Errorf("dry-run leaked IPv4 text %q: %q", ipPart, stdout)
+		}
+	}
+}
+
 func TestDiscoverCustomOutputAndPath(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "src")

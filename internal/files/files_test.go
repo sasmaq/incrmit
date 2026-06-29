@@ -108,6 +108,47 @@ func TestFindVersionNoVersion(t *testing.T) {
 	}
 }
 
+// An IPv4 address is a four-component dotted number, not a version, so a file
+// containing only IPv4 addresses has no version.
+func TestFindVersionIgnoresIPv4(t *testing.T) {
+	for _, in := range []string{
+		"bind 127.0.0.1\n",
+		"gateway = 192.168.1.1",
+		"mask 255.255.255.255 broadcast 10.0.0.255",
+		"net 1.2.3.4",
+	} {
+		if _, err := FindVersion([]byte(in)); !errors.Is(err, ErrNoVersion) {
+			t.Errorf("FindVersion(%q) error = %v, want ErrNoVersion", in, err)
+		}
+	}
+}
+
+// A real version alongside an IPv4 address is found unambiguously: the IP is not
+// a competing version, and no three-component slice is pulled out of it.
+func TestFindVersionWithIPv4Present(t *testing.T) {
+	got, err := FindVersion([]byte("server 192.168.1.1 version 1.2.3\n"))
+	if err != nil {
+		t.Fatalf("FindVersion: %v", err)
+	}
+	if want := (version.Version{Major: 1, Minor: 2, Patch: 3}); got != want {
+		t.Errorf("FindVersion = %v, want %v", got, want)
+	}
+}
+
+// Bumping a file that also contains an IPv4 address rewrites only the version.
+func TestSetKnownVersionLeavesIPv4Untouched(t *testing.T) {
+	in := []byte("endpoint 10.0.0.255\nversion 1.2.3\n")
+	out, err := SetKnownVersion(in,
+		version.Version{Major: 1, Minor: 2, Patch: 3},
+		version.Version{Major: 1, Minor: 2, Patch: 4})
+	if err != nil {
+		t.Fatalf("SetKnownVersion: %v", err)
+	}
+	if want := "endpoint 10.0.0.255\nversion 1.2.4\n"; string(out) != want {
+		t.Errorf("SetKnownVersion = %q, want %q", out, want)
+	}
+}
+
 func TestFindVersionAmbiguous(t *testing.T) {
 	in := []byte(`"version": "1.2.3", "dep": "4.5.6"`)
 	_, err := FindVersion(in)

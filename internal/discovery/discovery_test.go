@@ -237,6 +237,61 @@ func TestGeneratePreservesPrefix(t *testing.T) {
 	}
 }
 
+// IPv4 addresses have four octets and must never be read as a three-component
+// version, even when every octet is a small, version-like integer.
+func TestDiscoverIgnoresIPv4(t *testing.T) {
+	ips := []string{
+		"127.0.0.1",       // loopback
+		"10.0.0.255",      // private class A
+		"192.168.1.1",     // private class C
+		"172.16.254.1",    // private class B
+		"255.255.255.255", // broadcast
+		"0.0.0.0",         // unspecified
+		"1.2.3.4",         // version-like octets, still four components
+	}
+	for _, ip := range ips {
+		root := t.TempDir()
+		mustWrite(t, root, "conf", "listen = "+ip+"\n")
+		got, err := Discover(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("%q: got %+v, want 0 results (IPv4 is not a version)", ip, got)
+		}
+	}
+}
+
+// A real version on the same line as an IPv4 address is still found, and the IP
+// must not have a three-component slice pulled out of it.
+func TestDiscoverVersionAlongsideIPv4(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "conf", "server 192.168.1.1 running v2.3.4\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := version.Version{Major: 2, Minor: 3, Patch: 4, Prefix: "v"}
+	if len(got) != 1 || got[0].Version != want {
+		t.Errorf("got %+v, want one %q result", got, want)
+	}
+}
+
+// An IPv4 address appearing before a bare version must not shadow it, and no
+// inner slice (e.g. 168.1.1) should be discovered from the address.
+func TestDiscoverIPv4ThenVersion(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "conf", "host 192.168.1.1\nrelease 3.4.5\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := version.Version{Major: 3, Minor: 4, Patch: 5}
+	if len(got) != 1 || got[0].Version != want {
+		t.Errorf("got %+v, want one %q result (no slice pulled from the IP)", got, want)
+	}
+}
+
 func TestDiscoverSkipsBinaryFiles(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "bin"), []byte("\x00\x01\x02 1.2.3"), 0o644); err != nil {

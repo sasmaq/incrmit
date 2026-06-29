@@ -37,13 +37,16 @@ var ignoredDirs = map[string]struct{}{
 	"target":       {},
 }
 
-// versionRe matches a MAJOR.MINOR.PATCH token, optionally prefixed by a single
-// leading "v" or "V", bounded by non-word characters, anywhere in a file's
-// contents. The leading \b before the optional [vV] means the prefix is only
-// consumed at a word boundary, so a "v" embedded in a longer word is not taken
-// as a prefix: tokens like "rev1.2.3" or "dev1.2.3" are rejected entirely (the
-// digits are not at a word boundary either), while "v1.2.3" and "1.2.3" match.
-var versionRe = regexp.MustCompile(`\b[vV]?\d+\.\d+\.\d+\b`)
+// versionRe matches a run of two or more dot-separated integer groups,
+// optionally prefixed by a single leading "v" or "V", bounded by non-word
+// characters. It deliberately matches more than just MAJOR.MINOR.PATCH: a
+// candidate is validated with version.Parse, which accepts only exactly three
+// components. Matching the whole dotted run (greedily) is what lets an IPv4
+// address such as 192.168.1.1 be seen as a single four-component token and
+// rejected, rather than having 192.168.1 (or 168.1.1) pulled out of it. The
+// leading \b before the optional [vV] keeps the prefix from being taken out of
+// the middle of a word (so "rev1.2.3"/"dev1.2.3" are not treated as versions).
+var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+\b`)
 
 // Discover walks the tree rooted at root and returns every file that contains a
 // semantic version token, sorted by path for deterministic output. It scans the
@@ -108,8 +111,12 @@ func Generate(results []Result) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// detect reads the file at path and returns the first MAJOR.MINOR.PATCH token it
-// contains. It is best-effort: unreadable and binary files yield ok == false.
+// detect reads the file at path and returns the first [v]MAJOR.MINOR.PATCH token
+// it contains. It is best-effort: unreadable and binary files yield ok == false.
+// versionRe also matches dotted-number runs that are not versions (two-component
+// numbers like 3.9, four-octet IPv4 addresses like 192.168.1.1, ...); those fail
+// version.Parse and are skipped, so the first token that parses as a real
+// three-component version wins.
 func detect(path string) (version.Version, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -118,15 +125,12 @@ func detect(path string) (version.Version, bool) {
 	if isBinary(data) {
 		return version.Version{}, false
 	}
-	m := versionRe.Find(data)
-	if m == nil {
-		return version.Version{}, false
+	for _, m := range versionRe.FindAll(data, -1) {
+		if v, err := version.Parse(string(m)); err == nil {
+			return v, true
+		}
 	}
-	v, err := version.Parse(string(m))
-	if err != nil {
-		return version.Version{}, false
-	}
-	return v, true
+	return version.Version{}, false
 }
 
 // isBinary reports whether data looks like a binary (non-text) file. A NUL byte

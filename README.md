@@ -2,7 +2,7 @@
 
 A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it (increment + commit).
 
-## Version: 0.1.7
+## Version: 0.1.8
 
 ## Overview
 
@@ -42,7 +42,7 @@ Each release includes `checksums.txt` with SHA-256 hashes of every artifact.
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.7
+VERSION=0.1.8
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -51,7 +51,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.7
+VERSION=0.1.8
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -61,7 +61,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.7
+VERSION=0.1.8
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo rpm -i "incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 # or: sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"
@@ -73,7 +73,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.1.7
+VERSION=0.1.8
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /   # use -darwin-amd64.pkg on Intel
 incrmit version
@@ -153,6 +153,8 @@ Discovery walks the directory tree and inspects the contents of every text file,
 
 A version token may carry an optional leading `v` or `V` (for example `v1.2.3` or `V1.2.3`, as commonly used by tags and `VERSION` files). The prefix is preserved everywhere: it is written to `incrmit.toml` as part of the recorded `version`, and an in-place bump keeps it (so `v1.2.3` bumps to `v1.2.4`, while a bare `1.2.3` stays bare). A `v`/`V` is only treated as a prefix when it stands at a word boundary, so embedded look-alikes such as `rev1.2.3` or `dev1.2.3` are not detected as versions.
 
+A version has exactly three components, so IPv4 addresses are never mistaken for versions: a four-octet token such as `192.168.1.1`, `10.0.0.255`, or `127.0.0.1` is skipped entirely (and no three-component slice like `168.1.1` is pulled out of it), even when every octet is a version-like integer. A real version on the same line as an address (`server 10.0.0.1 running 2.3.4`) is still detected.
+
 Binary files and common noise directories (`.git`, `node_modules`, `vendor`, build outputs) are skipped, as is the config file itself (`incrmit.toml` and the `--output` path), so it is never listed as a target.
 
 ```bash
@@ -199,7 +201,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.7
+# incrmit 0.1.8
 ```
 
 The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).

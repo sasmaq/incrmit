@@ -235,9 +235,20 @@ shared strings rather than duplicating them.
 
 ## 9. Version Detection Strategy
 
-- Match semantic versions with a regular expression: `\b[vV]?\d+\.\d+\.\d+\b`.
-  The same pattern is used by both `discovery` (scanning) and `files`
-  (rewriting) so the two never disagree about what counts as a token.
+- Match candidate tokens with a regular expression: `\b[vV]?\d+(?:\.\d+)+\b`
+  (a run of two or more dot-separated integer groups). The same pattern is used
+  by both `discovery` (scanning) and `files` (rewriting) so the two never
+  disagree about what counts as a token. The pattern intentionally matches more
+  than `MAJOR.MINOR.PATCH`; `version.Parse` is the authority on validity and
+  accepts only exactly three components.
+- IPv4 addresses are not versions. Because the pattern matches the whole dotted
+  run greedily, an address such as `192.168.1.1` is captured as a single
+  four-component token and rejected by `Parse` — rather than having `192.168.1`
+  (or `168.1.1`) sliced out of it. The same rule rejects two-component numbers
+  (`3.9`) and any other `A.B.C.D...` token whose component count is not three,
+  even when every component is a valid integer. Callers iterate matches and keep
+  the first that `Parse` accepts (`detect`) or collect the distinct valid tokens
+  (`FindVersion`).
 - An optional single leading `v` or `V` is recognized (e.g. `v1.2.3`). Because
   the leading `\b` sits before the optional `[vV]`, the prefix is only consumed
   at a word boundary: look-alikes where the letter is part of a longer word

@@ -21,14 +21,17 @@ var ErrNoVersion = errors.New("files: no semantic version found")
 // version is not present in the file (e.g. the config is out of sync).
 var ErrVersionNotFound = errors.New("files: expected version not found")
 
-// versionRe matches a MAJOR.MINOR.PATCH token, optionally prefixed by a single
-// leading "v" or "V", bounded by non-word characters. It deliberately does not
-// understand any file format; structured detection for specific formats lives
-// in the discovery package. The leading \b keeps the optional prefix from being
-// taken out of the middle of a word (so "rev1.2.3" is not matched), and a
-// "v"-prefixed token is treated as distinct from its bare form so the exact
-// written token is what gets rewritten.
-var versionRe = regexp.MustCompile(`\b[vV]?\d+\.\d+\.\d+\b`)
+// versionRe matches a run of two or more dot-separated integer groups,
+// optionally prefixed by a single leading "v" or "V", bounded by non-word
+// characters. It deliberately does not understand any file format; structured
+// detection for specific formats lives in the discovery package. It matches
+// more than just MAJOR.MINOR.PATCH so that an IPv4 address (192.168.1.1) is seen
+// as one four-component token and rejected by version.Parse rather than having
+// a three-component slice pulled out of it; two-component numbers are likewise
+// rejected. The leading \b keeps the optional prefix from being taken out of the
+// middle of a word (so "rev1.2.3" is not matched), and a "v"-prefixed token is
+// treated as distinct from its bare form so the exact written token is rewritten.
+var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+\b`)
 
 // AmbiguousError reports that a file contains more than one distinct version
 // token, so a generic replacement cannot pick one safely.
@@ -43,15 +46,27 @@ func (e *AmbiguousError) Error() string {
 // FindVersion locates the semantic version in data. It returns ErrNoVersion if
 // no token is present and an *AmbiguousError if multiple distinct versions are
 // found. Repeated occurrences of the same version are not ambiguous.
+//
+// versionRe also matches dotted-number runs that are not versions (two-component
+// numbers, four-octet IPv4 addresses, ...); those fail version.Parse and are
+// ignored, so neither ErrNoVersion nor ambiguity is affected by them.
 func FindVersion(data []byte) (version.Version, error) {
 	matches := versionRe.FindAll(data, -1)
-	if len(matches) == 0 {
-		return version.Version{}, ErrNoVersion
-	}
 
 	distinct := make(map[string]struct{}, len(matches))
+	var sole string
 	for _, m := range matches {
-		distinct[string(m)] = struct{}{}
+		s := string(m)
+		if _, err := version.Parse(s); err != nil {
+			continue
+		}
+		if _, seen := distinct[s]; !seen {
+			distinct[s] = struct{}{}
+			sole = s
+		}
+	}
+	if len(distinct) == 0 {
+		return version.Version{}, ErrNoVersion
 	}
 	if len(distinct) > 1 {
 		vs := make([]string, 0, len(distinct))
@@ -62,8 +77,7 @@ func FindVersion(data []byte) (version.Version, error) {
 		return version.Version{}, &AmbiguousError{Versions: vs}
 	}
 
-	// Exactly one distinct token; parse it to validate the numeric components.
-	return version.Parse(string(matches[0]))
+	return version.Parse(sole)
 }
 
 // SetVersion returns a copy of data in which every occurrence of the current

@@ -5,6 +5,16 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-06-29
+
+### Added
+
+- Discovery now ignores IPv4 addresses: a four-octet token such as
+  `192.168.1.1` or `10.0.0.255` is never read as a `MAJOR.MINOR.PATCH` version
+  (and no three-component slice is pulled out of it), since a version has
+  exactly three components. A real version on the same line as an address is
+  still detected.
+
 ## [0.1.7] - 2026-06-29
 
 ### Added
@@ -93,6 +103,7 @@ First public release.
 - Cross-compiled release binaries for Linux, macOS, and Windows
   (`make dist`), and version stamping via `-ldflags` (`make build`).
 
+[0.1.8]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.8
 [0.1.7]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.7
 [0.1.5]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.5
 [0.1.4]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.4

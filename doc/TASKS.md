@@ -238,17 +238,17 @@ completed.
 
 ## Milestone 18 — Ignore IPv4 Addresses
 
-- [ ] Detect and skip IPv4 addresses (e.g. `192.168.1.1`, `10.0.0.255`) during
+- [x] Detect and skip IPv4 addresses (e.g. `192.168.1.1`, `10.0.0.255`) during
       discovery so they are not mistaken for `MAJOR.MINOR.PATCH` versions.
-- [ ] Treat a four-octet `A.B.C.D` token as an IPv4 address, not a version,
+- [x] Treat a four-octet `A.B.C.D` token as an IPv4 address, not a version,
       even when each octet is a valid integer (versions have exactly three
       components).
-- [ ] Avoid matching version-like substrings inside a larger IPv4 address
+- [x] Avoid matching version-like substrings inside a larger IPv4 address
       (e.g. don't pull `168.1.1` out of `192.168.1.1`).
-- [ ] Add fixtures and tests covering common IPv4 forms (loopback, private
+- [x] Add fixtures and tests covering common IPv4 forms (loopback, private
       ranges, broadcast) and confirm they produce no discovered version.
-- [ ] Ensure `--dry-run` discovery output excludes IPv4 matches.
-- [ ] Document the IPv4-skipping behavior in `README.md` and
+- [x] Ensure `--dry-run` discovery output excludes IPv4 matches.
+- [x] Document the IPv4-skipping behavior in `README.md` and
       `doc/DEVELOPMENT.md`.
 
 ## Milestone 19 — Discover Multiple Occurrences in a File
