@@ -194,26 +194,26 @@ completed.
 
 ## Milestone 16 — macOS Package (.pkg)
 
-- [ ] Choose a packaging approach (e.g. `pkgbuild` / `productbuild`, or a helper
+- [x] Choose a packaging approach (e.g. `pkgbuild` / `productbuild`, or a helper
       such as `nfpm` or `fpm`) and document the rationale in
       `doc/DEVELOPMENT.md`.
-- [ ] Add package metadata: identifier (e.g. `com.github.sasmaq.incrmit`),
+- [x] Add package metadata: identifier (e.g. `com.github.sasmaq.incrmit`),
       version (from `VERSION`), title, description, and install location
       (`/usr/local/bin/incrmit`).
-- [ ] Build `.pkg` artifacts for macOS `amd64` and `arm64` (or a single
+- [x] Build `.pkg` artifacts for macOS `amd64` and `arm64` (or a single
       universal binary via `lipo`), reusing the same `-ldflags` version stamping
       as `make build` / `make dist`.
-- [ ] Add a `make pkg` (or `make package-pkg`) target that writes packages under
+- [x] Add a `make pkg` (or `make package-pkg`) target that writes packages under
       `dist/` alongside the existing release archives.
-- [ ] Include the shared man page (`incrmit(1)`) under
+- [x] Include the shared man page (`incrmit(1)`) under
       `/usr/local/share/man/man1/`.
-- [ ] Verify locally: `sudo installer -pkg dist/incrmit-*.pkg -target /`, then
+- [x] Verify locally: `sudo installer -pkg dist/incrmit-*.pkg -target /`, then
       `incrmit version` and a smoke bump with `--dry-run`; confirm uninstall
       removes the binary (document the removal steps if no uninstaller is
       shipped).
-- [ ] Attach the `.pkg` files to GitHub Releases (extend the Milestone 13
+- [x] Attach the `.pkg` files to GitHub Releases (extend the Milestone 13
       release workflow or document a manual upload step until CI is wired).
-- [ ] Document macOS install and build instructions in `README.md` (e.g.
+- [x] Document macOS install and build instructions in `README.md` (e.g.
       `sudo installer -pkg incrmit-<version>-darwin-arm64.pkg -target /` and
       `make pkg`).
 - [ ] Optional: codesign and notarize the `.pkg` (and binary) with Apple

@@ -1,16 +1,17 @@
 BINARY := incrmit
 # Static version, kept in sync by incrmit itself (see incrmit.toml). Override on
 # the command line for one-off builds, e.g. `make build VERSION=1.2.3`.
-VERSION ?= 0.1.5
+VERSION ?= 0.1.6
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 COVER_THRESHOLD ?= 80
 DIST := dist
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 LINUX_ARCHES := amd64 arm64
+DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries deb rpm checksums release test cover vet fmt fmt-check lint check clean
+.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg checksums release test cover vet fmt fmt-check lint check clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -56,6 +57,18 @@ linux-binaries:
 		fi; \
 	done
 
+# darwin-binaries builds stamped macOS binaries when missing from dist/ (used by pkg).
+darwin-binaries:
+	@mkdir -p $(DIST)
+	@for arch in $(DARWIN_ARCHES); do \
+		out=$(DIST)/$(BINARY)-$(VERSION)-darwin-$$arch; \
+		if [ ! -f "$$out" ]; then \
+			echo "building $$out"; \
+			GOOS=darwin GOARCH=$$arch CGO_ENABLED=0 \
+				go build -ldflags "$(LDFLAGS)" -o $$out . || exit 1; \
+		fi; \
+	done
+
 # deb packages Linux amd64 and arm64 binaries with nfpm (see packaging/nfpm.yaml).
 deb: linux-binaries
 	@command -v $(NFPM) >/dev/null 2>&1 || { \
@@ -86,6 +99,20 @@ rpm: linux-binaries
 			$(NFPM) pkg -f $(NFPM_CONFIG) --packager rpm --target $(DIST) || exit 1; \
 	done
 	@echo "rpms written to $(DIST)/"
+
+# pkg packages macOS amd64 and arm64 binaries into .pkg installers with pkgbuild
+# (see scripts/build-pkg.sh). Requires the macOS toolchain (pkgbuild), so this
+# target only runs on macOS.
+pkg: darwin-binaries
+	@command -v pkgbuild >/dev/null 2>&1 || { \
+		echo "pkgbuild not found; macOS .pkg packages must be built on macOS" >&2; \
+		exit 1; \
+	}
+	@for arch in $(DARWIN_ARCHES); do \
+		echo "packaging pkg for darwin $$arch"; \
+		scripts/build-pkg.sh $(VERSION) $$arch $(DIST) || exit 1; \
+	done
+	@echo "pkgs written to $(DIST)/"
 
 checksums:
 	@cd $(DIST) && { \

@@ -5,6 +5,16 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- macOS installer packages (`.pkg`) for `amd64` and `arm64`, built with
+  `pkgbuild` via `make pkg` and `scripts/build-pkg.sh`. The package installs
+  `/usr/local/bin/incrmit` and `/usr/local/share/man/man1/incrmit.1`.
+- A `release-macos` job in the release workflow builds and uploads the `.pkg`
+  installers (on a macOS runner) alongside the existing release artifacts.
+
 ## [0.1.5] - 2026-06-18
 
 ### Added

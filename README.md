@@ -2,7 +2,7 @@
 
 A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it (increment + commit).
 
-## Version: 0.1.5
+## Version: 0.1.6
 
 ## Overview
 
@@ -22,8 +22,8 @@ A small command-line tool written in Go that parses a file, finds a version valu
 
 ### Download from GitHub Releases
 
-Pre-built binaries and Linux packages are published on
-[GitHub Releases](https://github.com/sasmaq/incrmit/releases). Open the latest
+Pre-built binaries, Linux packages, and macOS installer packages are published
+on [GitHub Releases](https://github.com/sasmaq/incrmit/releases). Open the latest
 `vX.Y.Z` release and download the asset that matches your platform, or fetch one
 directly (replace `X.Y.Z` with the release version):
 
@@ -31,8 +31,8 @@ directly (replace `X.Y.Z` with the release version):
 | -------- | ----- |
 | Linux amd64 | `incrmit-X.Y.Z-linux-amd64.tar.gz` or `incrmit_X.Y.Z-1_amd64.deb` |
 | Linux arm64 | `incrmit-X.Y.Z-linux-arm64.tar.gz` or `incrmit_X.Y.Z-1_arm64.deb` |
-| macOS amd64 | `incrmit-X.Y.Z-darwin-amd64.tar.gz` |
-| macOS arm64 | `incrmit-X.Y.Z-darwin-arm64.tar.gz` |
+| macOS amd64 | `incrmit-X.Y.Z-darwin-amd64.tar.gz` or `incrmit-X.Y.Z-darwin-amd64.pkg` |
+| macOS arm64 | `incrmit-X.Y.Z-darwin-arm64.tar.gz` or `incrmit-X.Y.Z-darwin-arm64.pkg` |
 | Windows amd64 | `incrmit-X.Y.Z-windows-amd64.zip` |
 | Fedora / RHEL x86_64 | `incrmit-X.Y.Z-1.x86_64.rpm` |
 | Fedora / RHEL aarch64 | `incrmit-X.Y.Z-1.aarch64.rpm` |
@@ -42,7 +42,7 @@ Each release includes `checksums.txt` with SHA-256 hashes of every artifact.
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.5
+VERSION=0.1.6
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -51,7 +51,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.5
+VERSION=0.1.6
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -61,16 +61,37 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.5
+VERSION=0.1.6
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo rpm -i "incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 # or: sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"
 man incrmit
 ```
 
-To build `.deb` or `.rpm` packages locally instead of downloading them, see
-[doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm`; requires
-[nFPM](https://nfpm.goreleaser.com/)).
+**macOS** — download the `.pkg` from the release page, then install it (it
+places `incrmit` in `/usr/local/bin` and the man page in
+`/usr/local/share/man/man1`):
+
+```bash
+VERSION=0.1.6
+curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
+sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /   # use -darwin-amd64.pkg on Intel
+incrmit version
+man incrmit
+```
+
+The `.pkg` is unsigned, so the first install may require approving it under
+**System Settings → Privacy & Security**. To uninstall, remove the two files
+and forget the receipt:
+
+```bash
+sudo rm -f /usr/local/bin/incrmit /usr/local/share/man/man1/incrmit.1
+sudo pkgutil --forget com.github.sasmaq.incrmit
+```
+
+To build `.deb`, `.rpm`, or `.pkg` packages locally instead of downloading them,
+see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
+[nFPM](https://nfpm.goreleaser.com/); `make pkg` runs on macOS).
 
 ### Install with Go
 
@@ -176,7 +197,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.5
+# incrmit 0.1.6
 ```
 
 The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).

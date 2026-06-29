@@ -91,3 +91,42 @@ jobs:
             dist/checksums.txt
           fail_on_unmatched_files: true
           generate_release_notes: false
+
+  release-macos:
+    name: Build & Publish macOS packages
+    needs: validate
+    runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v*)
+              echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "tag $tag does not match v*; refusing to release" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build macOS packages
+        run: make pkg VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Publish macOS packages to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.pkg
+          fail_on_unmatched_files: true
+          generate_release_notes: false

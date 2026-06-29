@@ -305,6 +305,11 @@ incrmit/
   installs `/usr/bin/incrmit` and `/usr/share/man/man1/incrmit.1`.
 - RPM packages: `make rpm VERSION=X.Y.Z` builds `incrmit-<version>-1.<arch>.rpm`
   files (`x86_64`, `aarch64`) under `dist/` using the same nFPM config.
+- macOS packages: `make pkg VERSION=X.Y.Z` builds
+  `incrmit-<version>-darwin-<arch>.pkg` installers (`amd64`, `arm64`) under
+  `dist/` with `pkgbuild` (see `scripts/build-pkg.sh`). Requires the macOS
+  toolchain, so this target must run on macOS. The package installs
+  `/usr/local/bin/incrmit` and `/usr/local/share/man/man1/incrmit.1`.
 
 ### Debian packaging (`.deb`)
 
@@ -357,6 +362,48 @@ incrmit --dry-run
 sudo rpm -e incrmit
 ```
 
+### macOS packaging (`.pkg`)
+
+**Approach:** `pkgbuild` driven by `scripts/build-pkg.sh`, invoked per
+architecture from `make pkg`.
+
+**Rationale:** nFPM (used for `.deb`/`.rpm`) does not emit macOS `.pkg`
+installers, and `.pkg` files require Apple's packaging tools (`pkgbuild`,
+which exist only on macOS). `pkgbuild` ships with the Xcode command line tools
+and builds an installable component package directly from a staged file tree —
+no extra dependencies. `productbuild` (a distribution wrapper around the
+component package) is optional and unnecessary for a single CLI binary.
+
+**Layout:** Each `.pkg` installs the version-stamped macOS binary to
+`/usr/local/bin/incrmit` (mode `0755`) and the man page from `doc/man/incrmit.1`
+to `/usr/local/share/man/man1/incrmit.1`, with install location `/` and bundle
+identifier `com.github.sasmaq.incrmit`. Package files are named
+`incrmit-<version>-darwin-amd64.pkg` and `incrmit-<version>-darwin-arm64.pkg`.
+Per-architecture packages match the existing archive naming; a single universal
+binary (`lipo -create`) is an alternative if a single asset is preferred later.
+
+**Local verification:**
+
+```bash
+make pkg VERSION=X.Y.Z
+sudo installer -pkg dist/incrmit-X.Y.Z-darwin-arm64.pkg -target /   # or -amd64 on Intel
+incrmit version
+incrmit --dry-run
+```
+
+`pkgbuild` does not generate an uninstaller. Because the package only adds two
+files, remove them manually to uninstall, then forget the receipt:
+
+```bash
+sudo rm -f /usr/local/bin/incrmit /usr/local/share/man/man1/incrmit.1
+sudo pkgutil --forget com.github.sasmaq.incrmit
+```
+
+> macOS marks downloaded binaries and packages with a Gatekeeper quarantine.
+> The `.pkg` is currently unsigned, so distribution-quality builds should
+> codesign and notarize it with an Apple Developer ID (out of scope for the
+> default `make pkg`).
+
 ### Automated release (CI)
 
 The `.github/workflows/release.yml` workflow runs when a tag matching `v*` is
@@ -369,6 +416,10 @@ pushed (not on branch pushes). It:
 4. Creates a GitHub Release via `softprops/action-gh-release`, uploading the
    archives, `.deb` and `.rpm` packages, and `checksums.txt`. The workflow uses
    the built-in `GITHUB_TOKEN` with `contents: write` (no extra secrets).
+
+A separate `release-macos` job runs on a `macos-latest` runner, builds the
+`.pkg` installers with `make pkg`, and uploads them to the same release (the
+macOS toolchain needed by `pkgbuild` is unavailable on the Linux runner).
 
 Release checklist:
 
