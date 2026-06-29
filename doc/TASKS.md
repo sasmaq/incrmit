@@ -218,3 +218,53 @@ completed.
       `make pkg`).
 - [ ] Optional: codesign and notarize the `.pkg` (and binary) with Apple
       Developer ID credentials to reduce Gatekeeper warnings on distribution.
+
+## Milestone 17 — Discover `v`-prefixed Versions
+
+- [ ] Recognize an optional leading `v` (and `V`) before `MAJOR.MINOR.PATCH`
+      during discovery (e.g. `v1.2.3`), so tags and `VERSION`-style files using a
+      `v` prefix are detected.
+- [ ] Update the version token detection/regex in discovery to match `vX.Y.Z`
+      without matching unrelated tokens (e.g. avoid `rev1.2.3` or `dev1.2.3`).
+- [ ] Preserve the original `v` prefix when writing the discovered version to
+      `incrmit.toml` and when bumping in place (a `v1.2.3` token bumps to
+      `v1.2.4`, a bare `1.2.3` stays bare).
+- [ ] Decide and document how the prefix is represented in config/state (e.g.
+      store the prefix per entry or infer it from the existing token on bump).
+- [ ] Extend `--dry-run` discovery output to show the `v`-prefixed findings.
+- [ ] Add fixtures and tests covering `vX.Y.Z` and `VX.Y.Z` detection, prefix
+      preservation on bump, and rejection of near-miss tokens (`rev`, `dev`).
+- [ ] Document `v`-prefix support in `README.md` and `doc/DEVELOPMENT.md`.
+
+## Milestone 18 — Ignore IPv4 Addresses
+
+- [ ] Detect and skip IPv4 addresses (e.g. `192.168.1.1`, `10.0.0.255`) during
+      discovery so they are not mistaken for `MAJOR.MINOR.PATCH` versions.
+- [ ] Treat a four-octet `A.B.C.D` token as an IPv4 address, not a version,
+      even when each octet is a valid integer (versions have exactly three
+      components).
+- [ ] Avoid matching version-like substrings inside a larger IPv4 address
+      (e.g. don't pull `168.1.1` out of `192.168.1.1`).
+- [ ] Add fixtures and tests covering common IPv4 forms (loopback, private
+      ranges, broadcast) and confirm they produce no discovered version.
+- [ ] Ensure `--dry-run` discovery output excludes IPv4 matches.
+- [ ] Document the IPv4-skipping behavior in `README.md` and
+      `doc/DEVELOPMENT.md`.
+
+## Milestone 19 — Discover Multiple Occurrences in a File
+
+- [ ] Detect every version occurrence within a single file during discovery
+      rather than stopping at the first match.
+- [ ] Decide how multiple matches map to config entries (e.g. one entry per
+      occurrence, line/column or match index to disambiguate, or a count) and
+      document the chosen model.
+- [ ] Handle consistent vs. conflicting versions in the same file (all matches
+      agree → single version; differing versions → surface clearly).
+- [ ] Ensure in-place bumping updates all targeted occurrences in the file, not
+      just the first one.
+- [ ] Extend `--dry-run` discovery output to list each occurrence (with its
+      location/context) instead of a single per-file result.
+- [ ] Add fixtures and tests for files with several identical and several
+      differing version tokens, asserting all are found and bumped correctly.
+- [ ] Document multi-occurrence discovery behavior in `README.md` and
+      `doc/DEVELOPMENT.md`.
