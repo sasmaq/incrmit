@@ -251,7 +251,27 @@ completed.
 - [x] Document the IPv4-skipping behavior in `README.md` and
       `doc/DEVELOPMENT.md`.
 
-## Milestone 19 — Discover Multiple Occurrences in a File
+## Milestone 19 — Show Flags in the Main Help Command
+
+- [ ] Extend the top-level overview (`overviewHelp`) so `incrmit help` and
+      top-level `-h` / `--help` list the available flags, not just the
+      subcommands.
+- [ ] Include the default bump flags in the overview (`-c`/`--config`,
+      `-f`/`--file`, `-M`/`--major`, `-m`/`--minor`, `-p`/`--patch`,
+      `-d`/`--dry-run`) with their short descriptions and defaults.
+- [ ] Reference each command's flags from the overview (or point to
+      `incrmit help <command>`) so discover/version flags remain discoverable.
+- [ ] Keep the flag text centralized in `internal/cli/help.go` so the overview,
+      per-command help, and `-h` / `--help` output stay in sync (no duplicated
+      flag strings).
+- [ ] Ensure the expanded overview still exits with code `0` and renders for
+      both `incrmit help` and top-level `-h` / `--help`.
+- [ ] Update tests to assert the overview output now contains the flag lines
+      (and still passes for `help` and top-level `-h` / `--help`).
+- [ ] Document the richer `incrmit help` overview in `README.md` and
+      `doc/DEVELOPMENT.md`.
+
+## Milestone 20 — Discover Multiple Occurrences in a File
 
 - [ ] Detect every version occurrence within a single file during discovery
       rather than stopping at the first match.
@@ -269,7 +289,7 @@ completed.
 - [ ] Document multi-occurrence discovery behavior in `README.md` and
       `doc/DEVELOPMENT.md`.
 
-## Milestone 20 — Ignore Folders and Files in Discovery
+## Milestone 21 — Ignore Folders and Files in Discovery
 
 - [ ] Add an `ignore` field to the TOML config (e.g. a top-level `ignore = [...]`
       list of folder/file path patterns) and model it on `config.Config` with a
