@@ -7,8 +7,27 @@ import "io"
 // below so the `-h` / `--help` output and the `incrmit help` output stay in
 // sync and are never duplicated across separate fs.Usage strings.
 
+// bumpFlags and discoverFlags are the single source of truth for each
+// command's flag block. They are composed into both the per-command help
+// (bumpHelp, discoverHelp) and the top-level overview so the flag text never
+// drifts out of sync or gets duplicated across help strings.
+const bumpFlags = `  -c, --config string  path to the TOML config file (default "incrmit.toml")
+  -f, --file string    bump the version in one file (skips config)
+  -M, --major          bump the major version (resets minor and patch)
+  -m, --minor          bump the minor version (resets patch)
+  -p, --patch          bump the patch version (default)
+  -d, --dry-run        print the new version without writing
+`
+
+const discoverFlags = `  -P, --path string    root directory to scan (default ".")
+  -o, --output string  path to write the generated config (default "incrmit.toml")
+  -d, --dry-run        print discovered files without writing the config
+`
+
 // overviewHelp is the top-level summary printed by `incrmit help` and by
-// top-level `-h` / `--help` (with no subcommand).
+// top-level `-h` / `--help` (with no subcommand). It lists the commands and
+// reuses the centralized flag blocks so the available flags are discoverable
+// without drilling into each command's help.
 const overviewHelp = `incrmit — increment semantic versions across one or more files
 
 usage:
@@ -16,6 +35,13 @@ usage:
   incrmit discover [flags]   scan the tree for version-bearing files and write a config
   incrmit version            print the incrmit tool version
   incrmit help [command]     show this overview, or help for a specific command
+
+Bump flags (default command):
+` + bumpFlags + `
+Discover flags (incrmit discover):
+` + discoverFlags + `
+The version command takes no flags. The --version, -version, and -v flags
+print the tool version.
 
 Run "incrmit help <command>" for details, for example "incrmit help discover".
 `
@@ -27,13 +53,7 @@ const bumpHelp = `usage: incrmit [flags]
 Bump the semantic version in the configured files.
 
 Flags:
-  -c, --config string  path to the TOML config file (default "incrmit.toml")
-  -f, --file string    bump the version in one file (skips config)
-  -M, --major          bump the major version (resets minor and patch)
-  -m, --minor          bump the minor version (resets patch)
-  -p, --patch          bump the patch version (default)
-  -d, --dry-run        print the new version without writing
-`
+` + bumpFlags
 
 // discoverHelp documents the discover command. It is shown by
 // `incrmit discover -h`, `incrmit help discover`, and on a discover usage error.
@@ -42,10 +62,7 @@ const discoverHelp = `usage: incrmit discover [flags]
 Scan a directory tree for version-bearing files and generate a config.
 
 Flags:
-  -P, --path string    root directory to scan (default ".")
-  -o, --output string  path to write the generated config (default "incrmit.toml")
-  -d, --dry-run        print discovered files without writing the config
-`
+` + discoverFlags
 
 // versionHelp documents the version command. It is shown by
 // `incrmit version -h` and `incrmit help version`.

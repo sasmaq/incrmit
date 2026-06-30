@@ -188,7 +188,7 @@ incrmit help [command]
 
 | Invocation                | Output                                              |
 | ------------------------- | --------------------------------------------------- |
-| `incrmit help`            | Top-level overview listing every command.           |
+| `incrmit help`            | Overview listing every command and its flags.       |
 | `incrmit help bump`       | The default bump command's flags.                   |
 | `incrmit help discover`   | The discover command's flags.                       |
 | `incrmit help version`    | The version command's help.                         |
@@ -203,7 +203,10 @@ command prints an error and a hint to run `incrmit help` to stderr and exits
 All usage and help text lives in one place (`internal/cli/help.go`) so the
 `-h` / `--help` output and the `help` command stay in sync; the commands'
 `flag.FlagSet` usage handlers and the `help` dispatch both reference those
-shared strings rather than duplicating them.
+shared strings rather than duplicating them. Each command's flag block is
+factored into a shared constant (`bumpFlags`, `discoverFlags`) that is composed
+into both the per-command help and the top-level overview, so the overview can
+list every flag without duplicating the flag text.
 
 ## 8. Processing Flow
 

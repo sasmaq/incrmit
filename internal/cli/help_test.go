@@ -93,6 +93,36 @@ func TestOverviewListsAllCommands(t *testing.T) {
 	}
 }
 
+// The overview must also list the available flags (not just the commands) so
+// users can discover them from the top-level help without drilling in.
+func TestOverviewListsFlags(t *testing.T) {
+	for _, flag := range []string{
+		"-c, --config", "-f, --file", "-M, --major", "-m, --minor",
+		"-p, --patch", "-d, --dry-run", "-P, --path", "-o, --output",
+	} {
+		if !strings.Contains(overviewHelp, flag) {
+			t.Errorf("overviewHelp missing flag %q:\n%s", flag, overviewHelp)
+		}
+	}
+}
+
+// The overview must reuse the centralized flag blocks verbatim so the flag text
+// stays in sync with each command's help (no duplicated flag strings).
+func TestOverviewReusesFlagBlocks(t *testing.T) {
+	if !strings.Contains(overviewHelp, bumpFlags) {
+		t.Errorf("overviewHelp does not embed bumpFlags verbatim:\n%s", overviewHelp)
+	}
+	if !strings.Contains(overviewHelp, discoverFlags) {
+		t.Errorf("overviewHelp does not embed discoverFlags verbatim:\n%s", overviewHelp)
+	}
+	if !strings.Contains(bumpHelp, bumpFlags) {
+		t.Errorf("bumpHelp does not embed bumpFlags verbatim:\n%s", bumpHelp)
+	}
+	if !strings.Contains(discoverHelp, discoverFlags) {
+		t.Errorf("discoverHelp does not embed discoverFlags verbatim:\n%s", discoverHelp)
+	}
+}
+
 // Every help string should start with usage-oriented text and end with a
 // trailing newline so output is well-formed regardless of how it is printed.
 func TestHelpTextWellFormed(t *testing.T) {

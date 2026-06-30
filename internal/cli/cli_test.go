@@ -700,6 +700,11 @@ func TestHelpOverview(t *testing.T) {
 					t.Errorf("overview missing %q: %q", want, stdout)
 				}
 			}
+			for _, want := range []string{"-c, --config", "-M, --major", "-d, --dry-run", "-P, --path", "-o, --output"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("overview missing flag %q: %q", want, stdout)
+				}
+			}
 		})
 	}
 }
