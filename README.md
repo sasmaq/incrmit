@@ -1,12 +1,18 @@
 # Incrmit
 
-A small command-line tool written in Go that parses a file, finds a version value inside it, and increments it (increment + commit).
+A small command-line tool written in Go that parses a file, finds a version
+value inside it, and increments it (increment + commit).
 
 ## Version: 0.1.8
 
 ## Overview
 
-`incrmit` reads a TOML configuration file that lists one or more target files (for example a `VERSION` file, a manifest, or any text/config file containing a semantic version), locates the version value in each, and bumps it by one. The updated version is written back to every file so it can be used in release scripts, CI pipelines, or local development workflows.
+`incrmit` reads a TOML configuration file that lists one or more target
+files (for example a `VERSION` file, a manifest, or any text/config file
+containing a semantic version), locates the version value in each, and
+bumps it by one. The updated version is written back to every file so
+it can be used in release scripts, CI pipelines, or local development
+workflows.
 
 ## Features
 
@@ -15,8 +21,10 @@ A small command-line tool written in Go that parses a file, finds a version valu
 - Updates multiple files in a single run, keeping their versions in sync.
 - Parses each file and locates a semantic version (`MAJOR.MINOR.PATCH`).
 - Increments the major, minor, or patch component.
-- Writes the updated version back to the source files in place (atomic, only the version token changes).
-- Ships as a single self-contained binary with predictable exit codes for scripting and CI.
+- Writes the updated version back to the source files in place (atomic,
+  only the version token changes).
+- Ships as a single self-contained binary with predictable exit codes
+  for scripting and CI.
 
 ## Installation
 
@@ -29,15 +37,39 @@ directly (replace `X.Y.Z` with the release version):
 
 | Platform | Asset |
 | -------- | ----- |
-| Linux amd64 | `incrmit-X.Y.Z-linux-amd64.tar.gz` or `incrmit_X.Y.Z-1_amd64.deb` |
-| Linux arm64 | `incrmit-X.Y.Z-linux-arm64.tar.gz` or `incrmit_X.Y.Z-1_arm64.deb` |
-| macOS amd64 | `incrmit-X.Y.Z-darwin-amd64.tar.gz` or `incrmit-X.Y.Z-darwin-amd64.pkg` |
-| macOS arm64 | `incrmit-X.Y.Z-darwin-arm64.tar.gz` or `incrmit-X.Y.Z-darwin-arm64.pkg` |
+| Linux amd64 | `incrmit-X.Y.Z-linux-amd64.tar.gz` (`.deb` too) |
+| Linux arm64 | `incrmit-X.Y.Z-linux-arm64.tar.gz` (`.deb` too) |
+| macOS amd64 | `incrmit-X.Y.Z-darwin-amd64.tar.gz` (`.pkg` too) |
+| macOS arm64 | `incrmit-X.Y.Z-darwin-arm64.tar.gz` (`.pkg` too) |
 | Windows amd64 | `incrmit-X.Y.Z-windows-amd64.zip` |
 | Fedora / RHEL x86_64 | `incrmit-X.Y.Z-1.x86_64.rpm` |
 | Fedora / RHEL aarch64 | `incrmit-X.Y.Z-1.aarch64.rpm` |
 
 Each release includes `checksums.txt` with SHA-256 hashes of every artifact.
+After downloading an asset, verify its integrity by fetching `checksums.txt`
+from the same release and comparing hashes (replace `X.Y.Z` with the release
+version):
+
+```bash
+VERSION=0.1.8
+curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
+
+# Linux: verify only the assets you downloaded (ignores missing entries)
+sha256sum --ignore-missing -c checksums.txt
+
+# macOS: verify a single asset against its recorded hash
+shasum -a 256 -c checksums.txt --ignore-missing
+```
+
+A successful check prints `OK` next to each verified file. `checksums.txt`
+holds one `<sha256>␣␣<filename>` line per artifact, so you can also compare a
+single hash by hand:
+
+```bash
+# Recompute the hash and eyeball it against the matching line in checksums.txt
+shasum -a 256 "incrmit-${VERSION}-darwin-arm64.pkg"   # sha256sum on Linux
+grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums.txt
+```
 
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
@@ -75,7 +107,8 @@ places `incrmit` in `/usr/local/bin` and the man page in
 ```bash
 VERSION=0.1.8
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
-sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /   # use -darwin-amd64.pkg on Intel
+# use -darwin-amd64.pkg on Intel Macs
+sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
 incrmit version
 man incrmit
 ```
@@ -139,23 +172,49 @@ to a different path.
   version = "0.1.0"
 ```
 
-Each `[[files]]` entry describes one file to update. Every listed file is parsed and bumped together so their versions stay in sync.
+Each `[[files]]` entry describes one file to update. Every listed file is
+parsed and bumped together so their versions stay in sync.
 
-An entry may also record a `version`, which pins the exact value to bump (useful for files that contain several version-like strings). When `version` is omitted, `incrmit` scans the file for the first `MAJOR.MINOR.PATCH` token. After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's `version` reflects the new value, keeping the config in step with the files it manages.
+An entry may also record a `version`, which pins the exact value to bump
+(useful for files that contain several version-like strings). When `version`
+is omitted, `incrmit` scans the file for the first `MAJOR.MINOR.PATCH` token.
+After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's
+`version` reflects the new value, keeping the config in step with the files
+it manages.
 
-A `--dry-run` previews the change and writes nothing — neither the targets nor the config.
+A `--dry-run` previews the change and writes nothing — neither the targets
+nor the config.
 
 ## Discovery
 
-Rather than writing the config by hand, run the `discover` command to scan the project for files that contain a semantic version string and generate an `incrmit.toml` for you.
+Rather than writing the config by hand, run the `discover` command to scan
+the project for files that contain a semantic version string and generate an
+`incrmit.toml` for you.
 
-Discovery walks the directory tree and inspects the contents of every text file, recording the first `MAJOR.MINOR.PATCH` token it finds in each. It is not limited to specific file names or types — any file (`VERSION`, `package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain text, etc.) is matched the same way.
+Discovery walks the directory tree and inspects the contents of every text
+file, recording the first `MAJOR.MINOR.PATCH` token it finds in each. It is
+not limited to specific file names or types — any file (`VERSION`,
+`package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain text,
+etc.) is matched the same way.
 
-A version token may carry an optional leading `v` or `V` (for example `v1.2.3` or `V1.2.3`, as commonly used by tags and `VERSION` files). The prefix is preserved everywhere: it is written to `incrmit.toml` as part of the recorded `version`, and an in-place bump keeps it (so `v1.2.3` bumps to `v1.2.4`, while a bare `1.2.3` stays bare). A `v`/`V` is only treated as a prefix when it stands at a word boundary, so embedded look-alikes such as `rev1.2.3` or `dev1.2.3` are not detected as versions.
+A version token may carry an optional leading `v` or `V` (for example
+`v1.2.3` or `V1.2.3`, as commonly used by tags and `VERSION` files). The
+prefix is preserved everywhere: it is written to `incrmit.toml` as part of
+the recorded `version`, and an in-place bump keeps it (so `v1.2.3` bumps to
+`v1.2.4`, while a bare `1.2.3` stays bare). A `v`/`V` is only treated as a
+prefix when it stands at a word boundary, so embedded look-alikes such as
+`rev1.2.3` or `dev1.2.3` are not detected as versions.
 
-A version has exactly three components, so IPv4 addresses are never mistaken for versions: a four-octet token such as `192.168.1.1`, `10.0.0.255`, or `127.0.0.1` is skipped entirely (and no three-component slice like `168.1.1` is pulled out of it), even when every octet is a version-like integer. A real version on the same line as an address (`server 10.0.0.1 running 2.3.4`) is still detected.
+A version has exactly three components, so IPv4 addresses are never mistaken
+for versions: a four-octet token such as `192.168.1.1`, `10.0.0.255`, or
+`127.0.0.1` is skipped entirely (and no three-component slice like
+`168.1.1` is pulled out of it), even when every octet is a version-like
+integer. A real version on the same line as an address (`server 10.0.0.1
+running 2.3.4`) is still detected.
 
-Binary files and common noise directories (`.git`, `node_modules`, `vendor`, build outputs) are skipped, as is the config file itself (`incrmit.toml` and the `--output` path), so it is never listed as a target.
+Binary files and common noise directories (`.git`, `node_modules`, `vendor`,
+build outputs) are skipped, as is the config file itself (`incrmit.toml` and
+the `--output` path), so it is never listed as a target.
 
 ```bash
 incrmit discover
@@ -178,11 +237,11 @@ version value that was found:
 
 ### Discovery flags
 
-| Flag        | Short | Description                                       | Default        |
-| ----------- | ----- | ------------------------------------------------- | -------------- |
-| `--path`    | `-P`  | Root directory to scan                            | `.`            |
-| `--output`  | `-o`  | Path to write the generated config file           | `incrmit.toml` |
-| `--dry-run` | `-d`  | Print discovered files without writing the config | `false`        |
+| Flag | Short | Description | Default |
+| ---- | ----- | ----------- | ------- |
+| `--path` | `-P` | Root directory to scan | `.` |
+| `--output` | `-o` | Path to write the generated config file | `incrmit.toml` |
+| `--dry-run` | `-d` | Print discovered files without writing config | `false` |
 
 ```bash
 # Scan a specific directory and preview the results
@@ -204,7 +263,8 @@ incrmit -v
 # incrmit 0.1.8
 ```
 
-The version is baked into the binary and can be overridden at build time (for example to stamp a git tag).
+The version is baked into the binary and can be overridden at build time
+(for example to stamp a git tag).
 
 ## Usage
 
@@ -214,18 +274,21 @@ incrmit [flags]
 
 ### Flags
 
-| Flag        | Short | Description                                        | Default        |
-| ----------- | ----- | -------------------------------------------------- | -------------- |
-| `--config`  | `-c`  | Path to the TOML config file                       | `incrmit.toml` |
-| `--file`    | `-f`  | Bump the version in one file (skips config)        | _none_         |
-| `--major`   | `-M`  | Bump the major version (resets minor and patch)    | `false`        |
-| `--minor`   | `-m`  | Bump the minor version (resets patch)              | `false`        |
-| `--patch`   | `-p`  | Bump the patch version                             | `true`         |
-| `--dry-run` | `-d`  | Print the new version without writing to the files | `false`        |
+| Flag | Short | Description | Default |
+| ---- | ----- | ----------- | ------- |
+| `--config` | `-c` | Path to the TOML config file | `incrmit.toml` |
+| `--file` | `-f` | Bump the version in one file (skips config) | _none_ |
+| `--major` | `-M` | Bump the major version (resets minor and patch) | `false` |
+| `--minor` | `-m` | Bump the minor version (resets patch) | `false` |
+| `--patch` | `-p` | Bump the patch version | `true` |
+| `--dry-run` | `-d` | Print the new version without writing files | `false` |
 
-When no `--major`, `--minor`, or `--patch` flag is given, a patch bump is applied. If more than one component flag is supplied, the highest wins (major > minor > patch).
+When no `--major`, `--minor`, or `--patch` flag is given, a patch bump is
+applied. If more than one component flag is supplied, the highest wins (major
+> minor > patch).
 
-Using `--file` bypasses the config entirely: only that file is updated and `incrmit.toml` is not rewritten.
+Using `--file` bypasses the config entirely: only that file is updated and
+`incrmit.toml` is not rewritten.
 
 ### Examples
 
@@ -310,7 +373,8 @@ exits with code `2`.
 
 ## Exit codes
 
-`incrmit` returns predictable exit codes so it can be used reliably in scripts and CI pipelines:
+`incrmit` returns predictable exit codes so it can be used reliably in
+scripts and CI pipelines:
 
 | Code | Meaning                                                        |
 | ---- | -------------------------------------------------------------- |
