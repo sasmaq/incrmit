@@ -222,8 +222,8 @@ completed.
 ## Milestone 17 — Discover `v`-prefixed Versions
 
 - [x] Recognize an optional leading `v` (and `V`) before `MAJOR.MINOR.PATCH`
-      during discovery (e.g. `v1.2.3`), so tags and `VERSION`-style files using a
-      `v` prefix are detected.
+      during discovery (e.g. `v1.2.3`), so tags and `VERSION`-style files
+      using a `v` prefix are detected.
 - [x] Update the version token detection/regex in discovery to match `vX.Y.Z`
       without matching unrelated tokens (e.g. avoid `rev1.2.3` or `dev1.2.3`).
 - [x] Preserve the original `v` prefix when writing the discovered version to
