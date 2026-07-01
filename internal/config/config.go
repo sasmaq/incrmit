@@ -76,23 +76,43 @@ func Load(path string) (*Config, error) {
 }
 
 // Validate checks that the config is usable: it must list at least one file,
-// each entry must have a non-empty path, paths must be unique, and every target
-// must exist on disk. Relative target paths are resolved against baseDir (the
-// directory containing the config file).
+// each entry must have a non-empty path, and every target must exist on disk.
+// A path may be listed in more than one entry as long as each such entry pins a
+// distinct, non-empty version (so a file containing several differing versions
+// can be tracked); exact (path, version) duplicates are rejected, as is a
+// repeated path where any entry omits the version (which would be ambiguous).
+// Relative target paths are resolved against baseDir (the directory containing
+// the config file).
 func (c *Config) Validate(baseDir string) error {
 	if len(c.Files) == 0 {
 		return errors.New("config: no files listed; add at least one [[files]] entry")
 	}
 
 	seen := make(map[string]struct{}, len(c.Files))
+	pathsSeen := make(map[string]struct{}, len(c.Files))
 	for i, f := range c.Files {
 		if f.Path == "" {
 			return fmt.Errorf("config: files[%d] has an empty path", i)
 		}
-		if _, dup := seen[f.Path]; dup {
+		key := f.Path + "\x00" + f.Version
+		if _, dup := seen[key]; dup {
+			if f.Version == "" {
+				return fmt.Errorf("config: duplicate path %q", f.Path)
+			}
+			return fmt.Errorf("config: duplicate path %q with version %q", f.Path, f.Version)
+		}
+		// A repeated path is only allowed when every entry for it pins a
+		// distinct version; a bare (version-less) repeat is ambiguous.
+		if _, repeat := pathsSeen[f.Path]; repeat && f.Version == "" {
 			return fmt.Errorf("config: duplicate path %q", f.Path)
 		}
-		seen[f.Path] = struct{}{}
+		if _, repeat := pathsSeen[f.Path]; repeat {
+			if _, bare := seen[f.Path+"\x00"]; bare {
+				return fmt.Errorf("config: duplicate path %q", f.Path)
+			}
+		}
+		seen[key] = struct{}{}
+		pathsSeen[f.Path] = struct{}{}
 
 		resolved := f.Path
 		if !filepath.IsAbs(resolved) {

@@ -116,6 +116,13 @@ path = "VERSION"
 version = "1.2.3"   # optional; populated by `discover`
 ```
 
+A `path` may appear in more than one `[[files]]` entry when a file contains
+several *differing* versions, as long as each entry pins a distinct, non-empty
+`version` (one entry per distinct version). Validation rejects exact
+`(path, version)` duplicates and any repeated path where an entry omits the
+version (which would be ambiguous). Identical repeats of the same version within
+a file collapse to a single entry.
+
 In code:
 
 ```go
@@ -216,24 +223,35 @@ list every flag without duplicating the flag text.
 2. Resolve targets:
    - If `--file` is set, use that single file.
    - Otherwise load the config from `--config`.
-3. For each target:
-   - Read the file and locate the version string.
-   - Parse it into a `Version`.
-   - Apply the bump.
-4. If `--dry-run`, print `old -> new` for each target and exit (no writes).
-5. Otherwise write each updated file in place.
+3. Group config entries by file (a file listed once per distinct version is a
+   single group) and read each file once. For every entry, determine the old
+   version (from the config `version`, or by scanning the file when none is
+   recorded) and apply the bump to get the new version.
+4. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
+5. Otherwise rewrite each file once, replacing all of its known version tokens
+   in a single pass (`files.SetKnownVersions`). A single pass over the original
+   bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4` alongside
+   `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering another's when two
+   versions live in the same file.
 6. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
-   `version` records the new value, keeping the config in sync for the next run.
-7. Report results.
+   `version` records the new value (one entry per distinct version per file),
+   keeping the config in sync for the next run.
+7. Report results (files bumped, and each `old -> new`).
 
 ### 8.2 Discover
 
 1. Walk the tree from `--path`, skipping ignored directories
    (e.g. `.git`, `node_modules`, `vendor`, build outputs) and the config file
    (`incrmit.toml` by name, plus the resolved `--output` path).
-2. For each candidate file, attempt to extract a semantic version.
-3. Collect matches as `FileEntry` records (path + detected version).
-4. If `--dry-run`, print the findings and exit.
+2. For each candidate file, extract *every* semantic version occurrence,
+   recording each one's line number and the trimmed text of its line
+   (`discovery.Occurrence`). A file with at least one occurrence becomes a
+   `Result`.
+3. Turn results into config entries: one `[[files]]` entry per distinct version
+   in each file (first-seen order), so identical repeats collapse and differing
+   versions each get an entry sharing the path.
+4. If `--dry-run`, print each occurrence with its line number and context, and
+   exit.
 5. Otherwise write the generated config to `--output`.
 
 ## 9. Version Detection Strategy
@@ -250,8 +268,8 @@ list every flag without duplicating the flag text.
   (or `168.1.1`) sliced out of it. The same rule rejects two-component numbers
   (`3.9`) and any other `A.B.C.D...` token whose component count is not three,
   even when every component is a valid integer. Callers iterate matches and keep
-  the first that `Parse` accepts (`detect`) or collect the distinct valid tokens
-  (`FindVersion`).
+  every token that `Parse` accepts (`detect`, which records all occurrences) or
+  collect the distinct valid tokens (`FindVersion`).
 - An optional single leading `v` or `V` is recognized (e.g. `v1.2.3`). Because
   the leading `\b` sits before the optional `[vV]`, the prefix is only consumed
   at a word boundary: look-alikes where the letter is part of a longer word
@@ -267,8 +285,10 @@ list every flag without duplicating the flag text.
   therefore distinct tokens (a file containing both `v1.2.3` and `1.2.3` is
   ambiguous), and a bump rewrites only the exact written token.
 - Discovery is content-based and format-agnostic: it scans the bytes of every
-  text file, regardless of name or extension, and records the first
-  `[v]MAJOR.MINOR.PATCH` token found in each.
+  text file, regardless of name or extension, and records every
+  `[v]MAJOR.MINOR.PATCH` token found in each (with its line number and context).
+  Distinct versions in one file become one config entry each; identical repeats
+  collapse to a single entry and are all rewritten together on bump.
 - Binary files (those containing a NUL byte) are skipped so version-like byte
   sequences in compiled artifacts are not matched.
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.

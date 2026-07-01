@@ -17,11 +17,23 @@ import (
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
-// Result is a single discovered target: a path relative to the scan root and
-// the semantic version detected inside it.
-type Result struct {
-	Path    string
+// Occurrence is a single version token found inside a file: the parsed version,
+// the 1-based line it appears on, and the trimmed text of that line (used for
+// human-readable dry-run output).
+type Occurrence struct {
 	Version version.Version
+	Line    int
+	Text    string
+}
+
+// Result is a single discovered target: a path relative to the scan root and
+// every version occurrence detected inside it, in the order they appear. A file
+// with the same version in several places yields several occurrences; distinct
+// versions in one file are all captured here (see Generate for how they map to
+// config entries).
+type Result struct {
+	Path        string
+	Occurrences []Occurrence
 }
 
 // ignoredDirs are directory names skipped during the walk: version-control
@@ -73,7 +85,7 @@ func Discover(root string) ([]Result, error) {
 			return nil
 		}
 
-		v, ok := detect(path)
+		occ, ok := detect(path)
 		if !ok {
 			return nil
 		}
@@ -81,7 +93,7 @@ func Discover(root string) ([]Result, error) {
 		if relErr != nil {
 			rel = path
 		}
-		results = append(results, Result{Path: filepath.ToSlash(rel), Version: v})
+		results = append(results, Result{Path: filepath.ToSlash(rel), Occurrences: occ})
 		return nil
 	})
 	if err != nil {
@@ -93,14 +105,25 @@ func Discover(root string) ([]Result, error) {
 }
 
 // Generate renders the discovered results as the contents of an incrmit.toml
-// config file, including the version detected for each target.
+// config file. Each file contributes one [[files]] entry per distinct version
+// it contains (in first-seen order): identical repeats collapse to a single
+// entry, while a file with several differing versions yields several entries
+// that share the same path.
 func Generate(results []Result) ([]byte, error) {
 	cfg := config.Config{Files: make([]config.FileEntry, 0, len(results))}
 	for _, r := range results {
-		cfg.Files = append(cfg.Files, config.FileEntry{
-			Path:    r.Path,
-			Version: r.Version.String(),
-		})
+		seen := make(map[string]struct{}, len(r.Occurrences))
+		for _, o := range r.Occurrences {
+			v := o.Version.String()
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+			cfg.Files = append(cfg.Files, config.FileEntry{
+				Path:    r.Path,
+				Version: v,
+			})
+		}
 	}
 
 	var buf bytes.Buffer
@@ -111,26 +134,55 @@ func Generate(results []Result) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// detect reads the file at path and returns the first [v]MAJOR.MINOR.PATCH token
-// it contains. It is best-effort: unreadable and binary files yield ok == false.
-// versionRe also matches dotted-number runs that are not versions (two-component
-// numbers like 3.9, four-octet IPv4 addresses like 192.168.1.1, ...); those fail
-// version.Parse and are skipped, so the first token that parses as a real
-// three-component version wins.
-func detect(path string) (version.Version, bool) {
+// detect reads the file at path and returns every [v]MAJOR.MINOR.PATCH token it
+// contains, in the order they appear, each tagged with its 1-based line number
+// and the trimmed text of that line. It is best-effort: unreadable and binary
+// files yield ok == false. versionRe also matches dotted-number runs that are
+// not versions (two-component numbers like 3.9, four-octet IPv4 addresses like
+// 192.168.1.1, ...); those fail version.Parse and are skipped, so only real
+// three-component versions are reported.
+func detect(path string) ([]Occurrence, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return version.Version{}, false
+		return nil, false
 	}
 	if isBinary(data) {
-		return version.Version{}, false
+		return nil, false
 	}
-	for _, m := range versionRe.FindAll(data, -1) {
-		if v, err := version.Parse(string(m)); err == nil {
-			return v, true
+	var occ []Occurrence
+	for _, loc := range versionRe.FindAllIndex(data, -1) {
+		start, end := loc[0], loc[1]
+		v, perr := version.Parse(string(data[start:end]))
+		if perr != nil {
+			continue
 		}
+		occ = append(occ, Occurrence{
+			Version: v,
+			Line:    lineNumber(data, start),
+			Text:    lineText(data, start),
+		})
 	}
-	return version.Version{}, false
+	if len(occ) == 0 {
+		return nil, false
+	}
+	return occ, true
+}
+
+// lineNumber returns the 1-based line number of the byte at offset in data.
+func lineNumber(data []byte, offset int) int {
+	return 1 + bytes.Count(data[:offset], []byte{'\n'})
+}
+
+// lineText returns the trimmed text of the line containing the byte at offset.
+func lineText(data []byte, offset int) string {
+	start := bytes.LastIndexByte(data[:offset], '\n') + 1
+	end := bytes.IndexByte(data[offset:], '\n')
+	if end < 0 {
+		end = len(data)
+	} else {
+		end += offset
+	}
+	return string(bytes.TrimSpace(data[start:end]))
 }
 
 // isBinary reports whether data looks like a binary (non-text) file. A NUL byte

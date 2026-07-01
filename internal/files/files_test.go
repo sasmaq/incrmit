@@ -253,6 +253,60 @@ func TestSetKnownVersionNotFound(t *testing.T) {
 	}
 }
 
+// SetKnownVersions rewrites several distinct versions in one file, replacing
+// every occurrence of each and leaving unrelated version-like tokens alone.
+func TestSetKnownVersions(t *testing.T) {
+	in := []byte("app 1.2.3\nlib 2.0.0\napp 1.2.3 again\nkeep 4.5.6\n")
+	out, counts := SetKnownVersions(in, map[string]string{
+		"1.2.3": "1.2.4",
+		"2.0.0": "2.0.1",
+	})
+	want := "app 1.2.4\nlib 2.0.1\napp 1.2.4 again\nkeep 4.5.6\n"
+	if string(out) != want {
+		t.Errorf("SetKnownVersions = %q, want %q", out, want)
+	}
+	if counts["1.2.3"] != 2 {
+		t.Errorf("counts[1.2.3] = %d, want 2", counts["1.2.3"])
+	}
+	if counts["2.0.0"] != 1 {
+		t.Errorf("counts[2.0.0] = %d, want 1", counts["2.0.0"])
+	}
+}
+
+// A single pass over the original data means overlapping bumps do not cascade:
+// replacing 1.2.3 -> 1.2.4 alongside 1.2.4 -> 1.2.5 rewrites each original token
+// exactly once rather than turning the first token into the second's input.
+func TestSetKnownVersionsNoCascade(t *testing.T) {
+	in := []byte("first 1.2.3 then 1.2.4\n")
+	out, counts := SetKnownVersions(in, map[string]string{
+		"1.2.3": "1.2.4",
+		"1.2.4": "1.2.5",
+	})
+	want := "first 1.2.4 then 1.2.5\n"
+	if string(out) != want {
+		t.Errorf("SetKnownVersions = %q, want %q", out, want)
+	}
+	if counts["1.2.3"] != 1 || counts["1.2.4"] != 1 {
+		t.Errorf("counts = %v, want each old token replaced once", counts)
+	}
+}
+
+// A token that never appears reports a zero count so callers can detect an
+// out-of-sync config.
+func TestSetKnownVersionsMissingToken(t *testing.T) {
+	in := []byte("only 1.2.3 here\n")
+	out, counts := SetKnownVersions(in, map[string]string{
+		"1.2.3": "1.2.4",
+		"9.9.9": "9.9.10",
+	})
+	if want := "only 1.2.4 here\n"; string(out) != want {
+		t.Errorf("SetKnownVersions = %q, want %q", out, want)
+	}
+	if counts["9.9.9"] != 0 {
+		t.Errorf("counts[9.9.9] = %d, want 0 (absent token)", counts["9.9.9"])
+	}
+}
+
 func TestWriteAtomicPreservesMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "VERSION")

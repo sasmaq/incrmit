@@ -138,6 +138,58 @@ func TestValidateAbsolutePath(t *testing.T) {
 	}
 }
 
+// A path may be listed more than once as long as each entry pins a distinct,
+// non-empty version (a file that contains several differing versions).
+func TestValidateAllowsDuplicatePathDistinctVersions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("1.2.3 and 2.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Files: []FileEntry{
+		{Path: "notes.md", Version: "1.2.3"},
+		{Path: "notes.md", Version: "2.0.0"},
+	}}
+	if err := cfg.Validate(dir); err != nil {
+		t.Errorf("Validate() = %v, want nil for distinct versions on one path", err)
+	}
+}
+
+// An exact (path, version) duplicate is still rejected: it adds nothing and
+// would bump the same token twice.
+func TestValidateRejectsExactDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Files: []FileEntry{
+		{Path: "notes.md", Version: "1.2.3"},
+		{Path: "notes.md", Version: "1.2.3"},
+	}}
+	err := cfg.Validate(dir)
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for exact (path, version) duplicate")
+	}
+	if !strings.Contains(err.Error(), "duplicate path") {
+		t.Errorf("Validate() error = %q, want it to mention a duplicate", err)
+	}
+}
+
+// A repeated path where one entry omits the version is ambiguous and rejected,
+// even if another entry for the same path pins a version.
+func TestValidateRejectsDuplicatePathWithBareEntry(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Files: []FileEntry{
+		{Path: "notes.md", Version: "1.2.3"},
+		{Path: "notes.md"},
+	}}
+	if err := cfg.Validate(dir); err == nil {
+		t.Error("Validate() = nil, want error for a bare duplicate path")
+	}
+}
+
 // Validation errors should name the specific problem so users can fix the
 // config without guessing.
 func TestValidateErrorMessages(t *testing.T) {

@@ -91,6 +91,83 @@ func TestBumpPreservesVPrefix(t *testing.T) {
 	}
 }
 
+// A single file listed under two config entries (one per distinct version it
+// contains) has both versions bumped in one run, and the self-maintained config
+// keeps both entries updated to their new values.
+func TestBumpFileWithMultipleVersions(t *testing.T) {
+	body := "[[files]]\npath = \"notes.md\"\nversion = \"1.2.3\"\n" +
+		"[[files]]\npath = \"notes.md\"\nversion = \"2.0.0\"\n"
+	dir := project(t, body, map[string]string{
+		"notes.md": "app 1.2.3\nlib 2.0.0\napp 1.2.3 again\n",
+	})
+
+	code, stdout, stderr := runMain(t, dir)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "notes.md"))
+	if want := "app 1.2.4\nlib 2.0.1\napp 1.2.4 again\n"; string(got) != want {
+		t.Errorf("notes.md = %q, want %q", got, want)
+	}
+	if !strings.Contains(stdout, "1.2.3 -> 1.2.4") || !strings.Contains(stdout, "2.0.0 -> 2.0.1") {
+		t.Errorf("stdout missing a per-version summary: %q", stdout)
+	}
+	if !strings.Contains(stdout, "to 1 file(s)") {
+		t.Errorf("stdout should count the file once: %q", stdout)
+	}
+
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if len(cfg.Files) != 2 {
+		t.Fatalf("config has %d entries, want 2: %+v", len(cfg.Files), cfg.Files)
+	}
+	wantVers := map[string]bool{"1.2.4": false, "2.0.1": false}
+	for _, f := range cfg.Files {
+		if f.Path != "notes.md" {
+			t.Errorf("entry path = %q, want notes.md", f.Path)
+		}
+		if _, ok := wantVers[f.Version]; !ok {
+			t.Errorf("unexpected entry version %q", f.Version)
+			continue
+		}
+		wantVers[f.Version] = true
+	}
+	for v, seen := range wantVers {
+		if !seen {
+			t.Errorf("config missing self-bumped version %q", v)
+		}
+	}
+}
+
+// discover then bump end to end: a file with two differing versions is
+// discovered into two entries, and a subsequent bump updates both occurrences.
+func TestDiscoverThenBumpMultipleVersions(t *testing.T) {
+	dir := project(t, "", map[string]string{
+		"notes.md": "release 1.2.3\nlegacy 2.0.0\n",
+	})
+
+	if code, _, stderr := runMain(t, dir, "discover"); code != ExitOK {
+		t.Fatalf("discover exit = %d, stderr = %q", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if len(cfg.Files) != 2 {
+		t.Fatalf("discovered config has %d entries, want 2: %+v", len(cfg.Files), cfg.Files)
+	}
+
+	if code, _, stderr := runMain(t, dir, "--minor"); code != ExitOK {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "notes.md"))
+	if want := "release 1.3.0\nlegacy 2.1.0\n"; string(got) != want {
+		t.Errorf("notes.md = %q, want %q", got, want)
+	}
+}
+
 // In --file mode (no config) a bare "v" prefix in the file is detected and
 // preserved through the bump.
 func TestBumpFileModePreservesVPrefix(t *testing.T) {
@@ -118,7 +195,7 @@ func TestDiscoverThenBumpVPrefix(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("discover dry-run exit = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "VERSION: v2.3.4") {
+	if !strings.Contains(stdout, "v2.3.4") {
 		t.Errorf("dry-run stdout = %q, want prefixed finding", stdout)
 	}
 
@@ -476,8 +553,11 @@ func TestDiscoverDryRun(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "VERSION: 1.2.3") || !strings.Contains(stdout, "no config written") {
+	if !strings.Contains(stdout, "VERSION:") || !strings.Contains(stdout, "1.2.3") || !strings.Contains(stdout, "no config written") {
 		t.Errorf("stdout = %q", stdout)
+	}
+	if !strings.Contains(stdout, "L1:") {
+		t.Errorf("stdout = %q, want a line-numbered occurrence", stdout)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "incrmit.toml")); !os.IsNotExist(err) {
 		t.Errorf("dry-run wrote a config file (err = %v)", err)
@@ -496,16 +576,18 @@ func TestDiscoverDryRunExcludesIPv4(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
+	// A file whose only version-like tokens are IPv4 addresses yields no
+	// findings, so it must not be listed at all.
 	if strings.Contains(stdout, "hosts.cfg") {
 		t.Errorf("dry-run reported an IPv4-only file: %q", stdout)
 	}
-	if !strings.Contains(stdout, "app.cfg: 2.3.4") {
-		t.Errorf("dry-run missing the real version: %q", stdout)
+	if strings.Contains(stdout, "192.168") || strings.Contains(stdout, "255.255") {
+		t.Errorf("dry-run leaked an IPv4-only address: %q", stdout)
 	}
-	for _, ipPart := range []string{"192.168", "10.0.0.1", "255.255"} {
-		if strings.Contains(stdout, ipPart) {
-			t.Errorf("dry-run leaked IPv4 text %q: %q", ipPart, stdout)
-		}
+	// The real version is reported (its line context may legitimately include
+	// the neighbouring IP, which is not itself treated as a version).
+	if !strings.Contains(stdout, "app.cfg:") || !strings.Contains(stdout, "2.3.4") {
+		t.Errorf("dry-run missing the real version: %q", stdout)
 	}
 }
 

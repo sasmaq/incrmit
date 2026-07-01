@@ -135,77 +135,56 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return classify(err)
 	}
 
-	// Phase 1: read and plan every target before writing anything, so a
-	// failure on one file does not leave others half-updated (fail fast).
-	type plan struct {
-		display string
-		fsPath  string
-		data    []byte
-		oldVer  version.Version
-		newVer  version.Version
-	}
-	plans := make([]plan, 0, len(targets))
-	for _, tgt := range targets {
-		data, err := os.ReadFile(tgt.fsPath)
-		if err != nil {
-			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", tgt.display, err))
-			return classify(err)
-		}
-
-		// Prefer the version recorded in the config: it pins the exact token to
-		// bump, so files containing several version-like strings are handled
-		// unambiguously. Fall back to scanning the file when none is recorded.
-		var oldVer version.Version
-		if tgt.knownVer != "" {
-			oldVer, err = version.Parse(tgt.knownVer)
-			if err != nil {
-				fprintf(stderr, "incrmit: %s: invalid version %q in config: %v\n", tgt.display, tgt.knownVer, err)
-				return ExitNoVersion
-			}
-		} else {
-			oldVer, err = files.FindVersion(data)
-			if err != nil {
-				fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
-				return classify(err)
-			}
-		}
-		plans = append(plans, plan{
-			display: tgt.display,
-			fsPath:  tgt.fsPath,
-			data:    data,
-			oldVer:  oldVer,
-			newVer:  bump(oldVer),
-		})
+	// Phase 1: read and plan every file before writing anything, so a failure
+	// on one file does not leave others half-updated (fail fast). Config entries
+	// are grouped by file: a single file may be listed several times (once per
+	// distinct version it contains), and all of those versions are bumped in one
+	// pass so the writes never clobber each other.
+	groups, code := planGroups(targets, bump, stderr)
+	if code != ExitOK {
+		return code
 	}
 
 	if opts.dryRun {
 		fprintf(stdout, "Dry run: would apply a %s bump (no files changed)\n", label)
-		for _, p := range plans {
-			fprintf(stdout, "  %s: %s -> %s\n", p.display, p.oldVer, p.newVer)
+		for _, g := range groups {
+			for _, e := range g.entries {
+				fprintf(stdout, "  %s: %s -> %s\n", g.display, e.oldVer, e.newVer)
+			}
 		}
 		return ExitOK
 	}
 
-	// Phase 2: write each planned change atomically. Replace the exact known
-	// old version token so only that version is rewritten.
-	for _, p := range plans {
-		updated, err := files.SetKnownVersion(p.data, p.oldVer, p.newVer)
-		if err != nil {
-			fprintf(stderr, "incrmit: %s: %v\n", p.display, err)
-			return classify(err)
+	// Phase 2: write each file once, replacing all of its known version tokens
+	// in a single pass so overlapping bumps do not cascade.
+	for _, g := range groups {
+		repl := make(map[string]string, len(g.entries))
+		for _, e := range g.entries {
+			repl[e.oldVer.String()] = e.newVer.String()
 		}
-		if err := files.WriteAtomic(p.fsPath, updated); err != nil {
-			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", p.display, err))
+		updated, counts := files.SetKnownVersions(g.data, repl)
+		for _, e := range g.entries {
+			if counts[e.oldVer.String()] == 0 {
+				fprintf(stderr, "incrmit: %s: %v\n", g.display, fmt.Errorf("%w: %s", files.ErrVersionNotFound, e.oldVer))
+				return ExitNoVersion
+			}
+		}
+		if err := files.WriteAtomic(g.fsPath, updated); err != nil {
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", g.display, err))
 			return classify(err)
 		}
 	}
 
-	// Keep the config in sync: record each target's new version so the next bump
+	// Keep the config in sync: record each entry's new version so the next bump
 	// reads the correct current version. Only done in config mode (not --file).
+	// One entry is written per (path, version) so files with several versions
+	// keep all of their entries.
 	if cfgPath != "" {
-		updated := &config.Config{Files: make([]config.FileEntry, len(plans))}
-		for i, p := range plans {
-			updated.Files[i] = config.FileEntry{Path: p.display, Version: p.newVer.String()}
+		updated := &config.Config{}
+		for _, g := range groups {
+			for _, e := range g.entries {
+				updated.Files = append(updated.Files, config.FileEntry{Path: g.display, Version: e.newVer.String()})
+			}
 		}
 		data, err := config.Marshal(updated)
 		if err != nil {
@@ -218,11 +197,74 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	fprintf(stdout, "Applied a %s bump to %d file(s):\n", label, len(plans))
-	for _, p := range plans {
-		fprintf(stdout, "  %s: %s -> %s\n", p.display, p.oldVer, p.newVer)
+	fprintf(stdout, "Applied a %s bump to %d file(s):\n", label, len(groups))
+	for _, g := range groups {
+		for _, e := range g.entries {
+			fprintf(stdout, "  %s: %s -> %s\n", g.display, e.oldVer, e.newVer)
+		}
 	}
 	return ExitOK
+}
+
+// entryPlan is a single version bump within a file: the old token and its
+// computed replacement.
+type entryPlan struct {
+	oldVer version.Version
+	newVer version.Version
+}
+
+// fileGroup is one target file plus every version bump planned for it. A file
+// listed under several config entries (one per distinct version) is bumped as a
+// single unit so all of its versions are rewritten in one pass.
+type fileGroup struct {
+	display string
+	fsPath  string
+	data    []byte
+	entries []entryPlan
+}
+
+// planGroups reads every target file once and computes the old/new version for
+// each config entry, grouping entries that refer to the same file. File order
+// and entry order are preserved for deterministic output. On failure it reports
+// the problem to stderr and returns the appropriate exit code; ExitOK indicates
+// success.
+func planGroups(targets []target, bump func(version.Version) version.Version, stderr io.Writer) ([]fileGroup, int) {
+	var groups []fileGroup
+	index := make(map[string]int, len(targets))
+	for _, tgt := range targets {
+		gi, ok := index[tgt.fsPath]
+		if !ok {
+			data, err := os.ReadFile(tgt.fsPath)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", tgt.display, err))
+				return nil, classify(err)
+			}
+			groups = append(groups, fileGroup{display: tgt.display, fsPath: tgt.fsPath, data: data})
+			gi = len(groups) - 1
+			index[tgt.fsPath] = gi
+		}
+
+		// Prefer the version recorded in the config: it pins the exact token to
+		// bump, so files containing several version-like strings are handled
+		// unambiguously. Fall back to scanning the file when none is recorded.
+		var oldVer version.Version
+		var err error
+		if tgt.knownVer != "" {
+			oldVer, err = version.Parse(tgt.knownVer)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: invalid version %q in config: %v\n", tgt.display, tgt.knownVer, err)
+				return nil, ExitNoVersion
+			}
+		} else {
+			oldVer, err = files.FindVersion(groups[gi].data)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
+				return nil, classify(err)
+			}
+		}
+		groups[gi].entries = append(groups[gi].entries, entryPlan{oldVer: oldVer, newVer: bump(oldVer)})
+	}
+	return groups, ExitOK
 }
 
 // parseBumpFlags registers the bump flags (each with a long and short name)
@@ -349,7 +391,10 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 	if opts.dryRun {
 		fprintf(stdout, "Discovered %d file(s) under %s (no config written):\n", len(results), opts.path)
 		for _, r := range results {
-			fprintf(stdout, "  %s: %s\n", r.Path, r.Version)
+			fprintf(stdout, "  %s:\n", r.Path)
+			for _, o := range r.Occurrences {
+				fprintf(stdout, "    L%d: %s\n", o.Line, o.Text)
+			}
 		}
 		return ExitOK
 	}
@@ -366,9 +411,28 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 
 	fprintf(stdout, "Wrote %s with %d file(s):\n", opts.output, len(results))
 	for _, r := range results {
-		fprintf(stdout, "  %s: %s\n", r.Path, r.Version)
+		for _, v := range distinctVersions(r.Occurrences) {
+			fprintf(stdout, "  %s: %s\n", r.Path, v)
+		}
 	}
 	return ExitOK
+}
+
+// distinctVersions returns the version strings in occurrences with duplicates
+// removed, in first-seen order, matching how Generate maps a file to config
+// entries (one per distinct version).
+func distinctVersions(occ []discovery.Occurrence) []string {
+	seen := make(map[string]struct{}, len(occ))
+	var out []string
+	for _, o := range occ {
+		v := o.Version.String()
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 func parseDiscoverFlags(args []string, stdout, stderr io.Writer) (discoverOptions, int) {

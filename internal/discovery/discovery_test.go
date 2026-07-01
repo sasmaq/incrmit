@@ -10,6 +10,27 @@ import (
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
+// firstVersion returns the version of a result's first occurrence, a common
+// assertion for files that contain a single version.
+func firstVersion(r Result) version.Version {
+	return r.Occurrences[0].Version
+}
+
+// distinct returns the distinct versions in a result, in first-seen order.
+func distinct(r Result) []version.Version {
+	seen := make(map[string]struct{}, len(r.Occurrences))
+	var out []version.Version
+	for _, o := range r.Occurrences {
+		s := o.Version.String()
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, o.Version)
+	}
+	return out
+}
+
 // fixtureTree writes a tree exercising content-based detection across arbitrary
 // file names and types, plus files and directories that must be skipped, and
 // returns the root.
@@ -55,26 +76,38 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	// Detection is content-based and works for any file name. Within a file the
-	// first MAJOR.MINOR.PATCH token wins (e.g. package.json -> 2.0.1, not the
-	// dependency's 1.0.0; Dockerfile -> 8.0.1, since "3.19" is not a full
-	// version). Results are sorted by path.
-	want := []Result{
-		{Path: "Dockerfile", Version: version.Version{Major: 8, Minor: 0, Patch: 1}},
-		{Path: "VERSION", Version: version.Version{Major: 1, Minor: 2, Patch: 3}},
-		{Path: "app.config", Version: version.Version{Major: 10, Minor: 20, Patch: 30}},
-		{Path: "notes.txt", Version: version.Version{Major: 5, Minor: 6, Patch: 7}},
-		{Path: "package.json", Version: version.Version{Major: 2, Minor: 0, Patch: 1}},
-		{Path: "pyproject.toml", Version: version.Version{Major: 3, Minor: 4, Patch: 5}},
-		{Path: "sub/Cargo.toml", Version: version.Version{Major: 0, Minor: 1, Patch: 9}},
-		{Path: "sub/build_info.go", Version: version.Version{Major: 7, Minor: 8, Patch: 9}},
+	// Detection is content-based and works for any file name. Package.json
+	// contains two versions (2.0.1 and the dependency's 1.0.0), so it is
+	// reported with both occurrences; the Dockerfile's "3.19" is not a full
+	// version, so only 8.0.1 is found. Results are sorted by path.
+	want := map[string][]version.Version{
+		"Dockerfile":        {{Major: 8, Minor: 0, Patch: 1}},
+		"VERSION":           {{Major: 1, Minor: 2, Patch: 3}},
+		"app.config":        {{Major: 10, Minor: 20, Patch: 30}},
+		"notes.txt":         {{Major: 5, Minor: 6, Patch: 7}},
+		"package.json":      {{Major: 2, Minor: 0, Patch: 1}, {Major: 1, Minor: 0, Patch: 0}},
+		"pyproject.toml":    {{Major: 3, Minor: 4, Patch: 5}},
+		"sub/Cargo.toml":    {{Major: 0, Minor: 1, Patch: 9}},
+		"sub/build_info.go": {{Major: 7, Minor: 8, Patch: 9}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d results, want %d: %+v", len(got), len(want), got)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("result[%d] = %+v, want %+v", i, got[i], want[i])
+	for _, r := range got {
+		wantVers, ok := want[r.Path]
+		if !ok {
+			t.Errorf("unexpected result for %q: %+v", r.Path, r)
+			continue
+		}
+		gotVers := distinct(r)
+		if len(gotVers) != len(wantVers) {
+			t.Errorf("%q: got versions %v, want %v", r.Path, gotVers, wantVers)
+			continue
+		}
+		for i := range wantVers {
+			if gotVers[i] != wantVers[i] {
+				t.Errorf("%q version[%d] = %v, want %v", r.Path, i, gotVers[i], wantVers[i])
+			}
 		}
 	}
 }
@@ -115,8 +148,10 @@ func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 				t.Errorf("result %q is inside ignored dir %q", r.Path, ignored)
 			}
 		}
-		if r.Version == (version.Version{Major: 9, Minor: 9, Patch: 9}) {
-			t.Errorf("picked up a 9.9.9 version from an ignored dir: %+v", r)
+		for _, o := range r.Occurrences {
+			if o.Version == (version.Version{Major: 9, Minor: 9, Patch: 9}) {
+				t.Errorf("picked up a 9.9.9 version from an ignored dir: %+v", r)
+			}
 		}
 	}
 }
@@ -129,20 +164,78 @@ func TestDiscoverArbitraryFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Path != "anything.weirdext" ||
-		got[0].Version != (version.Version{Major: 4, Minor: 5, Patch: 6}) {
+		firstVersion(got[0]) != (version.Version{Major: 4, Minor: 5, Patch: 6}) {
 		t.Errorf("got %+v, want one 4.5.6 result for anything.weirdext", got)
 	}
 }
 
-func TestDiscoverFirstMatchWins(t *testing.T) {
+// Every version token in a file is captured, in the order it appears, each with
+// its line number.
+func TestDiscoverAllMatches(t *testing.T) {
 	root := t.TempDir()
-	mustWrite(t, root, "f", "current 1.2.3 and later 9.9.9\n")
+	mustWrite(t, root, "f", "current 1.2.3\nand later 9.9.9\n")
 	got, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Version != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
-		t.Errorf("got %+v, want first match 1.2.3", got)
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1: %+v", len(got), got)
+	}
+	occ := got[0].Occurrences
+	if len(occ) != 2 {
+		t.Fatalf("got %d occurrences, want 2: %+v", len(occ), occ)
+	}
+	if occ[0].Version != (version.Version{Major: 1, Minor: 2, Patch: 3}) || occ[0].Line != 1 {
+		t.Errorf("occurrence[0] = %+v, want 1.2.3 on line 1", occ[0])
+	}
+	if occ[1].Version != (version.Version{Major: 9, Minor: 9, Patch: 9}) || occ[1].Line != 2 {
+		t.Errorf("occurrence[1] = %+v, want 9.9.9 on line 2", occ[1])
+	}
+}
+
+// Repeated identical versions collapse to a single distinct version but every
+// occurrence is still recorded (with its own line number).
+func TestDiscoverIdenticalRepeats(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "f", "v = 1.2.3\nsee 1.2.3 again\nand 1.2.3\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Occurrences) != 3 {
+		t.Fatalf("got %+v, want 1 file with 3 occurrences", got)
+	}
+	if d := distinct(got[0]); len(d) != 1 || d[0] != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
+		t.Errorf("distinct versions = %v, want [1.2.3]", d)
+	}
+	for i, wantLine := range []int{1, 2, 3} {
+		if got[0].Occurrences[i].Line != wantLine {
+			t.Errorf("occurrence[%d] line = %d, want %d", i, got[0].Occurrences[i].Line, wantLine)
+		}
+	}
+}
+
+// A file containing several differing versions yields one result with all of
+// them; Generate turns those into one entry per distinct version.
+func TestDiscoverDifferingVersions(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "notes.md", "app 1.2.3\nlib 2.0.0\napp 1.2.3\n")
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1", len(got))
+	}
+	d := distinct(got[0])
+	want := []version.Version{{Major: 1, Minor: 2, Patch: 3}, {Major: 2, Minor: 0, Patch: 0}}
+	if len(d) != len(want) {
+		t.Fatalf("distinct = %v, want %v", d, want)
+	}
+	for i := range want {
+		if d[i] != want[i] {
+			t.Errorf("distinct[%d] = %v, want %v", i, d[i], want[i])
+		}
 	}
 }
 
@@ -153,8 +246,11 @@ func TestDiscoverIgnoresTwoComponentNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Version != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
+	if len(got) != 1 || firstVersion(got[0]) != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
 		t.Errorf("got %+v, want 1.2.3 (3.9 is not a full version)", got)
+	}
+	if len(got[0].Occurrences) != 1 {
+		t.Errorf("got %d occurrences, want 1 (3.9 must not count)", len(got[0].Occurrences))
 	}
 }
 
@@ -166,11 +262,11 @@ func TestDiscoverVPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}
-	if len(got) != 1 || got[0].Version != want {
+	if len(got) != 1 || firstVersion(got[0]) != want {
 		t.Fatalf("got %+v, want one %q result", got, want)
 	}
-	if got[0].Version.String() != "v1.2.3" {
-		t.Errorf("Version.String() = %q, want %q", got[0].Version.String(), "v1.2.3")
+	if firstVersion(got[0]).String() != "v1.2.3" {
+		t.Errorf("Version.String() = %q, want %q", firstVersion(got[0]).String(), "v1.2.3")
 	}
 }
 
@@ -182,7 +278,7 @@ func TestDiscoverUppercaseVPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := version.Version{Major: 10, Minor: 0, Patch: 42, Prefix: "V"}
-	if len(got) != 1 || got[0].Version != want {
+	if len(got) != 1 || firstVersion(got[0]) != want {
 		t.Errorf("got %+v, want one %q result", got, want)
 	}
 }
@@ -213,7 +309,7 @@ func TestDiscoverBareAlongsideNearMiss(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := version.Version{Major: 2, Minor: 3, Patch: 4}
-	if len(got) != 1 || got[0].Version != want {
+	if len(got) != 1 || firstVersion(got[0]) != want {
 		t.Errorf("got %+v, want one %q result", got, want)
 	}
 }
@@ -221,8 +317,8 @@ func TestDiscoverBareAlongsideNearMiss(t *testing.T) {
 // The discovered prefix survives into the generated config's version string.
 func TestGeneratePreservesPrefix(t *testing.T) {
 	results := []Result{
-		{Path: "VERSION", Version: version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
-		{Path: "bare", Version: version.Version{Major: 4, Minor: 5, Patch: 6}},
+		{Path: "VERSION", Occurrences: []Occurrence{{Version: version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}}}},
+		{Path: "bare", Occurrences: []Occurrence{{Version: version.Version{Major: 4, Minor: 5, Patch: 6}}}},
 	}
 	data, err := Generate(results)
 	if err != nil {
@@ -234,6 +330,29 @@ func TestGeneratePreservesPrefix(t *testing.T) {
 	}
 	if !strings.Contains(out, `version = "4.5.6"`) {
 		t.Errorf("generated config missing bare version:\n%s", out)
+	}
+}
+
+// A file with several distinct versions produces one [[files]] entry per
+// distinct version (sharing the path); identical repeats collapse to one entry.
+func TestGenerateDistinctVersionsPerFile(t *testing.T) {
+	results := []Result{
+		{Path: "notes.md", Occurrences: []Occurrence{
+			{Version: version.Version{Major: 1, Minor: 2, Patch: 3}},
+			{Version: version.Version{Major: 2, Minor: 0, Patch: 0}},
+			{Version: version.Version{Major: 1, Minor: 2, Patch: 3}},
+		}},
+	}
+	data, err := Generate(results)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	out := string(data)
+	if strings.Count(out, `path = "notes.md"`) != 2 {
+		t.Errorf("want 2 entries for notes.md (one per distinct version):\n%s", out)
+	}
+	if !strings.Contains(out, `version = "1.2.3"`) || !strings.Contains(out, `version = "2.0.0"`) {
+		t.Errorf("generated config missing a distinct version:\n%s", out)
 	}
 }
 
@@ -272,7 +391,7 @@ func TestDiscoverVersionAlongsideIPv4(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := version.Version{Major: 2, Minor: 3, Patch: 4, Prefix: "v"}
-	if len(got) != 1 || got[0].Version != want {
+	if len(got) != 1 || len(got[0].Occurrences) != 1 || firstVersion(got[0]) != want {
 		t.Errorf("got %+v, want one %q result", got, want)
 	}
 }
@@ -287,7 +406,7 @@ func TestDiscoverIPv4ThenVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := version.Version{Major: 3, Minor: 4, Patch: 5}
-	if len(got) != 1 || got[0].Version != want {
+	if len(got) != 1 || len(got[0].Occurrences) != 1 || firstVersion(got[0]) != want {
 		t.Errorf("got %+v, want one %q result (no slice pulled from the IP)", got, want)
 	}
 }
@@ -352,13 +471,14 @@ func TestGenerateRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading generated config: %v", err)
 	}
-	if len(cfg.Files) != len(results) {
-		t.Fatalf("config has %d files, want %d", len(cfg.Files), len(results))
+
+	// The config lists one entry per distinct version across all files.
+	wantEntries := 0
+	for _, r := range results {
+		wantEntries += len(distinct(r))
 	}
-	for i, r := range results {
-		if cfg.Files[i].Path != r.Path || cfg.Files[i].Version != r.Version.String() {
-			t.Errorf("entry %d = %+v, want path %q version %q", i, cfg.Files[i], r.Path, r.Version)
-		}
+	if len(cfg.Files) != wantEntries {
+		t.Fatalf("config has %d files, want %d", len(cfg.Files), wantEntries)
 	}
 }
 

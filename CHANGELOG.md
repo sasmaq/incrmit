@@ -5,6 +5,26 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-07-02
+
+### Added
+
+- Discovery now finds every version occurrence in a file instead of stopping at
+  the first. A file that contains several *differing* versions is recorded as one
+  `[[files]]` entry per distinct version (identical repeats collapse to a single
+  entry), and a bump rewrites every occurrence of each targeted version.
+- `discover --dry-run` lists each occurrence with its line number and the text of
+  the line for context, rather than a single per-file result.
+
+### Changed
+
+- Bumping groups config entries by file and rewrites all of a file's known
+  versions in a single pass (`files.SetKnownVersions`), so overlapping bumps do
+  not cascade and entries that share a path no longer clobber each other.
+- Config validation allows the same `path` in more than one entry when each pins
+  a distinct, non-empty version; exact `(path, version)` duplicates and ambiguous
+  version-less repeats are still rejected.
+
 ## [0.1.9] - 2026-06-30
 
 ### Added
@@ -117,6 +137,7 @@ First public release.
 - Cross-compiled release binaries for Linux, macOS, and Windows
   (`make dist`), and version stamping via `-ldflags` (`make build`).
 
+[0.1.10]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.10
 [0.1.9]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.9
 [0.1.8]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.8
 [0.1.7]: https://github.com/sasmaq/incrmit/releases/tag/v0.1.7

@@ -273,20 +273,20 @@ completed.
 
 ## Milestone 20 — Discover Multiple Occurrences in a File
 
-- [ ] Detect every version occurrence within a single file during discovery
+- [x] Detect every version occurrence within a single file during discovery
       rather than stopping at the first match.
-- [ ] Decide how multiple matches map to config entries (e.g. one entry per
+- [x] Decide how multiple matches map to config entries (e.g. one entry per
       occurrence, line/column or match index to disambiguate, or a count) and
       document the chosen model.
-- [ ] Handle consistent vs. conflicting versions in the same file (all matches
+- [x] Handle consistent vs. conflicting versions in the same file (all matches
       agree → single version; differing versions → surface clearly).
-- [ ] Ensure in-place bumping updates all targeted occurrences in the file, not
+- [x] Ensure in-place bumping updates all targeted occurrences in the file, not
       just the first one.
-- [ ] Extend `--dry-run` discovery output to list each occurrence (with its
+- [x] Extend `--dry-run` discovery output to list each occurrence (with its
       location/context) instead of a single per-file result.
-- [ ] Add fixtures and tests for files with several identical and several
+- [x] Add fixtures and tests for files with several identical and several
       differing version tokens, asserting all are found and bumped correctly.
-- [ ] Document multi-occurrence discovery behavior in `README.md` and
+- [x] Document multi-occurrence discovery behavior in `README.md` and
       `doc/DEVELOPMENT.md`.
 
 ## Milestone 21 — Ignore Folders and Files in Discovery

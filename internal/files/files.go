@@ -107,6 +107,42 @@ func SetKnownVersion(data []byte, oldVer, newVer version.Version) ([]byte, error
 	return out, nil
 }
 
+// SetKnownVersions replaces several version tokens in a single pass over data.
+// repl maps each current version token to its replacement. Every whole-token
+// occurrence whose text is a key in repl is rewritten to the mapped value; all
+// other bytes (including version-like tokens not in repl) are left untouched.
+//
+// Doing this in one pass over the original data is what makes overlapping bumps
+// safe: replacing 1.2.3 -> 1.2.4 alongside 1.2.4 -> 1.2.5 does not cascade,
+// because matches are taken from the original bytes and never re-scanned. The
+// returned map reports how many times each old token was replaced (0 for tokens
+// that never appeared), so callers can detect an out-of-sync config.
+func SetKnownVersions(data []byte, repl map[string]string) ([]byte, map[string]int) {
+	counts := make(map[string]int, len(repl))
+	for old := range repl {
+		counts[old] = 0
+	}
+
+	locs := versionRe.FindAllIndex(data, -1)
+	var b strings.Builder
+	b.Grow(len(data))
+	prev := 0
+	for _, loc := range locs {
+		start, end := loc[0], loc[1]
+		tok := string(data[start:end])
+		newTok, ok := repl[tok]
+		if !ok {
+			continue
+		}
+		b.Write(data[prev:start])
+		b.WriteString(newTok)
+		prev = end
+		counts[tok]++
+	}
+	b.Write(data[prev:])
+	return []byte(b.String()), counts
+}
+
 // replaceToken rewrites every whole-token occurrence of oldToken (matched on
 // version-token boundaries) with newToken, returning the result and the number
 // of replacements made.
