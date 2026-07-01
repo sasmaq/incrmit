@@ -314,3 +314,164 @@ completed.
       patterns, and confirmation that non-matching files are still discovered.
 - [ ] Document the `ignore` config option and its matching rules in `README.md`
       and `doc/DEVELOPMENT.md`.
+
+## Milestone 22 — Undo Command
+
+- [ ] Design the undo model: an `undo` subcommand reverts the most recent bump,
+      restoring the previous version token in every file that was written (and
+      the `incrmit.toml` self-update), and document the chosen approach in
+      `doc/DEVELOPMENT.md`.
+- [ ] Persist bump history so undo has something to revert to: after a
+      successful (non-`--dry-run`) bump, record a journal entry capturing each
+      affected file's path, the old and new version tokens, and a timestamp
+      (e.g. a state file such as `.incrmit-history` or `.incrmit.state.toml`).
+- [ ] Decide and document the state file's location, format, and lifecycle
+      (where it lives, whether it is committed or git-ignored, and how many
+      entries are retained — at minimum the last bump).
+- [ ] Implement the `undo` subcommand: read the latest journal entry and rewrite
+      each recorded file's current token back to its previous value using the
+      same atomic, in-place write path as bump (only the version token changes).
+- [ ] Restore `incrmit.toml` entries to their pre-bump versions as part of undo
+      so the config stays in sync with the reverted files.
+- [ ] Detect and handle conflicts safely: if a file's current token no longer
+      matches the recorded "new" value (edited since the bump), surface a clear
+      error and skip or abort rather than clobbering user changes.
+- [ ] Add flags: `--dry-run`/`-d` to preview the revert (`new -> old`) without
+      writing, and consider `--config`/`-c` to locate the config/state.
+- [ ] Pop or mark the journal entry as undone after a successful revert so
+      repeated `undo` does not re-apply the same revert (define behavior when
+      there is nothing left to undo).
+- [ ] Handle the empty-history case with a friendly message and a sensible exit
+      code (no journal / nothing to undo).
+- [ ] Wire `undo` into the help system: add it to the top-level overview and
+      `incrmit help undo`, reusing the centralized help text in
+      `internal/cli/help.go`.
+- [ ] Add unit and integration tests: history is written on bump (and not on
+      `--dry-run`), a single-file and multi-file bump reverts cleanly, `--dry-run`
+      undo writes nothing, conflict detection triggers correctly, and the
+      empty-history path returns the expected message and exit code.
+- [ ] Document the `undo` command (with examples and the state-file behavior) in
+      `README.md`, the help text, and `incrmit(1)` man page.
+
+## Milestone 23 — ASCII Art in the Help Command
+
+- [ ] Design an `incrmit` ASCII-art banner (the tool name/logo) and add it as a
+      centralized constant in `internal/cli/help.go` alongside the existing help
+      text (keep it in one place so all help paths stay in sync).
+- [ ] Render the banner at the top of the top-level overview (`incrmit help` and
+      top-level `-h` / `--help`), above the existing description, command list,
+      and flag lines.
+- [ ] Keep the banner to the overview only (don't repeat it in per-command help
+      like `incrmit help discover`) unless a consistent placement is decided and
+      documented.
+- [ ] Ensure the banner width is terminal-friendly (fits within ~80 columns) and
+      uses plain ASCII so it renders correctly on Linux, macOS, and Windows
+      terminals without relying on Unicode or color.
+- [ ] Confirm the banner does not affect exit codes: `incrmit help` and top-level
+      `-h` / `--help` still exit `0`, and error/usage paths are unchanged.
+- [ ] Consider suppressing the banner when output is not a TTY (piped/redirected)
+      or behind a `--no-banner` / `NO_COLOR`-style opt-out; decide and document
+      the behavior (default on vs. TTY-only).
+- [ ] Update tests to assert the overview contains the banner (and still contains
+      the command and flag lines), and that per-command help is unchanged; update
+      any golden files accordingly.
+- [ ] Document the banner in `README.md` (e.g. a sample of the `incrmit help`
+      output) and note any opt-out flag in the help text and `incrmit(1)` man page.
+
+## Milestone 24 — v1.0.0 Release Readiness: Checks
+
+- [ ] Run `gofmt -l .` and confirm it reports no files (matches the CI
+      formatting gate).
+- [ ] Run `go vet ./...` and resolve every reported issue.
+- [ ] Run `golangci-lint run ./...` locally with the same version CI uses and
+      clear all findings (or justify each in-code with a documented `//nolint`).
+- [ ] Run `go build ./...` and `make build` and confirm the version is stamped
+      correctly (`incrmit version` shows the intended `1.0.0`).
+- [ ] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
+      missing dependencies); confirm the Go version pin is intentional.
+- [ ] Audit the public/CLI surface for v1.0.0 stability: confirm flags,
+      subcommands, exit codes, config schema, and `incrmit.toml` self-write
+      format are final (breaking changes belong before 1.0.0, not after).
+- [ ] Review all `internal/` packages (`version`, `config`, `files`,
+      `discovery`, `cli`, `buildinfo`) for `TODO`/`FIXME`/`XXX` markers and
+      resolve or ticket each.
+- [ ] Confirm `README.md`, `doc/DEVELOPMENT.md`, and `incrmit(1)` man page match
+      the actual behavior of the shipped binary (flags, examples, exit codes).
+
+## Milestone 25 — v1.0.0 Release Readiness: Functional & Bug Testing
+
+- [ ] Run the full suite with the race detector and coverage
+      (`go test -race -cover ./...`) and confirm it passes and meets the
+      `make cover` threshold.
+- [ ] Regenerate golden files (`go test ./... -update`) and confirm the diff is
+      empty (no drift between expected and actual output).
+- [ ] Exercise every command end-to-end against a real temp project: default
+      patch bump, `--major`/`--minor`/`--patch`, `--file`, `--dry-run`,
+      `discover` (with `--path`/`--output`/`--dry-run`), `undo`, `version`, and
+      `help`.
+- [ ] Verify the bump→undo round trip: after a bump, `undo` restores every
+      target file and `incrmit.toml` to their exact pre-bump versions, and a
+      conflicting/edited file is refused rather than clobbered.
+- [ ] Verify each documented exit code is actually returned: `0` success,
+      `1` runtime/missing-config/filesystem error, `2` bad flags/unknown
+      command, `3` no/ambiguous/unparseable version.
+- [ ] Test edge-case version tokens: `v`/`V` prefix preservation, IPv4 tokens
+      skipped, multiple identical vs. differing versions in one file, and
+      near-miss tokens (`rev1.2.3`, `dev1.2.3`) rejected.
+- [ ] Test file-handling edge cases: missing target file, empty file, file with
+      no version, read-only/permission-denied file, very large file, files with
+      CRLF vs. LF line endings, and files without a trailing newline.
+- [ ] Confirm atomic in-place writes preserve file mode and surrounding content,
+      and that a failed/interrupted write never corrupts or truncates the target.
+- [ ] Verify config self-maintenance: after a bump the `incrmit.toml` entries are
+      updated to the new version; `--dry-run` writes nothing; the config file is
+      excluded from discovery.
+- [ ] Test config errors: missing config (suggests `discover`), malformed TOML,
+      empty/duplicate/ambiguous `[[files]]` entries, and nonexistent paths.
+- [ ] Cross-platform smoke test the release binaries (Linux, macOS, Windows;
+      amd64 + arm64) — at minimum `version` and a `--dry-run` bump on each.
+- [ ] Install-path smoke tests: `go install`, `.deb` (`dpkg -i`/`-r`),
+      `.rpm` (`rpm -i`/`-e`), `.pkg` (`installer`), and a tarball/zip extract —
+      confirm `incrmit version`, a `--dry-run` bump, and `man incrmit` work.
+
+## Milestone 26 — v1.0.0 Release Readiness: Security Testing
+
+- [ ] Run `govulncheck ./...` and address any reported vulnerabilities in the
+      code or dependencies; wire it into CI as a gate.
+- [ ] Run `go list -m all` and review every dependency for maintenance status,
+      known CVEs, and license compatibility; pin/upgrade as needed.
+- [ ] Audit path handling in `discovery` and `files` for path traversal and
+      symlink escape (e.g. a config `path` or discovered file pointing outside
+      the intended tree, or a symlink to a sensitive file).
+- [ ] Confirm atomic writes create temp files securely (restrictive permissions,
+      same directory, no predictable/guessable names, no world-writable temp).
+- [ ] Verify the tool never follows or writes through symlinks unexpectedly and
+      preserves (does not widen) the original file mode on write.
+- [ ] Review resource-exhaustion vectors: deep/large directory trees and huge or
+      pathological files during discovery (bounded memory, no unbounded reads);
+      ensure binary/non-text files are reliably skipped.
+- [ ] Confirm no sensitive data (file contents, paths, environment) is leaked to
+      logs, error messages, or the rewritten config beyond what is intended.
+- [ ] Review the release pipeline supply chain: pinned GitHub Actions, minimal
+      `GITHUB_TOKEN`/workflow permissions, no secret leakage in logs, and
+      reproducible `-ldflags` version stamping.
+- [ ] Verify published `checksums.txt` (SHA-256) covers every artifact and the
+      documented verification steps in `README.md` actually succeed against the
+      released assets.
+- [ ] Run a Bugbot and/or security review pass over the final diff for v1.0.0 and
+      triage every finding before tagging.
+
+## Milestone 27 — v1.0.0 Release: Publish
+
+- [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
+      on its own `incrmit.toml`) and confirm `README.md` "Version" and
+      `go install …@v1.0.0` references are updated.
+- [ ] Add a `[1.0.0]` section to `CHANGELOG.md` summarizing the stable release
+      and add the matching release-tag link at the bottom.
+- [ ] Verify CI is green on `main` (build, vet, fmt, test with race + coverage,
+      lint, and `govulncheck`) before tagging.
+- [ ] Tag and push the release: `git tag v1.0.0 && git push origin v1.0.0`, then
+      confirm the release workflow builds all archives/packages and publishes the
+      GitHub Release with the `1.0.0` changelog notes.
+- [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
+      resolves, and each published artifact installs and reports `1.0.0`.

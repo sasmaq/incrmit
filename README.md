@@ -131,7 +131,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.26 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.1.5
+go install github.com/sasmaq/incrmit@v0.1.10
 ```
 
 ### Build from source

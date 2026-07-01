@@ -27,4 +27,4 @@ go.work.sum
 .idea/
 
 # Configuration files
-incrmit.toml
+*.toml
