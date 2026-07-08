@@ -18,6 +18,7 @@
 // Matching is case-sensitive (the same as path.Match). These patterns are
 // applied in addition to the built-in ignoredDirs; a path is skipped if either
 // the built-in set or any configured pattern matches.
+
 package discovery
 
 import (

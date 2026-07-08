@@ -353,7 +353,7 @@ incrmit [flags]
 | Flag | Short | Description | Default |
 | ---- | ----- | ----------- | ------- |
 | `--config` | `-c` | Path to the TOML config file | `incrmit.toml` |
-| `--file` | `-f` | Bump the version in one file (skips config) | _none_ |
+| `--file` | `-f` | Bump the version in one file (skips config) | *none* |
 | `--major` | `-M` | Bump the major version (resets minor and patch) | `false` |
 | `--minor` | `-m` | Bump the minor version (resets patch) | `false` |
 | `--patch` | `-p` | Bump the patch version | `true` |
