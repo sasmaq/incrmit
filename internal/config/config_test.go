@@ -285,6 +285,128 @@ func TestMarshalRoundTrip(t *testing.T) {
 	}
 }
 
+// The top-level ignore list is loaded, and separators are normalized to
+// forward slashes so patterns compare consistently across platforms.
+func TestLoadIgnore(t *testing.T) {
+	body := `
+ignore = ["docs\\generated", "  *.lock  ", "testdata/"]
+
+[[files]]
+path = "VERSION"
+`
+	cfgPath := writeConfig(t, body, "VERSION")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() unexpected error: %v", err)
+	}
+	want := []string{"docs/generated", "*.lock", "testdata/"}
+	if len(cfg.Ignore) != len(want) {
+		t.Fatalf("Ignore = %v, want %v", cfg.Ignore, want)
+	}
+	for i := range want {
+		if cfg.Ignore[i] != want[i] {
+			t.Errorf("Ignore[%d] = %q, want %q", i, cfg.Ignore[i], want[i])
+		}
+	}
+}
+
+// An empty (or whitespace-only) ignore pattern is rejected with a clear error.
+func TestLoadIgnoreRejectsEmptyPattern(t *testing.T) {
+	body := "ignore = [\"\", \"VERSION\"]\n[[files]]\npath = \"VERSION\"\n"
+	cfgPath := writeConfig(t, body, "VERSION")
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("Load() = nil error, want error for empty ignore pattern")
+	}
+	if !strings.Contains(err.Error(), "ignore") {
+		t.Errorf("error = %q, want it to mention ignore", err)
+	}
+}
+
+// LoadIgnore returns just the ignore list without requiring the listed targets
+// to exist, so discover can read patterns from a stale config.
+func TestLoadIgnoreStandalone(t *testing.T) {
+	body := "ignore = [\"docs/**\"]\n[[files]]\npath = \"does-not-exist\"\n"
+	cfgPath := writeConfig(t, body) // no targets created
+	got, err := LoadIgnore(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadIgnore() error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "docs/**" {
+		t.Errorf("LoadIgnore() = %v, want [docs/**]", got)
+	}
+}
+
+// A missing or unparseable file yields no patterns and no error, since discover
+// overwrites its --output and may point it at a non-config file.
+func TestLoadIgnoreLenient(t *testing.T) {
+	if got, err := LoadIgnore(filepath.Join(t.TempDir(), "nope.toml")); err != nil || got != nil {
+		t.Errorf("LoadIgnore(missing) = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	bad := filepath.Join(t.TempDir(), "conf.cfg")
+	if err := os.WriteFile(bad, []byte("1.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadIgnore(bad); err != nil || got != nil {
+		t.Errorf("LoadIgnore(non-config) = (%v, %v), want (nil, nil)", got, err)
+	}
+}
+
+// The ignore list round-trips through Marshal, and must be encoded before the
+// [[files]] table to stay valid TOML.
+func TestMarshalIgnoreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		Ignore: []string{"docs/**", "*.lock"},
+		Files:  []FileEntry{{Path: "VERSION", Version: "1.2.3"}},
+	}
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	out := string(data)
+	if strings.Index(out, "ignore =") > strings.Index(out, "[[files]]") {
+		t.Fatalf("ignore must be encoded before [[files]]:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(dir, "incrmit.toml")
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() of marshaled config: %v", err)
+	}
+	if len(got.Ignore) != 2 || got.Ignore[0] != "docs/**" || got.Ignore[1] != "*.lock" {
+		t.Errorf("round-trip ignore = %v, want [docs/** *.lock]", got.Ignore)
+	}
+}
+
+// When a config has no ignore patterns, Marshal (used by bump's rewrite) still
+// documents the option with a commented-out example, and writes no active key.
+func TestMarshalWritesCommentedIgnoreExample(t *testing.T) {
+	data, err := Marshal(&Config{Files: []FileEntry{{Path: "VERSION"}}})
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, "# ignore:") {
+		t.Errorf("Marshal() missing the ignore description comment:\n%s", out)
+	}
+	if !strings.Contains(out, `# ignore = ["testdata/", "*.lock", "docs/**"]`) {
+		t.Errorf("Marshal() missing the commented ignore example:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "ignore =") {
+			t.Errorf("Marshal() emitted an active ignore key for an empty list: %q", line)
+		}
+	}
+}
+
 // An empty Version must be omitted from the encoded output (omitempty), not
 // written as version = "".
 func TestMarshalOmitsEmptyVersion(t *testing.T) {

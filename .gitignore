@@ -25,6 +25,8 @@ go.work.sum
 *.swp
 *~
 .idea/
+.vscode/
+.cursor/
 
 # Configuration files
 *.toml

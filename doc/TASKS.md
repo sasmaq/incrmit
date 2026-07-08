@@ -291,28 +291,28 @@ completed.
 
 ## Milestone 21 — Ignore Folders and Files in Discovery
 
-- [ ] Add an `ignore` field to the TOML config (e.g. a top-level `ignore = [...]`
+- [x] Add an `ignore` field to the TOML config (e.g. a top-level `ignore = [...]`
       list of folder/file path patterns) and model it on `config.Config` with a
       TOML tag.
-- [ ] Parse and validate `ignore` entries when loading the config (non-empty
+- [x] Parse and validate `ignore` entries when loading the config (non-empty
       patterns; trim and normalize separators to slashes).
-- [ ] Make `discover` read the config's `ignore` list (when a config exists at
+- [x] Make `discover` read the config's `ignore` list (when a config exists at
       the `--output` path) and skip matching folders and files during the walk,
       in addition to the built-in ignored dirs (`.git`, `node_modules`,
       `vendor`, build outputs).
-- [ ] Match ignore patterns against paths relative to the scan root, supporting
+- [x] Match ignore patterns against paths relative to the scan root, supporting
       both directory names (prune the subtree) and file globs
       (e.g. `*.lock`, `docs/**`, `testdata/`).
-- [ ] Decide and document the matching semantics (glob via `path.Match` vs.
+- [x] Decide and document the matching semantics (glob via `path.Match` vs.
       prefix/exact match, case sensitivity, trailing-slash = directory) and how
       patterns combine with the built-in ignore list.
-- [ ] Preserve the `ignore` list when `discover` regenerates `incrmit.toml`
+- [x] Preserve the `ignore` list when `discover` regenerates `incrmit.toml`
       (don't drop user-authored ignore entries on rewrite).
-- [ ] Extend `--dry-run` discovery output to reflect the applied ignore rules
+- [x] Extend `--dry-run` discovery output to reflect the applied ignore rules
       (skipped paths are not listed as findings).
-- [ ] Add fixtures and tests covering ignored directories, file globs, nested
+- [x] Add fixtures and tests covering ignored directories, file globs, nested
       patterns, and confirmation that non-matching files are still discovered.
-- [ ] Document the `ignore` config option and its matching rules in `README.md`
+- [x] Document the `ignore` config option and its matching rules in `README.md`
       and `doc/DEVELOPMENT.md`.
 
 ## Milestone 22 — Undo Command

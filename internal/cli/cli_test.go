@@ -564,6 +564,74 @@ func TestDiscoverDryRun(t *testing.T) {
 	}
 }
 
+// discover reads an existing config's ignore list, skips matching paths, and
+// writes the ignore list back so it survives regeneration.
+func TestDiscoverHonorsAndPreservesIgnore(t *testing.T) {
+	dir := project(t, "ignore = [\"docs/**\", \"*.lock\"]\n[[files]]\npath = \"VERSION\"\nversion = \"0.0.1\"\n", map[string]string{
+		"VERSION":       "1.2.3\n",
+		"deps.lock":     "2.0.0\n",
+		"docs/guide.md": "3.4.5\n",
+	})
+
+	code, _, stderr := runMain(t, dir, "discover")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	for _, f := range cfg.Files {
+		if f.Path == "deps.lock" || strings.HasPrefix(f.Path, "docs/") {
+			t.Errorf("ignored path was discovered: %+v", cfg.Files)
+		}
+	}
+	if len(cfg.Ignore) != 2 || cfg.Ignore[0] != "docs/**" || cfg.Ignore[1] != "*.lock" {
+		t.Errorf("ignore list not preserved: %v", cfg.Ignore)
+	}
+}
+
+// discover --dry-run notes the applied ignore rules and omits skipped paths.
+func TestDiscoverDryRunShowsIgnore(t *testing.T) {
+	dir := project(t, "ignore = [\"*.lock\"]\n[[files]]\npath = \"VERSION\"\nversion = \"0.0.1\"\n", map[string]string{
+		"VERSION":   "1.2.3\n",
+		"deps.lock": "2.0.0\n",
+	})
+
+	code, stdout, stderr := runMain(t, dir, "discover", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "ignoring: *.lock") {
+		t.Errorf("dry-run did not note the ignore rules: %q", stdout)
+	}
+	if strings.Contains(stdout, "deps.lock") {
+		t.Errorf("dry-run listed an ignored file: %q", stdout)
+	}
+}
+
+// A bump must not drop the user-authored ignore list when it rewrites the config.
+func TestBumpPreservesIgnore(t *testing.T) {
+	dir := project(t, "ignore = [\"docs/**\"]\n[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n", map[string]string{
+		"VERSION": "1.2.3\n",
+	})
+
+	code, _, stderr := runMain(t, dir)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if len(cfg.Ignore) != 1 || cfg.Ignore[0] != "docs/**" {
+		t.Errorf("bump dropped the ignore list: %v", cfg.Ignore)
+	}
+	if len(cfg.Files) != 1 || cfg.Files[0].Version != "1.2.4" {
+		t.Errorf("bump did not update the version: %+v", cfg.Files)
+	}
+}
+
 // discover --dry-run must not report IPv4 addresses: a file holding only an IP
 // yields no findings, while a real version on the same line is shown alone.
 func TestDiscoverDryRunExcludesIPv4(t *testing.T) {

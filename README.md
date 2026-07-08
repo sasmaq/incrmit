@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.1.10
+## Version: 0.1.11
 
 ## Overview
 
@@ -51,7 +51,7 @@ from the same release and comparing hashes (replace `X.Y.Z` with the release
 version):
 
 ```bash
-VERSION=0.1.10
+VERSION=0.1.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -74,7 +74,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.10
+VERSION=0.1.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -83,7 +83,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.10
+VERSION=0.1.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -93,7 +93,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.10
+VERSION=0.1.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo rpm -i "incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 # or: sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"
@@ -105,7 +105,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.1.10
+VERSION=0.1.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -131,7 +131,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.26 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.1.10
+go install github.com/sasmaq/incrmit@v0.1.11
 ```
 
 ### Build from source
@@ -185,6 +185,50 @@ it manages.
 A `--dry-run` previews the change and writes nothing — neither the targets
 nor the config.
 
+### Ignoring folders and files
+
+An optional top-level `ignore` list tells `discover` which folders and files to
+skip, in addition to the built-in noise directories (`.git`, `node_modules`,
+`vendor`, and build outputs like `dist`, `build`, `target`). It is written near
+the top of the config, before the `[[files]]` entries:
+
+```toml
+# incrmit.toml
+
+ignore = [
+  "testdata/",   # a directory (trailing slash): prune the whole subtree
+  "node_modules", # a bare name: match that folder/file at any depth
+  "*.lock",      # a glob: match matching files anywhere in the tree
+  "docs/**",     # a path with **: prune docs and everything under it
+]
+
+[[files]]
+  path = "VERSION"
+  version = "0.1.0"
+```
+
+Matching rules (patterns are compared against the path **relative to the scan
+root**, always using forward slashes, and matching is **case-sensitive**):
+
+- A **trailing slash** (`testdata/`) marks a pattern as directory-only: it
+  prunes a matching directory (and its subtree) but never matches a file of the
+  same name.
+- A pattern with **no slash** (`node_modules`, `*.lock`) matches the base name
+  of any file or directory at **any depth**. Globs use
+  [`path.Match`](https://pkg.go.dev/path#Match) syntax (`*`, `?`, `[…]`).
+- A pattern **containing a slash** (`docs/**`, `a/b/*.txt`) is matched against
+  the whole relative path, segment by segment. Each segment is a `path.Match`
+  glob, and `**` matches zero or more path segments — so `docs/**` prunes the
+  `docs` directory and everything inside it.
+
+The `ignore` list is preserved when `discover` regenerates the config and when a
+bump rewrites it, so hand-authored entries are never dropped. `discover` reads
+the list from the config already present at its `--output` path. Whenever
+`incrmit` writes a config that has no `ignore` list yet — either from `discover`
+or when a bump rewrites the file — it includes a short description of the option
+along with a **commented-out example**, so the feature is easy to find and
+enable: just uncomment the line and edit the patterns.
+
 ## Discovery
 
 Rather than writing the config by hand, run the `discover` command to scan
@@ -221,7 +265,9 @@ running 2.3.4`) is still detected.
 
 Binary files and common noise directories (`.git`, `node_modules`, `vendor`,
 build outputs) are skipped, as is the config file itself (`incrmit.toml` and
-the `--output` path), so it is never listed as a target.
+the `--output` path), so it is never listed as a target. Any folders and files
+matched by the config's [`ignore` list](#ignoring-folders-and-files) are skipped
+too.
 
 ```bash
 incrmit discover
@@ -261,6 +307,10 @@ Discovered 1 file(s) under . (no config written):
     L5: legacy 2.0.0
 ```
 
+When the config has an `ignore` list, `--dry-run` notes the applied rules on a
+`(ignoring: …)` line and, like a normal run, never lists any skipped path as a
+finding.
+
 ### Discovery flags
 
 | Flag | Short | Description | Default |
@@ -286,7 +336,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.10
+# incrmit 0.1.11
 ```
 
 The version is baked into the binary and can be overridden at build time

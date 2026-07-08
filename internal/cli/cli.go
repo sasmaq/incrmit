@@ -129,7 +129,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 
 	bump, label := resolveBump(opts.major, opts.minor, opts.patch)
 
-	targets, cfgPath, err := resolveTargets(opts)
+	targets, cfgPath, ignore, err := resolveTargets(opts)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -180,7 +180,9 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	// One entry is written per (path, version) so files with several versions
 	// keep all of their entries.
 	if cfgPath != "" {
-		updated := &config.Config{}
+		// Carry the user-authored ignore list through the rewrite so a bump
+		// never drops it.
+		updated := &config.Config{Ignore: ignore}
 		for _, g := range groups {
 			for _, e := range g.entries {
 				updated.Files = append(updated.Files, config.FileEntry{Path: g.display, Version: e.newVer.String()})
@@ -329,21 +331,22 @@ type target struct {
 	knownVer string // current version recorded in the config ("" if none)
 }
 
-// resolveTargets returns the files to bump and the config path they came from
-// (empty in --file mode). It uses either the single --file target or every
-// entry in the config. Config-relative paths are resolved against the directory
-// containing the config file. When a config entry records a version, it is
-// carried through so the bump can target that exact version and avoid
-// re-scanning files that contain several version-like strings.
-func resolveTargets(opts bumpOptions) ([]target, string, error) {
+// resolveTargets returns the files to bump, the config path they came from
+// (empty in --file mode), and the config's ignore list (nil in --file mode, and
+// carried through so a config rewrite preserves it). It uses either the single
+// --file target or every entry in the config. Config-relative paths are resolved
+// against the directory containing the config file. When a config entry records
+// a version, it is carried through so the bump can target that exact version and
+// avoid re-scanning files that contain several version-like strings.
+func resolveTargets(opts bumpOptions) ([]target, string, []string, error) {
 	if opts.file != "" {
-		return []target{{display: opts.file, fsPath: opts.file}}, "", nil
+		return []target{{display: opts.file, fsPath: opts.file}}, "", nil, nil
 	}
 
 	cfgPath := config.ResolvePath(opts.configPath)
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	baseDir := filepath.Dir(cfgPath)
@@ -359,7 +362,7 @@ func resolveTargets(opts bumpOptions) ([]target, string, error) {
 			knownVer: f.Version,
 		})
 	}
-	return targets, cfgPath, nil
+	return targets, cfgPath, cfg.Ignore, nil
 }
 
 type discoverOptions struct {
@@ -377,7 +380,15 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	results, err := discovery.Discover(opts.path)
+	// Read any user-authored ignore patterns from an existing config at the
+	// --output path so discovery honors them and they survive a regeneration.
+	ignore, err := config.LoadIgnore(opts.output)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return classify(err)
+	}
+
+	results, err := discovery.Discover(opts.path, ignore...)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -390,6 +401,9 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 
 	if opts.dryRun {
 		fprintf(stdout, "Discovered %d file(s) under %s (no config written):\n", len(results), opts.path)
+		if len(ignore) > 0 {
+			fprintf(stdout, "  (ignoring: %s)\n", strings.Join(ignore, ", "))
+		}
 		for _, r := range results {
 			fprintf(stdout, "  %s:\n", r.Path)
 			for _, o := range r.Occurrences {
@@ -399,7 +413,7 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 
-	data, err := discovery.Generate(results)
+	data, err := discovery.Generate(results, ignore...)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return ExitError

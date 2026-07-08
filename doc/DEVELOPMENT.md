@@ -111,6 +111,8 @@ packages:
 
 ```toml
 # incrmit.toml
+ignore = ["testdata/", "*.lock", "docs/**"]   # optional; folders/files discover skips
+
 [[files]]
 path = "VERSION"
 version = "1.2.3"   # optional; populated by `discover`
@@ -123,11 +125,18 @@ several *differing* versions, as long as each entry pins a distinct, non-empty
 version (which would be ambiguous). Identical repeats of the same version within
 a file collapse to a single entry.
 
-In code:
+The optional top-level `ignore` list holds folder/file patterns that `discover`
+skips (see [section 8.3](#83-ignore-matching)). Empty patterns are rejected;
+each pattern is trimmed and its separators normalized to `/` on load.
+
+In code (`Ignore` is declared before `Files` so it encodes as a top-level array
+ahead of the `[[files]]` array-of-tables — a bare key emitted after a table
+would otherwise be parsed as belonging to that table):
 
 ```go
 type Config struct {
-    Files []FileEntry `toml:"files"`
+    Ignore []string    `toml:"ignore,omitempty"`
+    Files  []FileEntry `toml:"files"`
 }
 
 type FileEntry struct {
@@ -135,6 +144,12 @@ type FileEntry struct {
     Version string `toml:"version,omitempty"`
 }
 ```
+
+`config.LoadIgnore` reads only the `ignore` list, without validating the listed
+targets, so `discover` can honor a stale config's patterns. It is deliberately
+lenient: a missing or unparseable `--output` file yields no patterns and no
+error, since `discover` overwrites that path and it may not currently be a valid
+config.
 
 ### 6.2 Version
 
@@ -240,19 +255,48 @@ list every flag without duplicating the flag text.
 
 ### 8.2 Discover
 
-1. Walk the tree from `--path`, skipping ignored directories
-   (e.g. `.git`, `node_modules`, `vendor`, build outputs) and the config file
-   (`incrmit.toml` by name, plus the resolved `--output` path).
-2. For each candidate file, extract *every* semantic version occurrence,
+1. Read the `ignore` list from any config already at `--output`
+   (`config.LoadIgnore`); an absent/unparseable file just yields no patterns.
+2. Walk the tree from `--path`, skipping the built-in ignored directories
+   (e.g. `.git`, `node_modules`, `vendor`, build outputs), the config file
+   (`incrmit.toml` by name, plus the resolved `--output` path), and anything
+   matched by the `ignore` patterns (see [section 8.3](#83-ignore-matching)).
+3. For each candidate file, extract *every* semantic version occurrence,
    recording each one's line number and the trimmed text of its line
    (`discovery.Occurrence`). A file with at least one occurrence becomes a
    `Result`.
-3. Turn results into config entries: one `[[files]]` entry per distinct version
+4. Turn results into config entries: one `[[files]]` entry per distinct version
    in each file (first-seen order), so identical repeats collapse and differing
-   versions each get an entry sharing the path.
-4. If `--dry-run`, print each occurrence with its line number and context, and
-   exit.
-5. Otherwise write the generated config to `--output`.
+   versions each get an entry sharing the path. The `ignore` list is written
+   back verbatim so regeneration never drops it (a bump preserves it the same
+   way when it rewrites the config). A description of the `ignore` option is
+   always written above it; when there are no patterns yet, a commented-out
+   example (`# ignore = [...]`) is emitted in their place so the feature is
+   discoverable from a freshly written config. The comment block
+   (`config.IgnoreComment`) is shared by both the discover generation and the
+   bump-time rewrite (`config.Marshal`) so both files carry identical guidance.
+5. If `--dry-run`, note the applied ignore rules and print each occurrence with
+   its line number and context, then exit.
+6. Otherwise write the generated config to `--output`.
+
+### 8.3 Ignore matching
+
+The `ignore` patterns are compiled into an `ignoreMatcher` (`discovery/ignore.go`)
+and applied during the walk against paths **relative to the scan root**, always
+in slash form, **case-sensitively**:
+
+- A **trailing slash** marks a pattern as directory-only (`testdata/` prunes a
+  directory but never matches a file).
+- A pattern with **no slash** matches the base name of any file or directory at
+  **any depth** via `path.Match` (`node_modules`, `*.lock`).
+- A pattern **with a slash** is matched against the whole relative path,
+  segment by segment; each segment is a `path.Match` glob and `**` matches zero
+  or more segments (`docs/**` prunes `docs` and its subtree).
+
+A matching directory returns `filepath.SkipDir` to prune its subtree; a matching
+file is simply not recorded. These rules are applied *in addition to* the
+built-in `ignoredDirs`: a path is skipped if either the built-in set or any
+configured pattern matches.
 
 ## 9. Version Detection Strategy
 
