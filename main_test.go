@@ -135,6 +135,39 @@ func TestE2EDiscover(t *testing.T) {
 	}
 }
 
+func TestE2EUndo(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n")
+	writeFile(t, dir, "VERSION", "1.2.3\n")
+
+	if code, _, stderr := runBin(t, dir, "--minor"); code != 0 {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.3.0\n" {
+		t.Fatalf("VERSION after bump = %q, want 1.3.0", got)
+	}
+
+	code, stdout, stderr := runBin(t, dir, "undo")
+	if code != 0 {
+		t.Fatalf("undo exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "1.3.0 -> 1.2.3") {
+		t.Errorf("undo stdout = %q", stdout)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("VERSION after undo = %q, want 1.2.3", got)
+	}
+
+	// A second undo has nothing left and exits 0 with a friendly message.
+	code, stdout, stderr = runBin(t, dir, "undo")
+	if code != 0 {
+		t.Fatalf("second undo exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Nothing to undo") {
+		t.Errorf("second undo stdout = %q, want nothing-to-undo message", stdout)
+	}
+}
+
 func TestE2EVersion(t *testing.T) {
 	code, stdout, stderr := runBin(t, t.TempDir(), "version")
 	if code != 0 {
@@ -155,6 +188,7 @@ func TestE2EHelp(t *testing.T) {
 		{"top-level-h", []string{"-h"}, "usage:"},
 		{"top-level-help", []string{"--help"}, "usage:"},
 		{"help-discover", []string{"help", "discover"}, "Scan a directory tree"},
+		{"help-undo", []string{"help", "undo"}, "Revert the most recent bump"},
 		{"help-version", []string{"help", "version"}, "Print the incrmit tool version"},
 	}
 	for _, tt := range tests {

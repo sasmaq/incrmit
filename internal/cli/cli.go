@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sasmaq/incrmit/internal/buildinfo"
 	"github.com/sasmaq/incrmit/internal/config"
 	"github.com/sasmaq/incrmit/internal/discovery"
 	"github.com/sasmaq/incrmit/internal/files"
+	"github.com/sasmaq/incrmit/internal/history"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -68,6 +70,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		switch args[0] {
 		case "discover":
 			return runDiscover(args[1:], stdout, stderr)
+		case "undo":
+			return runUndo(args[1:], stdout, stderr)
 		case "version":
 			return runVersion(args[1:], stdout, stderr)
 		case "--version", "-version", "-v":
@@ -196,6 +200,13 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		if err := files.WriteAtomic(cfgPath, data); err != nil {
 			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", cfgPath, err))
 			return classify(err)
+		}
+
+		// Record the bump in the journal next to the config so `incrmit undo`
+		// can revert it. Only in config mode: an --file bump has no
+		// config-anchored location to keep (or find) the state file.
+		if code := recordHistory(cfgPath, groups, stderr); code != ExitOK {
+			return code
 		}
 	}
 
@@ -498,6 +509,239 @@ func excludeOutput(results []discovery.Result, root, output string) []discovery.
 		filtered = append(filtered, r)
 	}
 	return filtered
+}
+
+// recordHistory appends a journal entry for a successful config-mode bump to
+// the state file next to the config, so `incrmit undo` can revert it. Paths are
+// stored resolved (absolute) so undo can locate the files and config regardless
+// of the working directory it is later run from. On failure it reports to
+// stderr and returns a non-OK exit code.
+func recordHistory(cfgPath string, groups []fileGroup, stderr io.Writer) int {
+	absCfg, err := filepath.Abs(cfgPath)
+	if err != nil {
+		absCfg = cfgPath
+	}
+	entry := history.Entry{Timestamp: time.Now().UTC(), Config: absCfg}
+	for _, g := range groups {
+		absFS, err := filepath.Abs(g.fsPath)
+		if err != nil {
+			absFS = g.fsPath
+		}
+		for _, e := range g.entries {
+			entry.Changes = append(entry.Changes, history.Change{
+				Path: g.display,
+				FS:   absFS,
+				Old:  e.oldVer.String(),
+				New:  e.newVer.String(),
+			})
+		}
+	}
+
+	statePath := history.ResolvePath(cfgPath)
+	h, err := history.Load(statePath)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return classify(err)
+	}
+	h.Push(entry)
+	if err := history.Save(statePath, h); err != nil {
+		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", statePath, err))
+		return classify(err)
+	}
+	return ExitOK
+}
+
+type undoOptions struct {
+	configPath string
+	dryRun     bool
+}
+
+// runUndo reverts the most recent recorded bump: it restores the previous
+// version token in every file that bump wrote and rewrites the config's
+// recorded versions to match, then pops the journal entry so a repeated undo
+// walks further back rather than re-applying the same revert.
+func runUndo(args []string, stdout, stderr io.Writer) int {
+	opts, code := parseUndoFlags(args, stdout, stderr)
+	if code == exitSilentFlag {
+		return ExitOK
+	}
+	if code != ExitOK {
+		return code
+	}
+
+	cfgPath := config.ResolvePath(opts.configPath)
+	statePath := history.ResolvePath(cfgPath)
+	h, err := history.Load(statePath)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return classify(err)
+	}
+	entry, ok := h.Latest()
+	if !ok {
+		fprintln(stdout, "Nothing to undo: no bump history recorded.")
+		return ExitOK
+	}
+
+	// Load the config up front (before writing anything) so a config problem
+	// aborts the undo before any file is touched, mirroring bump's fail-fast.
+	var cfg *config.Config
+	if entry.Config != "" {
+		cfg, err = config.Load(entry.Config)
+		if err != nil {
+			fprintln(stderr, "incrmit:", err)
+			return classify(err)
+		}
+	}
+
+	// Phase 1: read every recorded file once, group changes by file, and build
+	// the reverse (new -> old) replacement, verifying the recorded "new" token
+	// is still present so a file edited since the bump is caught before any
+	// write happens.
+	groups, code := planReverts(entry, stderr)
+	if code != ExitOK {
+		return code
+	}
+
+	if opts.dryRun {
+		fprintln(stdout, "Dry run: would undo the most recent bump (no files changed)")
+		for _, g := range groups {
+			for _, c := range g.changes {
+				fprintf(stdout, "  %s: %s -> %s\n", c.Path, c.New, c.Old)
+			}
+		}
+		return ExitOK
+	}
+
+	// Phase 2: write each reverted file once.
+	for _, g := range groups {
+		if err := files.WriteAtomic(g.fsPath, g.updated); err != nil {
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", g.display, err))
+			return classify(err)
+		}
+	}
+
+	// Restore the config's recorded versions to their pre-bump values so the
+	// config stays in sync with the reverted files (mirroring the bump's
+	// self-update in reverse).
+	if cfg != nil {
+		revert := make(map[string]string, len(entry.Changes))
+		for _, c := range entry.Changes {
+			revert[c.Path+"\x00"+c.New] = c.Old
+		}
+		for i := range cfg.Files {
+			f := &cfg.Files[i]
+			if old, ok := revert[f.Path+"\x00"+f.Version]; ok {
+				f.Version = old
+			}
+		}
+		data, err := config.Marshal(cfg)
+		if err != nil {
+			fprintln(stderr, "incrmit:", err)
+			return ExitError
+		}
+		if err := files.WriteAtomic(entry.Config, data); err != nil {
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", entry.Config, err))
+			return classify(err)
+		}
+	}
+
+	// Pop the reverted entry so a repeated undo does not re-apply it.
+	h.Pop()
+	if err := history.Save(statePath, h); err != nil {
+		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", statePath, err))
+		return classify(err)
+	}
+
+	fprintf(stdout, "Undid the most recent bump in %d file(s):\n", len(groups))
+	for _, g := range groups {
+		for _, c := range g.changes {
+			fprintf(stdout, "  %s: %s -> %s\n", c.Path, c.New, c.Old)
+		}
+	}
+	return ExitOK
+}
+
+// revertGroup is one file plus every recorded change to undo in it, along with
+// the reverted bytes computed during planning (written verbatim in phase 2).
+type revertGroup struct {
+	display string
+	fsPath  string
+	updated []byte
+	changes []history.Change
+}
+
+// planReverts reads each recorded file once, groups the entry's changes by
+// file, and computes the reverse (new -> old) rewrite in a single pass so
+// overlapping reverts do not cascade (matching the bump write path). It fails
+// fast if a file no longer contains the "new" token the bump wrote, which means
+// the file was edited since the bump and undoing would clobber that change.
+func planReverts(entry history.Entry, stderr io.Writer) ([]revertGroup, int) {
+	var groups []revertGroup
+	index := make(map[string]int, len(entry.Changes))
+	for _, c := range entry.Changes {
+		gi, ok := index[c.FS]
+		if !ok {
+			data, err := os.ReadFile(c.FS)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", c.Path, err))
+				return nil, classify(err)
+			}
+			groups = append(groups, revertGroup{display: c.Path, fsPath: c.FS, updated: data})
+			gi = len(groups) - 1
+			index[c.FS] = gi
+		}
+		groups[gi].changes = append(groups[gi].changes, c)
+	}
+
+	for i := range groups {
+		g := &groups[i]
+		repl := make(map[string]string, len(g.changes))
+		for _, c := range g.changes {
+			repl[c.New] = c.Old
+		}
+		updated, counts := files.SetKnownVersions(g.updated, repl)
+		for _, c := range g.changes {
+			if counts[c.New] == 0 {
+				fprintf(stderr, "incrmit: %s: expected version %s from the last bump is no longer present; the file was changed since (refusing to undo)\n", g.display, c.New)
+				return nil, ExitError
+			}
+		}
+		g.updated = updated
+	}
+	return groups, ExitOK
+}
+
+// parseUndoFlags registers the undo flags (long and short names) and parses
+// args, returning the options and an exit code: ExitOK to proceed, ExitUsage on
+// a parse error (help to stderr), or exitSilentFlag when -h/--help was
+// requested (help to stdout).
+func parseUndoFlags(args []string, stdout, stderr io.Writer) (undoOptions, int) {
+	var opts undoOptions
+	fs := flag.NewFlagSet("incrmit undo", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	// Help and usage are rendered explicitly below from the centralized text
+	// so an explicit -h/--help can go to stdout while errors go to stderr.
+	fs.Usage = func() {}
+
+	fs.StringVar(&opts.configPath, "config", "", "path to the TOML config file")
+	fs.StringVar(&opts.configPath, "c", "", "path to the TOML config file (shorthand)")
+	fs.BoolVar(&opts.dryRun, "dry-run", false, "preview the revert without writing")
+	fs.BoolVar(&opts.dryRun, "d", false, "preview the revert without writing (shorthand)")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fprint(stdout, undoHelp)
+			return opts, exitSilentFlag
+		}
+		fprint(stderr, undoHelp)
+		return opts, ExitUsage
+	}
+	if fs.NArg() > 0 {
+		fprintf(stderr, "incrmit: unexpected argument %q\n", fs.Arg(0))
+		fprint(stderr, undoHelp)
+		return opts, ExitUsage
+	}
+	return opts, ExitOK
 }
 
 // classify maps an error to the appropriate process exit code.

@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.1.11
+## Version: 0.1.12
 
 ## Overview
 
@@ -23,6 +23,8 @@ workflows.
 - Increments the major, minor, or patch component.
 - Writes the updated version back to the source files in place (atomic,
   only the version token changes).
+- Reverts the most recent bump with `incrmit undo`, restoring the previous
+  version in every file (and in `incrmit.toml`).
 - Ships as a single self-contained binary with predictable exit codes
   for scripting and CI.
 
@@ -51,7 +53,7 @@ from the same release and comparing hashes (replace `X.Y.Z` with the release
 version):
 
 ```bash
-VERSION=0.1.11
+VERSION=0.1.12
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -74,7 +76,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.11
+VERSION=0.1.12
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -83,7 +85,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.11
+VERSION=0.1.12
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -93,7 +95,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.11
+VERSION=0.1.12
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo rpm -i "incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 # or: sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"
@@ -105,7 +107,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.1.11
+VERSION=0.1.12
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -327,6 +329,50 @@ incrmit discover --path ./src --dry-run
 incrmit discover --output release/incrmit.toml
 ```
 
+## Undo
+
+Made a bump by mistake? `incrmit undo` reverts the most recent bump, restoring
+the previous version in every file it changed — and the versions recorded in
+`incrmit.toml` — in one step:
+
+```bash
+incrmit
+# 1.2.3 -> 1.2.4
+incrmit undo
+# 1.2.4 -> 1.2.3
+```
+
+To make undo possible, each successful bump records a small entry (the files it
+touched and their `old`/`new` versions, plus a timestamp) in a state file named
+`.incrmit.state.toml`, kept next to `incrmit.toml`. This file is **local working
+state** — it is not meant to be committed, so add it to your `.gitignore`:
+
+```gitignore
+.incrmit.state.toml
+```
+
+A few details worth knowing:
+
+- **Repeated undos walk back through history.** Each `undo` reverts one bump and
+  removes its entry, so undoing twice reverts the two most recent bumps. The
+  journal retains the last several bumps (older ones are dropped).
+- **Your edits are never clobbered.** If a file was changed after the bump so it
+  no longer contains the version the bump wrote, `undo` refuses that revert and
+  writes nothing, exiting with an error instead.
+- **Nothing to undo is not an error.** With no recorded history, `undo` prints a
+  friendly message and exits `0`.
+- **`--dry-run` previews the revert** (`new -> old`) without writing anything.
+- **`--file` bumps are not recorded.** A single-file bump (`--file`) has no
+  config to anchor the state file to, so it does not create undo history; `undo`
+  is a config-driven operation.
+
+### Undo flags
+
+| Flag | Short | Description | Default |
+| ---- | ----- | ----------- | ------- |
+| `--config` | `-c` | Path to the TOML config file (used to locate the state file) | `incrmit.toml` |
+| `--dry-run` | `-d` | Preview the revert without writing | `false` |
+
 ## Version
 
 Print the version of the `incrmit` tool itself (not a target file's version)
@@ -336,7 +382,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.11
+# incrmit 0.1.12
 ```
 
 The version is baked into the binary and can be overridden at build time
@@ -432,6 +478,7 @@ text:
 ```bash
 incrmit help              # overview of all commands
 incrmit help discover     # help for the discover command
+incrmit help undo         # help for the undo command
 incrmit help version      # help for the version command
 incrmit help bump         # the default bump command's flags
 ```

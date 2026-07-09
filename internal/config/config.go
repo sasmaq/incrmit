@@ -17,6 +17,11 @@ import (
 // DefaultPath is the config file name resolved when no explicit path is given.
 const DefaultPath = "incrmit.toml"
 
+// StateFileName is the name of the bump-history state file written next to the
+// config after a successful bump so `incrmit undo` can revert it. It is local,
+// tool-maintained state (see package history) and is not a discovery target.
+const StateFileName = ".incrmit.state.toml"
+
 // Config is the in-memory model of an incrmit.toml file.
 //
 // Ignore is declared before Files so it is encoded as a top-level array ahead of

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a macOS installer package (.pkg) for one architecture with pkgbuild.
 # Usage: scripts/build-pkg.sh <version> <arch> [dist]
-#   version  release version without a leading "v" (e.g. 0.1.11)
+#   version  release version without a leading "v" (e.g. 0.1.12)
 #   arch     Go arch of the darwin binary (amd64 or arm64)
 #   dist     output directory (default: dist)
 #
@@ -11,7 +11,7 @@
 # installing /usr/local/bin/incrmit and /usr/local/share/man/man1/incrmit.1.
 set -euo pipefail
 
-version="${1:?version required (e.g. 0.1.11)}"
+version="${1:?version required (e.g. 0.1.12)}"
 arch="${2:?arch required (amd64 or arm64)}"
 dist="${3:-dist}"
 

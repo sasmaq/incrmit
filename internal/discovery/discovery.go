@@ -95,8 +95,9 @@ func Discover(root string, ignore ...string) ([]Result, error) {
 			return nil
 		}
 
-		// Never treat the config file itself as a discovered target.
-		if d.Name() == config.DefaultPath {
+		// Never treat the config file or the bump-history state file (both
+		// tool-maintained) as a discovered target.
+		if d.Name() == config.DefaultPath || d.Name() == config.StateFileName {
 			return nil
 		}
 

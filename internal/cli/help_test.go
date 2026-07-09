@@ -36,6 +36,7 @@ func TestRunHelpPerCommand(t *testing.T) {
 	}{
 		{"bump", bumpHelp},
 		{"discover", discoverHelp},
+		{"undo", undoHelp},
 		{"version", versionHelp},
 		{"help", helpHelp},
 	}
@@ -86,7 +87,7 @@ func TestRunHelpIgnoresExtraArgs(t *testing.T) {
 
 // The overview must name every command so users can discover them.
 func TestOverviewListsAllCommands(t *testing.T) {
-	for _, cmd := range []string{"incrmit [flags]", "incrmit discover", "incrmit version", "incrmit help"} {
+	for _, cmd := range []string{"incrmit [flags]", "incrmit discover", "incrmit undo", "incrmit version", "incrmit help"} {
 		if !strings.Contains(overviewHelp, cmd) {
 			t.Errorf("overviewHelp missing %q:\n%s", cmd, overviewHelp)
 		}
@@ -115,6 +116,9 @@ func TestOverviewReusesFlagBlocks(t *testing.T) {
 	if !strings.Contains(overviewHelp, discoverFlags) {
 		t.Errorf("overviewHelp does not embed discoverFlags verbatim:\n%s", overviewHelp)
 	}
+	if !strings.Contains(overviewHelp, undoFlags) {
+		t.Errorf("overviewHelp does not embed undoFlags verbatim:\n%s", overviewHelp)
+	}
 	if !strings.Contains(bumpHelp, bumpFlags) {
 		t.Errorf("bumpHelp does not embed bumpFlags verbatim:\n%s", bumpHelp)
 	}
@@ -130,6 +134,7 @@ func TestHelpTextWellFormed(t *testing.T) {
 		"overviewHelp": overviewHelp,
 		"bumpHelp":     bumpHelp,
 		"discoverHelp": discoverHelp,
+		"undoHelp":     undoHelp,
 		"versionHelp":  versionHelp,
 		"helpHelp":     helpHelp,
 	}
@@ -157,6 +162,7 @@ func TestCommandHelpListsFlags(t *testing.T) {
 	}{
 		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--major", "--minor", "--patch", "--dry-run"}},
 		{"discoverHelp", discoverHelp, []string{"--path", "--output", "--dry-run"}},
+		{"undoHelp", undoHelp, []string{"--config", "--dry-run"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

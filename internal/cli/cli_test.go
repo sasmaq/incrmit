@@ -822,6 +822,7 @@ func TestHelpExitsZero(t *testing.T) {
 	for _, args := range [][]string{
 		{"-h"}, {"--help"}, {"-help"},
 		{"discover", "-h"}, {"discover", "--help"},
+		{"undo", "-h"}, {"undo", "--help"},
 		{"version", "-h"},
 		{"--minor", "-h"}, // help requested in bump context
 	} {
@@ -845,7 +846,7 @@ func TestHelpOverview(t *testing.T) {
 			if code != ExitOK {
 				t.Fatalf("exit = %d, stderr = %q", code, stderr)
 			}
-			for _, want := range []string{"incrmit", "discover", "version", "help"} {
+			for _, want := range []string{"incrmit", "discover", "undo", "version", "help"} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("overview missing %q: %q", want, stdout)
 				}
@@ -867,6 +868,7 @@ func TestHelpForCommand(t *testing.T) {
 	}{
 		{"bump", "Bump the semantic version"},
 		{"discover", "Scan a directory tree"},
+		{"undo", "Revert the most recent bump"},
 		{"version", "Print the incrmit tool version"},
 		{"help", "Show the incrmit overview"},
 	}
@@ -893,6 +895,7 @@ func TestHelpMatchesFlagHelp(t *testing.T) {
 	}{
 		{"bump", []string{"--minor", "-h"}},
 		{"discover", []string{"discover", "-h"}},
+		{"undo", []string{"undo", "-h"}},
 		{"version", []string{"version", "-h"}},
 	}
 	for _, tt := range tests {
@@ -961,6 +964,210 @@ func TestExitCodeMatrix(t *testing.T) {
 				t.Errorf("exit = %d, want %d", code, tt.want)
 			}
 		})
+	}
+}
+
+// A bump records a history entry; a following undo restores the file and the
+// config to their pre-bump values and leaves an empty journal.
+func TestUndoRevertsSingleFile(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+
+	if code, _, stderr := runMain(t, dir, "--minor"); code != ExitOK {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.3.0\n" {
+		t.Fatalf("VERSION after bump = %q, want 1.3.0", got)
+	}
+
+	code, stdout, stderr := runMain(t, dir, "undo")
+	if code != ExitOK {
+		t.Fatalf("undo exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "1.3.0 -> 1.2.3") {
+		t.Errorf("undo stdout missing revert summary: %q", stdout)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("VERSION after undo = %q, want 1.2.3", got)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	if cfg.Files[0].Version != "1.2.3" {
+		t.Errorf("config version after undo = %q, want 1.2.3", cfg.Files[0].Version)
+	}
+}
+
+// Undo restores every file (and both entries of a multi-version file) written
+// by the most recent bump.
+func TestUndoRevertsMultipleFiles(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n" +
+		"[[files]]\npath = \"notes.md\"\nversion = \"1.2.3\"\n" +
+		"[[files]]\npath = \"notes.md\"\nversion = \"2.0.0\"\n"
+	dir := project(t, body, map[string]string{
+		"VERSION":  "1.2.3\n",
+		"notes.md": "app 1.2.3\nlib 2.0.0\n",
+	})
+
+	if code, _, stderr := runMain(t, dir, "--minor"); code != ExitOK {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+	if code, _, stderr := runMain(t, dir, "undo"); code != ExitOK {
+		t.Fatalf("undo exit = %d, stderr = %q", code, stderr)
+	}
+
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("VERSION after undo = %q, want 1.2.3", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "notes.md")); string(got) != "app 1.2.3\nlib 2.0.0\n" {
+		t.Errorf("notes.md after undo = %q", got)
+	}
+	cfg, _ := config.Load(filepath.Join(dir, "incrmit.toml"))
+	for _, f := range cfg.Files {
+		if f.Version != "1.2.3" && f.Version != "2.0.0" {
+			t.Errorf("config version after undo = %q, want 1.2.3 or 2.0.0", f.Version)
+		}
+	}
+}
+
+// Repeated undos walk back through successive bumps, one bump per undo.
+func TestUndoWalksBackThroughBumps(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+
+	for i := 0; i < 3; i++ {
+		if code, _, stderr := runMain(t, dir); code != ExitOK {
+			t.Fatalf("bump %d exit = %d, stderr = %q", i, code, stderr)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.6\n" {
+		t.Fatalf("VERSION after 3 bumps = %q, want 1.2.6", got)
+	}
+
+	wants := []string{"1.2.5\n", "1.2.4\n", "1.2.3\n"}
+	for i, want := range wants {
+		if code, _, stderr := runMain(t, dir, "undo"); code != ExitOK {
+			t.Fatalf("undo %d exit = %d, stderr = %q", i, code, stderr)
+		}
+		if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != want {
+			t.Errorf("VERSION after undo %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// undo --dry-run previews the revert (new -> old) without touching the file,
+// the config, or the journal.
+func TestUndoDryRun(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir, "--minor"); code != ExitOK {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+
+	code, stdout, stderr := runMain(t, dir, "undo", "--dry-run")
+	if code != ExitOK {
+		t.Fatalf("undo dry-run exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Dry run") || !strings.Contains(stdout, "1.3.0 -> 1.2.3") {
+		t.Errorf("dry-run stdout = %q", stdout)
+	}
+	// The file must remain bumped: a dry-run writes nothing.
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.3.0\n" {
+		t.Errorf("dry-run modified file: %q", got)
+	}
+	// A real undo must still be possible, proving the journal was untouched.
+	if code, _, stderr := runMain(t, dir, "undo"); code != ExitOK {
+		t.Fatalf("undo after dry-run exit = %d, stderr = %q", code, stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("VERSION after real undo = %q, want 1.2.3", got)
+	}
+}
+
+// A --dry-run bump records nothing, so a following undo has nothing to revert.
+func TestUndoNothingAfterDryRunBump(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir, "--minor", "--dry-run"); code != ExitOK {
+		t.Fatalf("bump dry-run exit = %d, stderr = %q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, config.StateFileName)); !os.IsNotExist(err) {
+		t.Errorf("dry-run bump wrote a state file (err = %v)", err)
+	}
+	code, stdout, stderr := runMain(t, dir, "undo")
+	if code != ExitOK {
+		t.Fatalf("undo exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "Nothing to undo") {
+		t.Errorf("stdout = %q, want a friendly nothing-to-undo message", stdout)
+	}
+}
+
+// With no history at all, undo prints a friendly message and exits 0.
+func TestUndoEmptyHistory(t *testing.T) {
+	dir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
+	code, stdout, stderr := runMain(t, dir, "undo")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, "Nothing to undo") {
+		t.Errorf("stdout = %q, want nothing-to-undo message", stdout)
+	}
+}
+
+// If a file was edited after the bump so it no longer holds the recorded "new"
+// token, undo refuses and writes nothing (the user's edit is not clobbered).
+func TestUndoConflictRefuses(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n"
+	dir := project(t, body, map[string]string{"VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir, "--minor"); code != ExitOK {
+		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
+	}
+	// Edit the file so its current token no longer matches the recorded new.
+	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte("9.9.9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runMain(t, dir, "undo")
+	if code != ExitError {
+		t.Errorf("exit = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr, "changed since") {
+		t.Errorf("stderr = %q, want a conflict message", stderr)
+	}
+	// The edited file must be left exactly as the user left it.
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "9.9.9\n" {
+		t.Errorf("undo clobbered an edited file: %q", got)
+	}
+}
+
+// --file bumps have no config-anchored state, so no history is recorded and a
+// following config-mode undo has nothing to revert.
+func TestUndoNotRecordedForFileMode(t *testing.T) {
+	dir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir, "--file", filepath.Join(dir, "VERSION")); code != ExitOK {
+		t.Fatalf("file bump exit = %d, stderr = %q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, config.StateFileName)); !os.IsNotExist(err) {
+		t.Errorf("--file bump wrote a state file (err = %v)", err)
+	}
+}
+
+func TestUndoBadFlag(t *testing.T) {
+	code, _, _ := runMain(t, "", "undo", "--nope")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+}
+
+func TestUndoUnexpectedArg(t *testing.T) {
+	code, _, stderr := runMain(t, "", "undo", "surprise")
+	if code != ExitUsage {
+		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "unexpected argument") {
+		t.Errorf("stderr = %q", stderr)
 	}
 }
 

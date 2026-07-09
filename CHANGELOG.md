@@ -5,6 +5,26 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-07-10
+
+### Added
+
+- New `incrmit undo` command that reverts the most recent bump, restoring the
+  previous version token in every file it changed and the versions recorded in
+  `incrmit.toml`. Repeated undos walk back through successive bumps. `undo`
+  supports `--dry-run`/`-d` to preview the revert (`new -> old`) and
+  `--config`/`-c` to locate the config and its state file.
+- To make undo possible, a successful (non-`--dry-run`) bump now records a small
+  history entry — the files it touched, their old and new versions, and a
+  timestamp — in a state file named `.incrmit.state.toml`, kept next to
+  `incrmit.toml`. This file is local working state and is not meant to be
+  committed; add it to your `.gitignore`. Single-file (`--file`) bumps are not
+  recorded.
+- `undo` refuses to revert a file that was edited since the bump (its current
+  version no longer matches what the bump wrote), so your changes are never
+  clobbered. With no history to revert it prints a friendly message and exits
+  `0`.
+
 ## [0.1.11] - 2026-07-08
 
 ### Added

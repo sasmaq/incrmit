@@ -1,5 +1,5 @@
 .\" incrmit man page. Source: doc/man/incrmit.1
-.Dd June 18, 2026
+.Dd July 10, 2026
 .Dt INCRMIT 1
 .Os
 .Sh NAME
@@ -16,6 +16,11 @@
 .Cm discover
 .Op Fl P Ar path
 .Op Fl o Ar output
+.Op Fl d
+.Pp
+.Nm incrmit
+.Cm undo
+.Op Fl c Ar config
 .Op Fl d
 .Pp
 .Nm incrmit
@@ -44,6 +49,14 @@ Bump the semantic version in configured files.
 .It Cm discover
 Scan a directory tree for version-bearing files and write
 .Pa incrmit.toml .
+.It Cm undo
+Revert the most recent bump, restoring the previous version in every file it
+changed and in
+.Pa incrmit.toml .
+The bump history is read from a state file kept next to the config
+.Pq Pa .incrmit.state.toml .
+A file edited since the bump is left untouched and the undo is refused.
+Repeated undos walk back through successive bumps.
 .It Cm version
 Print the
 .Nm
@@ -58,6 +71,7 @@ flags are aliases.
 Show an overview, or detailed help for
 .Cm bump ,
 .Cm discover ,
+.Cm undo ,
 .Cm version ,
 or
 .Cm help .
@@ -98,6 +112,11 @@ explicit help is printed to stdout; usage errors print help to stderr.
 .Bl -tag -width Pa
 .It Pa incrmit.toml
 Default configuration listing target files and optional pinned version values.
+.It Pa .incrmit.state.toml
+Bump-history state file written next to the config after a bump, used by
+.Cm undo .
+It is local, tool-maintained working state and is not meant to be committed
+.Pq add it to Pa .gitignore .
 .El
 .Sh EXIT STATUS
 .Bl -tag -width Ds
@@ -122,6 +141,14 @@ Preview a minor bump without writing:
 Generate a config from the current tree:
 .Pp
 .Dl incrmit discover
+.Pp
+Revert the most recent bump:
+.Pp
+.Dl incrmit undo
+.Pp
+Preview an undo without writing:
+.Pp
+.Dl incrmit undo -d
 .Pp
 Show tool version:
 .Pp

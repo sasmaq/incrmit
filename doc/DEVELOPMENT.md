@@ -19,6 +19,8 @@ In scope:
 - Discovering version-bearing files and generating a config automatically.
 - Bumping a single file directly, bypassing the config.
 - A dry-run mode that previews changes without writing.
+- Undoing the most recent bump, restoring the previous version in every file it
+  wrote (and in `incrmit.toml`), using a locally recorded bump history.
 
 Out of scope (for the initial version):
 
@@ -151,6 +153,54 @@ lenient: a missing or unparseable `--output` file yields no patterns and no
 error, since `discover` overwrites that path and it may not currently be a valid
 config.
 
+### 6.3 Bump history / state file (`internal/history`)
+
+After a successful, non-`--dry-run` bump in config mode, `incrmit` appends an
+entry to a **state file** so the bump can be reverted by `incrmit undo`.
+
+- **Location:** the file is named `.incrmit.state.toml` (`config.StateFileName`)
+  and lives in the **same directory as the config** (`incrmit.toml`), so the two
+  are always found together. `history.ResolvePath(configPath)` derives it from
+  the resolved config path; `undo` uses the same rule (default or `--config`).
+- **Lifecycle / retention:** it is a **stack** of entries, oldest first. Each
+  bump pushes one entry; each `undo` pops the most recent. Only the last
+  `history.MaxEntries` (20) bumps are retained so the file cannot grow without
+  bound — at minimum the last bump is always undoable, and successive undos walk
+  back through history.
+- **Committed vs. ignored:** it is **local working state**, not meant to be
+  committed. `undo` restores files in the working copy, so the journal belongs
+  beside them; the file header recommends adding it to `.gitignore`. (In this
+  repo `*.toml` is already git-ignored, which covers it.) Discovery never treats
+  it (or `incrmit.toml`) as a target.
+- **`--file` mode records nothing:** a single-file bump has no config-anchored
+  location to keep or later find the state file, so no history is written and
+  `undo` is a config-mode operation only.
+
+The schema (TOML), encoded with the same `github.com/BurntSushi/toml` library:
+
+```go
+type Change struct {
+    Path string `toml:"path"` // display path, as listed in the config
+    FS   string `toml:"fs"`   // resolved (absolute) filesystem path
+    Old  string `toml:"old"`  // version token before the bump
+    New  string `toml:"new"`  // version token after the bump
+}
+
+type Entry struct {
+    Timestamp time.Time `toml:"timestamp"`
+    Config    string    `toml:"config,omitempty"` // resolved config path
+    Changes   []Change  `toml:"changes"`
+}
+
+type History struct {
+    Entries []Entry `toml:"entries"`
+}
+```
+
+Paths are stored **resolved (absolute)** so `undo` can locate the files and the
+config regardless of the working directory it is later run from. The file is
+written atomically via `files.WriteAtomic`, the same path used for target files.
+
 ### 6.2 Version
 
 ```go
@@ -193,6 +243,24 @@ incrmit discover [flags]
 If more than one of `--major`, `--minor`, `--patch` is supplied, the highest
 component wins (major > minor > patch). When none is supplied, patch is used.
 
+### Undo command
+
+```text
+incrmit undo [flags]
+```
+
+| Flag        | Short | Description                                    | Default        |
+| ----------- | ----- | ---------------------------------------------- | -------------- |
+| `--config`  | `-c`  | Path to the TOML config file (locates state)   | `incrmit.toml` |
+| `--dry-run` | `-d`  | Preview the revert (`new -> old`) without writing | `false`     |
+
+Reverts the most recent recorded bump: it restores the previous version token
+in every file that bump wrote and rewrites the config's recorded versions to
+match, then pops the journal entry so a repeated `undo` walks further back. If a
+file was edited since the bump (its current token no longer matches the recorded
+`new` value), `undo` refuses and writes nothing, so user edits are never
+clobbered. With no history to revert it prints a friendly message and exits `0`.
+
 ### Version command
 
 ```text
@@ -213,6 +281,7 @@ incrmit help [command]
 | `incrmit help`            | Overview listing every command and its flags.       |
 | `incrmit help bump`       | The default bump command's flags.                   |
 | `incrmit help discover`   | The discover command's flags.                       |
+| `incrmit help undo`       | The undo command's flags.                           |
 | `incrmit help version`    | The version command's help.                         |
 | `incrmit help help`       | The help command's own usage.                       |
 | `incrmit -h` / `--help`   | Same overview as `incrmit help` (no subcommand).    |
@@ -251,7 +320,11 @@ list every flag without duplicating the flag text.
 6. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
    `version` records the new value (one entry per distinct version per file),
    keeping the config in sync for the next run.
-7. Report results (files bumped, and each `old -> new`).
+7. In config mode, append a history entry (each file's path, resolved path, and
+   `old`/`new` tokens, plus a timestamp and the config path) to the state file
+   beside the config so the bump can be undone (see
+   [section 6.3](#63-bump-history--state-file-internalhistory)).
+8. Report results (files bumped, and each `old -> new`).
 
 ### 8.2 Discover
 
@@ -297,6 +370,28 @@ A matching directory returns `filepath.SkipDir` to prune its subtree; a matching
 file is simply not recorded. These rules are applied *in addition to* the
 built-in `ignoredDirs`: a path is skipped if either the built-in set or any
 configured pattern matches.
+
+### 8.4 Undo
+
+1. Resolve the config path (default or `--config`) and derive the state file
+   path beside it (`history.ResolvePath`). Load the journal; a missing file is
+   an empty history.
+2. Take the most recent entry. If there is none, print a friendly
+   "nothing to undo" message and exit `0`.
+3. In config mode load the config up front so a config problem aborts before any
+   write (fail-fast, mirroring bump).
+4. Read every recorded file once, group its changes, and build the reverse
+   (`new -> old`) replacement in a single pass (`files.SetKnownVersions`), so
+   overlapping reverts do not cascade. If a file no longer contains the recorded
+   `new` token, it was edited since the bump: report the conflict and abort
+   without writing anything.
+5. If `--dry-run`, print `new -> old` for each change and exit (no writes).
+6. Otherwise rewrite each reverted file once, then restore the config by setting
+   each `(path, new)` entry back to its `old` version and rewriting
+   `incrmit.toml` (the bump's self-update in reverse).
+7. Pop the entry and save the journal so a repeated `undo` does not re-apply the
+   same revert (and instead reverts the previous bump, if any).
+8. Report the reverted files (each `new -> old`).
 
 ## 9. Version Detection Strategy
 
@@ -346,6 +441,10 @@ configured pattern matches.
 - Multiple versions found in a single file: report ambiguity and skip unless a
   format-specific rule resolves it.
 - Filesystem/permission errors: surface the underlying error and exit non-zero.
+- Undo with nothing to revert (no journal or an emptied one): print a friendly
+  message and exit `0` — it is not an error.
+- Undo conflict (a file edited since the bump no longer holds the recorded `new`
+  token): report the conflict, write nothing, and exit `1` (generic error).
 
 ### Exit Codes
 
@@ -365,6 +464,7 @@ incrmit/
 │   ├── config/             # TOML load and validation
 │   ├── version/            # semantic version parse and bump
 │   ├── discovery/          # filesystem scan and config generation
+│   ├── history/            # bump journal (state file) for undo
 │   └── files/              # read/write helpers
 ├── doc/
 │   └── DEVELOPMENT.md      # this document

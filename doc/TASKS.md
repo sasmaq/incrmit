@@ -317,40 +317,40 @@ completed.
 
 ## Milestone 22 — Undo Command
 
-- [ ] Design the undo model: an `undo` subcommand reverts the most recent bump,
+- [x] Design the undo model: an `undo` subcommand reverts the most recent bump,
       restoring the previous version token in every file that was written (and
       the `incrmit.toml` self-update), and document the chosen approach in
       `doc/DEVELOPMENT.md`.
-- [ ] Persist bump history so undo has something to revert to: after a
+- [x] Persist bump history so undo has something to revert to: after a
       successful (non-`--dry-run`) bump, record a journal entry capturing each
       affected file's path, the old and new version tokens, and a timestamp
       (e.g. a state file such as `.incrmit-history` or `.incrmit.state.toml`).
-- [ ] Decide and document the state file's location, format, and lifecycle
+- [x] Decide and document the state file's location, format, and lifecycle
       (where it lives, whether it is committed or git-ignored, and how many
       entries are retained — at minimum the last bump).
-- [ ] Implement the `undo` subcommand: read the latest journal entry and rewrite
+- [x] Implement the `undo` subcommand: read the latest journal entry and rewrite
       each recorded file's current token back to its previous value using the
       same atomic, in-place write path as bump (only the version token changes).
-- [ ] Restore `incrmit.toml` entries to their pre-bump versions as part of undo
+- [x] Restore `incrmit.toml` entries to their pre-bump versions as part of undo
       so the config stays in sync with the reverted files.
-- [ ] Detect and handle conflicts safely: if a file's current token no longer
+- [x] Detect and handle conflicts safely: if a file's current token no longer
       matches the recorded "new" value (edited since the bump), surface a clear
       error and skip or abort rather than clobbering user changes.
-- [ ] Add flags: `--dry-run`/`-d` to preview the revert (`new -> old`) without
+- [x] Add flags: `--dry-run`/`-d` to preview the revert (`new -> old`) without
       writing, and consider `--config`/`-c` to locate the config/state.
-- [ ] Pop or mark the journal entry as undone after a successful revert so
+- [x] Pop or mark the journal entry as undone after a successful revert so
       repeated `undo` does not re-apply the same revert (define behavior when
       there is nothing left to undo).
-- [ ] Handle the empty-history case with a friendly message and a sensible exit
+- [x] Handle the empty-history case with a friendly message and a sensible exit
       code (no journal / nothing to undo).
-- [ ] Wire `undo` into the help system: add it to the top-level overview and
+- [x] Wire `undo` into the help system: add it to the top-level overview and
       `incrmit help undo`, reusing the centralized help text in
       `internal/cli/help.go`.
-- [ ] Add unit and integration tests: history is written on bump (and not on
+- [x] Add unit and integration tests: history is written on bump (and not on
       `--dry-run`), a single-file and multi-file bump reverts cleanly, `--dry-run`
       undo writes nothing, conflict detection triggers correctly, and the
       empty-history path returns the expected message and exit code.
-- [ ] Document the `undo` command (with examples and the state-file behavior) in
+- [x] Document the `undo` command (with examples and the state-file behavior) in
       `README.md`, the help text, and `incrmit(1)` man page.
 
 ## Milestone 23 — ASCII Art in the Help Command
