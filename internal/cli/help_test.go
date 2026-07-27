@@ -14,17 +14,77 @@ func runHelpCmd(args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
-// runHelp with no argument prints the top-level overview to stdout (exit 0).
+// runHelp with no argument prints the banner and the top-level overview to
+// stdout (exit 0).
 func TestRunHelpOverview(t *testing.T) {
 	code, stdout, stderr := runHelpCmd()
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d", code, ExitOK)
 	}
-	if stdout != overviewHelp {
-		t.Errorf("stdout = %q, want overviewHelp", stdout)
+	if stdout != overview(true) {
+		t.Errorf("stdout = %q, want the banner followed by overviewHelp", stdout)
+	}
+	if !strings.HasPrefix(stdout, banner) {
+		t.Errorf("stdout does not start with the banner:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, overviewHelp) {
+		t.Errorf("stdout does not contain overviewHelp:\n%s", stdout)
 	}
 	if stderr != "" {
 		t.Errorf("stderr = %q, want empty", stderr)
+	}
+}
+
+// --no-banner drops the banner but leaves the overview itself untouched, on
+// both `incrmit help` and (via parseBannerFlag) top-level -h / --help.
+func TestRunHelpNoBanner(t *testing.T) {
+	for _, flag := range []string{"--no-banner", "-no-banner"} {
+		t.Run(flag, func(t *testing.T) {
+			code, stdout, stderr := runHelpCmd(flag)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitOK, stderr)
+			}
+			if stdout != overviewHelp {
+				t.Errorf("stdout = %q, want overviewHelp with no banner", stdout)
+			}
+			if strings.Contains(stdout, banner) {
+				t.Errorf("stdout still contains the banner:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// The banner must be plain ASCII and narrow enough for an 80-column terminal,
+// so it renders the same everywhere without Unicode or color support.
+func TestBannerIsPlainASCIIAndFits(t *testing.T) {
+	const maxWidth = 80
+	if !strings.HasSuffix(banner, "\n") {
+		t.Errorf("banner does not end with a newline")
+	}
+	for i, line := range strings.Split(strings.TrimSuffix(banner, "\n"), "\n") {
+		if len(line) > maxWidth {
+			t.Errorf("banner line %d is %d columns, want <= %d: %q", i+1, len(line), maxWidth, line)
+		}
+		for _, r := range line {
+			if r < 0x20 || r > 0x7e {
+				t.Errorf("banner line %d contains non-ASCII rune %q: %q", i+1, r, line)
+			}
+		}
+	}
+}
+
+// The banner belongs to the overview only: per-command help stays terse.
+func TestPerCommandHelpHasNoBanner(t *testing.T) {
+	for _, cmd := range []string{"bump", "discover", "undo", "version", "help"} {
+		t.Run(cmd, func(t *testing.T) {
+			code, stdout, _ := runHelpCmd(cmd)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, want %d", code, ExitOK)
+			}
+			if strings.Contains(stdout, banner) {
+				t.Errorf("%s help contains the banner:\n%s", cmd, stdout)
+			}
+		})
 	}
 }
 
@@ -100,6 +160,7 @@ func TestOverviewListsFlags(t *testing.T) {
 	for _, flag := range []string{
 		"-c, --config", "-f, --file", "-M, --major", "-m, --minor",
 		"-p, --patch", "-d, --dry-run", "-P, --path", "-o, --output",
+		"--no-banner",
 	} {
 		if !strings.Contains(overviewHelp, flag) {
 			t.Errorf("overviewHelp missing flag %q:\n%s", flag, overviewHelp)
@@ -119,6 +180,12 @@ func TestOverviewReusesFlagBlocks(t *testing.T) {
 	if !strings.Contains(overviewHelp, undoFlags) {
 		t.Errorf("overviewHelp does not embed undoFlags verbatim:\n%s", overviewHelp)
 	}
+	if !strings.Contains(overviewHelp, helpFlags) {
+		t.Errorf("overviewHelp does not embed helpFlags verbatim:\n%s", overviewHelp)
+	}
+	if !strings.Contains(helpHelp, helpFlags) {
+		t.Errorf("helpHelp does not embed helpFlags verbatim:\n%s", helpHelp)
+	}
 	if !strings.Contains(bumpHelp, bumpFlags) {
 		t.Errorf("bumpHelp does not embed bumpFlags verbatim:\n%s", bumpHelp)
 	}
@@ -132,6 +199,7 @@ func TestOverviewReusesFlagBlocks(t *testing.T) {
 func TestHelpTextWellFormed(t *testing.T) {
 	texts := map[string]string{
 		"overviewHelp": overviewHelp,
+		"overview":     overview(true),
 		"bumpHelp":     bumpHelp,
 		"discoverHelp": discoverHelp,
 		"undoHelp":     undoHelp,

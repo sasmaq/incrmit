@@ -355,27 +355,29 @@ completed.
 
 ## Milestone 23 — ASCII Art in the Help Command
 
-- [ ] Design an `incrmit` ASCII-art banner (the tool name/logo) and add it as a
+- [x] Design an `incrmit` ASCII-art banner (the tool name/logo) and add it as a
       centralized constant in `internal/cli/help.go` alongside the existing help
       text (keep it in one place so all help paths stay in sync).
-- [ ] Render the banner at the top of the top-level overview (`incrmit help` and
+- [x] Render the banner at the top of the top-level overview (`incrmit help` and
       top-level `-h` / `--help`), above the existing description, command list,
       and flag lines.
-- [ ] Keep the banner to the overview only (don't repeat it in per-command help
+- [x] Keep the banner to the overview only (don't repeat it in per-command help
       like `incrmit help discover`) unless a consistent placement is decided and
       documented.
-- [ ] Ensure the banner width is terminal-friendly (fits within ~80 columns) and
+- [x] Ensure the banner width is terminal-friendly (fits within ~80 columns) and
       uses plain ASCII so it renders correctly on Linux, macOS, and Windows
       terminals without relying on Unicode or color.
-- [ ] Confirm the banner does not affect exit codes: `incrmit help` and top-level
+- [x] Confirm the banner does not affect exit codes: `incrmit help` and top-level
       `-h` / `--help` still exit `0`, and error/usage paths are unchanged.
-- [ ] Consider suppressing the banner when output is not a TTY (piped/redirected)
+- [x] Consider suppressing the banner when output is not a TTY (piped/redirected)
       or behind a `--no-banner` / `NO_COLOR`-style opt-out; decide and document
-      the behavior (default on vs. TTY-only).
-- [ ] Update tests to assert the overview contains the banner (and still contains
+      the behavior (default on vs. TTY-only). Decision: default on regardless of
+      TTY (keeps the overview reproducible and testable), with `--no-banner` as
+      the opt-out on `incrmit help` and top-level `-h` / `--help`.
+- [x] Update tests to assert the overview contains the banner (and still contains
       the command and flag lines), and that per-command help is unchanged; update
       any golden files accordingly.
-- [ ] Document the banner in `README.md` (e.g. a sample of the `incrmit help`
+- [x] Document the banner in `README.md` (e.g. a sample of the `incrmit help`
       output) and note any opt-out flag in the help text and `incrmit(1)` man page.
 
 ## Milestone 24 — v1.0.0 Release Readiness: Checks

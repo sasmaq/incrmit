@@ -28,6 +28,21 @@ const undoFlags = `  -c, --config string  path to the TOML config file (default 
   -d, --dry-run        preview the revert (new -> old) without writing
 `
 
+const helpFlags = `      --no-banner      hide the ASCII banner above the overview
+`
+
+// banner is the incrmit logo printed above the top-level overview. It is
+// plain 7-bit ASCII (no Unicode, no color) and 35 columns wide, so it renders
+// identically on Linux, macOS, and Windows terminals and stays well inside the
+// conventional 80-column width. The middle row is spliced around a backtick,
+// which a Go raw string literal cannot contain.
+const banner = ` _                           _ _
+(_)_ __   ___ _ __ _ __ ___ (_) |_
+| | '_ \ / __| '__| '_ ` + "`" + ` _ \| | __|
+| | | | | (__| |  | | | | | | | |_
+|_|_| |_|\___|_|  |_| |_| |_|_|\__|
+`
+
 // overviewHelp is the top-level summary printed by `incrmit help` and by
 // top-level `-h` / `--help` (with no subcommand). It lists the commands and
 // reuses the centralized flag blocks so the available flags are discoverable
@@ -47,6 +62,8 @@ Discover flags (incrmit discover):
 ` + discoverFlags + `
 Undo flags (incrmit undo):
 ` + undoFlags + `
+Help flags (incrmit help, incrmit -h):
+` + helpFlags + `
 The version command takes no flags. The --version, -version, and -v flags
 print the tool version.
 
@@ -93,18 +110,51 @@ aliases for this command.
 `
 
 // helpHelp documents the help command itself (`incrmit help help`).
-const helpHelp = `usage: incrmit help [command]
+const helpHelp = `usage: incrmit help [command] [--no-banner]
 
 Show the incrmit overview, or detailed help for a specific command
-(bump, discover, undo, version, or help).
-`
+(bump, discover, undo, version, or help). The overview is printed under an
+ASCII banner; --no-banner leaves it out.
+
+Flags:
+` + helpFlags
+
+// overview renders the top-level help. The banner is shown by default and only
+// here: per-command help (for example `incrmit help discover`) never carries it,
+// so drilling into a command stays terse. showBanner is false when the user
+// passed --no-banner.
+func overview(showBanner bool) string {
+	if !showBanner {
+		return overviewHelp
+	}
+	return banner + "\n" + overviewHelp
+}
+
+// parseBannerFlag removes the --no-banner opt-out from args and reports whether
+// the banner should still be printed. It is handled here rather than through
+// the flag package because the help paths take a bare topic name rather than a
+// flag set, and the opt-out has to work in both `incrmit help --no-banner` and
+// `incrmit -h --no-banner`.
+func parseBannerFlag(args []string) ([]string, bool) {
+	rest := make([]string, 0, len(args))
+	showBanner := true
+	for _, arg := range args {
+		if arg == "--no-banner" || arg == "-no-banner" {
+			showBanner = false
+			continue
+		}
+		rest = append(rest, arg)
+	}
+	return rest, showBanner
+}
 
 // runHelp implements the `help` subcommand. With no argument it prints the
 // top-level overview; with a command name it prints that command's help. An
 // unknown command name is an error (exit code ExitUsage) with a hint.
 func runHelp(args []string, stdout, stderr io.Writer) int {
+	args, showBanner := parseBannerFlag(args)
 	if len(args) == 0 {
-		fprint(stdout, overviewHelp)
+		fprint(stdout, overview(showBanner))
 		return ExitOK
 	}
 	switch args[0] {

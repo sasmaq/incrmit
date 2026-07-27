@@ -838,7 +838,8 @@ func TestHelpExitsZero(t *testing.T) {
 	}
 }
 
-// `incrmit help` prints the top-level overview listing every command.
+// `incrmit help` prints the banner and the top-level overview listing every
+// command.
 func TestHelpOverview(t *testing.T) {
 	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -846,15 +847,41 @@ func TestHelpOverview(t *testing.T) {
 			if code != ExitOK {
 				t.Fatalf("exit = %d, stderr = %q", code, stderr)
 			}
+			if !strings.HasPrefix(stdout, banner) {
+				t.Errorf("overview does not start with the banner: %q", stdout)
+			}
 			for _, want := range []string{"incrmit", "discover", "undo", "version", "help"} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("overview missing %q: %q", want, stdout)
 				}
 			}
-			for _, want := range []string{"-c, --config", "-M, --major", "-d, --dry-run", "-P, --path", "-o, --output"} {
+			for _, want := range []string{"-c, --config", "-M, --major", "-d, --dry-run", "-P, --path", "-o, --output", "--no-banner"} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("overview missing flag %q: %q", want, stdout)
 				}
+			}
+		})
+	}
+}
+
+// --no-banner suppresses the banner on every path that prints the overview,
+// without changing the overview text or the exit code.
+func TestHelpOverviewNoBanner(t *testing.T) {
+	for _, args := range [][]string{
+		{"help", "--no-banner"},
+		{"-h", "--no-banner"},
+		{"--help", "--no-banner"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, stdout, stderr := runMain(t, "", args...)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitOK, stderr)
+			}
+			if strings.Contains(stdout, banner) {
+				t.Errorf("stdout still contains the banner: %q", stdout)
+			}
+			if stdout != overviewHelp {
+				t.Errorf("stdout = %q, want overviewHelp", stdout)
 			}
 		})
 	}

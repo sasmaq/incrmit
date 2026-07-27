@@ -80,7 +80,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		case "help":
 			return runHelp(args[1:], stdout, stderr)
 		case "-h", "--help", "-help":
-			fprint(stdout, overviewHelp)
+			_, showBanner := parseBannerFlag(args[1:])
+			fprint(stdout, overview(showBanner))
 			return ExitOK
 		}
 		// A non-flag first argument that is not a known subcommand is an

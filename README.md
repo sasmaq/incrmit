@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.1.12
+## Version: 0.1.13
 
 ## Overview
 
@@ -53,7 +53,7 @@ from the same release and comparing hashes (replace `X.Y.Z` with the release
 version):
 
 ```bash
-VERSION=0.1.12
+VERSION=0.1.13
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -76,7 +76,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.12
+VERSION=0.1.13
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -85,7 +85,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.12
+VERSION=0.1.13
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -95,10 +95,9 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.12
+VERSION=0.1.13
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
-sudo rpm -i "incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
-# or: sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"
+sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
 ```
 
@@ -107,7 +106,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.1.12
+VERSION=0.1.13
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -133,7 +132,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.26 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.1.11
+go install github.com/sasmaq/incrmit@v0.1.13
 ```
 
 ### Build from source
@@ -382,7 +381,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.12
+# incrmit 0.1.13
 ```
 
 The version is baked into the binary and can be overridden at build time
@@ -482,6 +481,38 @@ incrmit help undo         # help for the undo command
 incrmit help version      # help for the version command
 incrmit help bump         # the default bump command's flags
 ```
+
+The overview opens with an ASCII banner:
+
+```text
+ _                           _ _
+(_)_ __   ___ _ __ _ __ ___ (_) |_
+| | '_ \ / __| '__| '_ ` _ \| | __|
+| | | | | (__| |  | | | | | | | |_
+|_|_| |_|\___|_|  |_| |_| |_|_|\__|
+
+incrmit — increment semantic versions across one or more files
+
+usage:
+  incrmit [flags]            bump the version in the configured files (default)
+  incrmit discover [flags]   scan the tree for version-bearing files and write a config
+  incrmit undo [flags]       revert the most recent bump
+  incrmit version            print the incrmit tool version
+  incrmit help [command]     show this overview, or help for a specific command
+...
+```
+
+The banner is plain ASCII, fits in 80 columns, and is always shown — including
+when the output is piped — so the overview is byte-for-byte reproducible. Pass
+`--no-banner` to leave it out:
+
+```bash
+incrmit help --no-banner
+incrmit -h --no-banner
+```
+
+The banner appears on the overview only; per-command help such as
+`incrmit help discover` never carries it.
 
 Top-level `-h` / `--help` (with no subcommand) prints the same overview as
 `incrmit help`, while passing `-h` / `--help` to a command prints that command's

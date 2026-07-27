@@ -5,6 +5,23 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-07-27
+
+### Added
+
+- The top-level help overview (`incrmit help` and top-level `-h` / `--help`)
+  now opens with an `incrmit` ASCII banner. It is plain ASCII and fits an
+  80-column terminal, so it renders the same on Linux, macOS, and Windows.
+- New `--no-banner` flag for `incrmit help` and top-level `-h` / `--help` to
+  print the overview without the banner. The banner is otherwise always shown,
+  including when the output is piped, so the overview stays reproducible.
+  Per-command help (for example `incrmit help discover`) never shows it.
+
+### Changed
+
+- RPM install instructions in `README.md` now use `dnf install` instead of
+  `rpm -i`.
+
 ## [0.1.12] - 2026-07-10
 
 ### Added

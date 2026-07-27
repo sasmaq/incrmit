@@ -29,6 +29,7 @@
 .Nm incrmit
 .Cm help
 .Op Ar command
+.Op Fl -no-banner
 .Sh DESCRIPTION
 .Nm
 reads a TOML configuration file that lists one or more target files containing a
@@ -75,6 +76,8 @@ Show an overview, or detailed help for
 .Cm version ,
 or
 .Cm help .
+The overview is printed under a plain ASCII banner; see
+.Fl -no-banner .
 .El
 .Sh OPTIONS
 .Bl -tag -width Ds
@@ -107,6 +110,15 @@ Show help.
 For the default command and
 .Cm discover ,
 explicit help is printed to stdout; usage errors print help to stderr.
+.It Fl -no-banner
+Omit the ASCII banner printed above the top-level overview.
+Accepted by
+.Cm help
+and by top-level
+.Fl h
+and
+.Fl -help ,
+which are the only commands that print the banner.
 .El
 .Sh FILES
 .Bl -tag -width Pa

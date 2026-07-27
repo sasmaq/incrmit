@@ -273,7 +273,7 @@ aliases for the subcommand.
 ### Help command
 
 ```text
-incrmit help [command]
+incrmit help [command] [--no-banner]
 ```
 
 | Invocation                | Output                                              |
@@ -290,6 +290,14 @@ incrmit help [command]
 Help requested explicitly is written to stdout and exits `0`. An unknown
 command prints an error and a hint to run `incrmit help` to stderr and exits
 `2` (invalid arguments).
+
+The overview is prefixed with an ASCII banner (the `banner` constant in
+`internal/cli/help.go`). It is plain 7-bit ASCII, 35 columns wide, and carries
+no color, so it renders the same on every platform. The banner is shown
+unconditionally rather than only on a TTY, which keeps the overview
+byte-for-byte reproducible and testable; `--no-banner` (accepted by
+`incrmit help` and by top-level `-h` / `--help`) is the opt-out. It is scoped to
+the overview, so per-command help stays terse.
 
 All usage and help text lives in one place (`internal/cli/help.go`) so the
 `-h` / `--help` output and the `help` command stay in sync; the commands'
