@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a macOS installer package (.pkg) for one architecture with pkgbuild.
 # Usage: scripts/build-pkg.sh <version> <arch> [dist]
-#   version  release version without a leading "v" (e.g. 0.1.13)
+#   version  release version without a leading "v" (e.g. 0.1.14)
 #   arch     Go arch of the darwin binary (amd64 or arm64)
 #   dist     output directory (default: dist)
 #
@@ -11,7 +11,7 @@
 # installing /usr/local/bin/incrmit and /usr/local/share/man/man1/incrmit.1.
 set -euo pipefail
 
-version="${1:?version required (e.g. 0.1.13)}"
+version="${1:?version required (e.g. 0.1.14)}"
 arch="${2:?arch required (amd64 or arm64)}"
 dist="${3:-dist}"
 
@@ -42,10 +42,14 @@ install -m 0755 "$binary" "$root/usr/local/bin/incrmit"
 install -d -m 0755 "$root/usr/local/share/man/man1"
 install -m 0644 "$man" "$root/usr/local/share/man/man1/incrmit.1"
 
-# Strip extended attributes so pkgbuild does not embed AppleDouble (._*) files.
+# Drop removable extended attributes (for example com.apple.quarantine) from the
+# staged tree. Kernel-managed ones such as com.apple.provenance cannot be
+# removed and will still be encoded as AppleDouble (._*) entries in the cpio
+# payload; `installer` reassembles those into file metadata rather than writing
+# literal ._ files, so the installed tree stays clean. Verify with
+# `pkgutil --expand-full <pkg>`, which should show no ._ files.
 xattr -cr "$root" 2>/dev/null || true
 
-# COPYFILE_DISABLE keeps the cpio payload free of resource-fork sidecars.
 COPYFILE_DISABLE=1 pkgbuild \
 	--root "$root" \
 	--identifier "$identifier" \

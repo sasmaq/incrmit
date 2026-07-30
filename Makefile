@@ -1,11 +1,11 @@
 BINARY := incrmit
 # Static version, kept in sync by incrmit itself (see incrmit.toml). Override on
 # the command line for one-off builds, e.g. `make build VERSION=1.2.3`.
-VERSION ?= 0.1.13
+VERSION ?= 0.1.14
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 COVER_THRESHOLD ?= 80
 DIST := dist
-PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 LINUX_ARCHES := amd64 arm64
 DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm

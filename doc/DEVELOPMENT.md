@@ -444,6 +444,19 @@ configured pattern matches.
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
 - On write, replace only the matched token to preserve surrounding formatting.
 
+### Consequences of the atomic write
+
+`files.WriteAtomic` writes a temp file in the target's directory and renames it
+over the target, carrying the original file mode across. Two behaviors follow
+from that and are intentional:
+
+- A **read-only target is still rewritten** when its directory is writable,
+  because the rename never opens the target for writing. Write protection comes
+  from the containing directory's permissions, not the file's mode.
+- An **unwritable directory fails before any change**: the temp file cannot be
+  created, so the target keeps its original contents and no partial write or
+  stray temp file is left behind.
+
 ## 10. Error Handling
 
 - Missing config file: clear message; suggest running `incrmit discover`.
@@ -505,8 +518,9 @@ incrmit/
 - Test: `go test ./...` (or `make check` for fmt/vet/lint/coverage).
 - Lint: `go vet ./...` and `gofmt`/`golangci-lint`.
 - Cross-compile: `make dist VERSION=X.Y.Z` builds static binaries for
-  `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, and
-  `windows/amd64` into `dist/`, named `incrmit-<version>-<os>-<arch>`.
+  `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`,
+  `windows/amd64`, and `windows/arm64` into `dist/`, named
+  `incrmit-<version>-<os>-<arch>`.
 - Release packages: `make release VERSION=X.Y.Z` runs `dist`, then creates
   per-platform archives (`.tar.gz` on Unix, `.zip` on Windows), Linux `.deb`
   and `.rpm` packages, and `dist/checksums.txt` (SHA-256 of each artifact).

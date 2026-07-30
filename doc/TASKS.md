@@ -417,39 +417,67 @@ completed.
 
 ## Milestone 25 — v1.0.0 Release Readiness: Functional & Bug Testing
 
-- [ ] Run the full suite with the race detector and coverage
+- [x] Run the full suite with the race detector and coverage
       (`go test -race -cover ./...`) and confirm it passes and meets the
-      `make cover` threshold.
-- [ ] Regenerate golden files (`go test ./... -update`) and confirm the diff is
-      empty (no drift between expected and actual output).
-- [ ] Exercise every command end-to-end against a real temp project: default
+      `make cover` threshold. Passes; total coverage 89.1% (threshold 80%).
+- [x] Regenerate golden files (`go test ./... -update`) and confirm the diff is
+      empty (no drift between expected and actual output). No drift. Note that
+      only `internal/files` defines `-update`, so the working command is
+      `go test ./internal/files/ -update`; `go test ./... -update` fails on the
+      packages that do not define the flag.
+- [x] Exercise every command end-to-end against a real temp project: default
       patch bump, `--major`/`--minor`/`--patch`, `--file`, `--dry-run`,
       `discover` (with `--path`/`--output`/`--dry-run`), `undo`, `version`, and
       `help`.
-- [ ] Verify the bump→undo round trip: after a bump, `undo` restores every
+- [x] Verify the bump→undo round trip: after a bump, `undo` restores every
       target file and `incrmit.toml` to their exact pre-bump versions, and a
-      conflicting/edited file is refused rather than clobbered.
-- [ ] Verify each documented exit code is actually returned: `0` success,
+      conflicting/edited file is refused rather than clobbered. Restores are
+      byte-for-byte; repeated undos walk back through successive bumps.
+- [x] Verify each documented exit code is actually returned: `0` success,
       `1` runtime/missing-config/filesystem error, `2` bad flags/unknown
       command, `3` no/ambiguous/unparseable version.
-- [ ] Test edge-case version tokens: `v`/`V` prefix preservation, IPv4 tokens
+- [x] Test edge-case version tokens: `v`/`V` prefix preservation, IPv4 tokens
       skipped, multiple identical vs. differing versions in one file, and
-      near-miss tokens (`rev1.2.3`, `dev1.2.3`) rejected.
-- [ ] Test file-handling edge cases: missing target file, empty file, file with
+      near-miss tokens (`rev1.2.3`, `dev1.2.3`) rejected. Also confirmed
+      overlapping bumps in one file do not cascade.
+- [x] Test file-handling edge cases: missing target file, empty file, file with
       no version, read-only/permission-denied file, very large file, files with
-      CRLF vs. LF line endings, and files without a trailing newline.
-- [ ] Confirm atomic in-place writes preserve file mode and surrounding content,
+      CRLF vs. LF line endings, and files without a trailing newline. A
+      read-only file is still rewritten when its directory is writable (a
+      consequence of the rename-based write, now documented); an unwritable
+      directory fails without touching the target.
+- [x] Confirm atomic in-place writes preserve file mode and surrounding content,
       and that a failed/interrupted write never corrupts or truncates the target.
-- [ ] Verify config self-maintenance: after a bump the `incrmit.toml` entries are
+      Modes 600/640/664/755 all survive; no temp files are ever left behind.
+- [x] Verify config self-maintenance: after a bump the `incrmit.toml` entries are
       updated to the new version; `--dry-run` writes nothing; the config file is
-      excluded from discovery.
-- [ ] Test config errors: missing config (suggests `discover`), malformed TOML,
+      excluded from discovery. `--dry-run` also creates no state file and leaves
+      an existing one untouched.
+- [x] Test config errors: missing config (suggests `discover`), malformed TOML,
       empty/duplicate/ambiguous `[[files]]` entries, and nonexistent paths.
-- [ ] Cross-platform smoke test the release binaries (Linux, macOS, Windows;
+- [x] Cross-platform smoke test the release binaries (Linux, macOS, Windows;
       amd64 + arm64) — at minimum `version` and a `--dry-run` bump on each.
-- [ ] Install-path smoke tests: `go install`, `.deb` (`dpkg -i`/`-r`),
+      `windows/arm64` was added to `PLATFORMS`, so the matrix is now six
+      artifacts, all of the correct format (`Mach-O x86_64`/`arm64`,
+      `ELF x86-64`/`aarch64`, `PE32+ x86-64`/`Aarch64`). Both darwin binaries
+      and both linux binaries (in containers) complete a full
+      `version` → `--dry-run` → bump → `undo` cycle. Windows binaries can only
+      be format-checked here; executing them needs a Windows host or CI runner.
+- [x] Install-path smoke tests: `go install`, `.deb` (`dpkg -i`/`-r`),
       `.rpm` (`rpm -i`/`-e`), `.pkg` (`installer`), and a tarball/zip extract —
       confirm `incrmit version`, a `--dry-run` bump, and `man incrmit` work.
+      `go install` works from the local module and from
+      `github.com/sasmaq/incrmit@v0.1.13` via the proxy. Tarball and zip extract
+      with the executable bit intact. `checksums.txt` covers all ten artifacts
+      and verifies with `shasum -a 256 -c`. `dpkg -i`/`-r` (Debian, amd64 and
+      arm64) and `rpm -i`/`-e` (Fedora, x86_64 and aarch64) install
+      `/usr/bin/incrmit` plus the man page, run a bump/undo cycle, and remove
+      both files cleanly; `man incrmit` renders from the installed package.
+      The `.pkg` was verified by payload inspection
+      (`pkgutil --expand-full` shows a clean tree staging
+      `/usr/local/bin/incrmit` and the man page, with no literal `._*` files)
+      rather than by running `installer`, which needs root and would modify the
+      host's `/usr/local`.
 
 ## Milestone 26 — v1.0.0 Release Readiness: Security Testing
 

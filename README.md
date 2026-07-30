@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.1.13
+## Version: 0.1.14
 
 ## Overview
 
@@ -44,6 +44,7 @@ directly (replace `X.Y.Z` with the release version):
 | macOS amd64 | `incrmit-X.Y.Z-darwin-amd64.tar.gz` (`.pkg` too) |
 | macOS arm64 | `incrmit-X.Y.Z-darwin-arm64.tar.gz` (`.pkg` too) |
 | Windows amd64 | `incrmit-X.Y.Z-windows-amd64.zip` |
+| Windows arm64 | `incrmit-X.Y.Z-windows-arm64.zip` |
 | Fedora / RHEL x86_64 | `incrmit-X.Y.Z-1.x86_64.rpm` |
 | Fedora / RHEL aarch64 | `incrmit-X.Y.Z-1.aarch64.rpm` |
 
@@ -53,7 +54,7 @@ from the same release and comparing hashes (replace `X.Y.Z` with the release
 version):
 
 ```bash
-VERSION=0.1.13
+VERSION=0.1.14
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -76,7 +77,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.13
+VERSION=0.1.14
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -85,7 +86,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.13
+VERSION=0.1.14
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -95,7 +96,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.13
+VERSION=0.1.14
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
@@ -106,7 +107,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.1.13
+VERSION=0.1.14
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -132,7 +133,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.26 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.1.13
+go install github.com/sasmaq/incrmit@v0.1.14
 ```
 
 ### Build from source
@@ -386,7 +387,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.13
+# incrmit 0.1.14
 ```
 
 The version is baked into the binary and can be overridden at build time

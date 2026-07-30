@@ -5,7 +5,13 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.14] - 2026-07-30
+
+### Added
+
+- Release archives now include a Windows arm64 build
+  (`incrmit-X.Y.Z-windows-arm64.zip`), alongside the existing Windows amd64,
+  Linux amd64/arm64, and macOS amd64/arm64 downloads.
 
 ### Changed
 
@@ -15,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documented two intentional consequences of the atomic write: a read-only
+  target is still rewritten when its directory is writable (protection comes
+  from directory permissions, not the file mode), and an unwritable directory
+  fails before anything changes, leaving no partial write or stray temp file.
 - Documented that a bump regenerates `incrmit.toml` from its parsed contents:
   your `[[files]]` entries and `ignore` list are preserved, but hand-written
   comments and custom formatting are not.
