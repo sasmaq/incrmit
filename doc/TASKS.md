@@ -382,23 +382,38 @@ completed.
 
 ## Milestone 24 — v1.0.0 Release Readiness: Checks
 
-- [ ] Run `gofmt -l .` and confirm it reports no files (matches the CI
+- [x] Run `gofmt -l .` and confirm it reports no files (matches the CI
       formatting gate).
-- [ ] Run `go vet ./...` and resolve every reported issue.
-- [ ] Run `golangci-lint run ./...` locally with the same version CI uses and
+- [x] Run `go vet ./...` and resolve every reported issue.
+- [x] Run `golangci-lint run ./...` locally with the same version CI uses and
       clear all findings (or justify each in-code with a documented `//nolint`).
-- [ ] Run `go build ./...` and `make build` and confirm the version is stamped
-      correctly (`incrmit version` shows the intended `1.0.0`).
-- [ ] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
-      missing dependencies); confirm the Go version pin is intentional.
-- [ ] Audit the public/CLI surface for v1.0.0 stability: confirm flags,
+      Reports `0 issues`. CI's `golangci-lint-action` is now pinned to `v2.12.2`
+      so the local and CI linter versions match.
+- [x] Run `go build ./...` and `make build` and confirm the version is stamped
+      correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
+      verified working (`-ldflags` override honored, and an unstamped `go build`
+      falls back to the same source default); the value is `0.1.13` until the
+      version is bumped to `1.0.0` in Milestone 27.
+- [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
+      missing dependencies); confirm the Go version pin is intentional. Tidy is
+      a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
+      The pin was `go 1.26.4`, which contradicted README's "Go 1.26 or later";
+      loosened to `go 1.26`.
+- [x] Audit the public/CLI surface for v1.0.0 stability: confirm flags,
       subcommands, exit codes, config schema, and `incrmit.toml` self-write
-      format are final (breaking changes belong before 1.0.0, not after).
-- [ ] Review all `internal/` packages (`version`, `config`, `files`,
+      format are final (breaking changes belong before 1.0.0, not after). All
+      four exit codes verified end-to-end against the built binary; the config
+      self-write is deterministic (byte-identical across repeat bumps) but drops
+      user comments, which is now documented.
+- [x] Review all `internal/` packages (`version`, `config`, `files`,
       `discovery`, `cli`, `buildinfo`) for `TODO`/`FIXME`/`XXX` markers and
-      resolve or ticket each.
-- [ ] Confirm `README.md`, `doc/DEVELOPMENT.md`, and `incrmit(1)` man page match
+      resolve or ticket each. No markers found anywhere in the Go sources.
+- [x] Confirm `README.md`, `doc/DEVELOPMENT.md`, and `incrmit(1)` man page match
       the actual behavior of the shipped binary (flags, examples, exit codes).
+      Fixed: stale project layout in `DEVELOPMENT.md` (missing `internal/cli`
+      and `internal/buildinfo`), out-of-order sections 6.2/6.3, the undocumented
+      config-comment loss, and the missing bump-flag precedence note in the man
+      page.
 
 ## Milestone 25 — v1.0.0 Release Readiness: Functional & Bug Testing
 

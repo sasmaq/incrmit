@@ -57,3 +57,6 @@ jobs:
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
+        with:
+          # Pinned so `golangci-lint run` locally reports exactly what CI does.
+          version: v2.12.2

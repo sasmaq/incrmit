@@ -153,7 +153,7 @@ lenient: a missing or unparseable `--output` file yields no patterns and no
 error, since `discover` overwrites that path and it may not currently be a valid
 config.
 
-### 6.3 Bump history / state file (`internal/history`)
+### 6.2 Bump history / state file (`internal/history`)
 
 After a successful, non-`--dry-run` bump in config mode, `incrmit` appends an
 entry to a **state file** so the bump can be reverted by `incrmit undo`.
@@ -201,7 +201,7 @@ Paths are stored **resolved (absolute)** so `undo` can locate the files and the
 config regardless of the working directory it is later run from. The file is
 written atomically via `files.WriteAtomic`, the same path used for target files.
 
-### 6.2 Version
+### 6.3 Version
 
 ```go
 type Version struct {
@@ -327,11 +327,14 @@ list every flag without duplicating the flag text.
    versions live in the same file.
 6. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
    `version` records the new value (one entry per distinct version per file),
-   keeping the config in sync for the next run.
+   keeping the config in sync for the next run. The file is regenerated through
+   `config.Marshal`, so the `[[files]]` entries and `ignore` list survive but
+   user-authored comments and formatting do not. The output is deterministic:
+   the same config bumped twice produces byte-identical layout.
 7. In config mode, append a history entry (each file's path, resolved path, and
    `old`/`new` tokens, plus a timestamp and the config path) to the state file
    beside the config so the bump can be undone (see
-   [section 6.3](#63-bump-history--state-file-internalhistory)).
+   [section 6.2](#62-bump-history--state-file-internalhistory)).
 8. Report results (files bumped, and each `old -> new`).
 
 ### 8.2 Discover
@@ -467,15 +470,22 @@ configured pattern matches.
 
 ```text
 incrmit/
-├── main.go                 # entry point, flag parsing, dispatch
+├── main.go                 # entry point; delegates to internal/cli
 ├── internal/
+│   ├── cli/                # flag parsing, dispatch, help text, exit codes
 │   ├── config/             # TOML load and validation
 │   ├── version/            # semantic version parse and bump
 │   ├── discovery/          # filesystem scan and config generation
 │   ├── history/            # bump journal (state file) for undo
-│   └── files/              # read/write helpers
+│   ├── files/              # read/write helpers
+│   └── buildinfo/          # tool version (stamped via -ldflags)
 ├── doc/
-│   └── DEVELOPMENT.md      # this document
+│   ├── DEVELOPMENT.md      # this document
+│   ├── tasks.md            # milestone checklist
+│   └── man/incrmit.1       # man page
+├── packaging/nfpm.yaml     # .deb / .rpm package definition
+├── scripts/                # release helpers (.pkg build, changelog notes)
+├── incrmit.toml            # incrmit's own config (it bumps itself)
 ├── go.mod
 └── README.md
 ```

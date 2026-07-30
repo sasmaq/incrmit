@@ -5,6 +5,23 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Building `incrmit` now requires Go 1.26 or later rather than exactly Go
+  1.26.4, matching the requirement already documented in `README.md`. Building
+  no longer forces a specific patch-level toolchain download.
+
+### Fixed
+
+- Documented that a bump regenerates `incrmit.toml` from its parsed contents:
+  your `[[files]]` entries and `ignore` list are preserved, but hand-written
+  comments and custom formatting are not.
+- The `incrmit(1)` man page now documents that the highest component wins when
+  `--major`, `--minor`, and `--patch` are combined (major > minor > patch),
+  matching `README.md`.
+
 ## [0.1.13] - 2026-07-27
 
 ### Added

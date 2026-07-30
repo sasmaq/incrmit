@@ -1,5 +1,5 @@
 .\" incrmit man page. Source: doc/man/incrmit.1
-.Dd July 10, 2026
+.Dd July 30, 2026
 .Dt INCRMIT 1
 .Os
 .Sh NAME
@@ -94,6 +94,13 @@ Bump the minor version (resets patch).
 .It Fl p , Fl -patch
 Bump the patch version.
 This is the default when no major/minor flag is given.
+If more than one of
+.Fl M ,
+.Fl m ,
+and
+.Fl p
+is supplied, the highest component wins
+.Pq major > minor > patch .
 .It Fl d , Fl -dry-run
 Print the new version without writing files.
 .It Fl P , Fl -path Ar dir

@@ -183,6 +183,11 @@ After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's
 `version` reflects the new value, keeping the config in step with the files
 it manages.
 
+That rewrite regenerates the file from its parsed contents in a fixed layout, so
+your `[[files]]` entries and `ignore` list are preserved but hand-written
+comments and custom formatting are not. Keep notes you want to survive a bump
+outside `incrmit.toml`.
+
 A `--dry-run` previews the change and writes nothing — neither the targets
 nor the config.
 
