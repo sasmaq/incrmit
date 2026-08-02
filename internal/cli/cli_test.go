@@ -462,6 +462,75 @@ func TestBumpFailFastDoesNotPartiallyWrite(t *testing.T) {
 	}
 }
 
+// A bump reads its targets whatever their size unless --max-file-size asks for
+// a cap; a target over the cap is reported (naming the flag) and, because the
+// check happens while planning, no other file is written.
+func TestBumpMaxFileSize(t *testing.T) {
+	body := "[[files]]\npath = \"VERSION\"\n[[files]]\npath = \"notes.txt\"\nversion = \"2.0.0\"\n"
+	targets := map[string]string{
+		"VERSION":   "1.2.3\n",
+		"notes.txt": strings.Repeat("x", 4096) + "\n2.0.0\n",
+	}
+
+	t.Run("no cap by default", func(t *testing.T) {
+		dir := project(t, body, targets)
+		code, stdout, stderr := runMain(t, dir)
+		if code != ExitOK {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+		if !strings.Contains(stdout, "2.0.0 -> 2.0.1") {
+			t.Errorf("stdout = %q, want the large file bumped", stdout)
+		}
+	})
+
+	t.Run("cap above the file", func(t *testing.T) {
+		dir := project(t, body, targets)
+		code, stdout, stderr := runMain(t, dir, "--max-file-size", "1MiB")
+		if code != ExitOK {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+		if !strings.Contains(stdout, "2.0.0 -> 2.0.1") {
+			t.Errorf("stdout = %q, want the large file bumped", stdout)
+		}
+	})
+
+	for _, flag := range []string{"--max-file-size", "-s"} {
+		t.Run("cap below the file "+flag, func(t *testing.T) {
+			dir := project(t, body, targets)
+			code, _, stderr := runMain(t, dir, flag, "1KiB")
+			if code != ExitError {
+				t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitError, stderr)
+			}
+			if !strings.Contains(stderr, "notes.txt") || !strings.Contains(stderr, "--max-file-size limit of 1KiB") {
+				t.Errorf("stderr = %q, want it to name the file and the limit", stderr)
+			}
+			// Planning fails before any write, so the other target keeps its
+			// version and the oversized file is left alone.
+			if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+				t.Errorf("VERSION = %q, want it untouched", got)
+			}
+			if got, _ := os.ReadFile(filepath.Join(dir, "notes.txt")); !strings.Contains(string(got), "2.0.0") {
+				t.Errorf("notes.txt was modified despite being over the cap")
+			}
+		})
+	}
+}
+
+// A bad --max-file-size is a usage error, reported before any file is read.
+func TestBumpBadMaxFileSize(t *testing.T) {
+	dir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
+	code, _, stderr := runMain(t, dir, "--max-file-size", "-4")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(stderr, "0 for no limit") {
+		t.Errorf("stderr = %q, want the hint that 0 disables the limit", stderr)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("VERSION = %q, want it untouched", got)
+	}
+}
+
 func TestBadFlag(t *testing.T) {
 	code, _, _ := runMain(t, "", "--nope")
 	if code != ExitUsage {
@@ -699,6 +768,60 @@ func TestDiscoverBadFlag(t *testing.T) {
 	code, _, _ := runMain(t, "", "discover", "--nope")
 	if code != ExitUsage {
 		t.Errorf("exit = %d, want %d", code, ExitUsage)
+	}
+}
+
+// --max-file-size tightens (or lifts) discovery's read cap: a file over the
+// given size is not scanned, and the same tree scanned with the cap disabled
+// finds it again.
+func TestDiscoverMaxFileSize(t *testing.T) {
+	targets := map[string]string{
+		"VERSION":   "1.2.3\n",
+		"notes.txt": strings.Repeat("x", 4096) + "\n2.0.0\n",
+	}
+
+	for _, tt := range []struct {
+		name    string
+		args    []string
+		wantBig bool
+	}{
+		{"cap below the file", []string{"discover", "--max-file-size", "1KiB", "--dry-run"}, false},
+		{"shorthand cap", []string{"discover", "-s", "1K", "--dry-run"}, false},
+		{"cap above the file", []string{"discover", "-s", "1MiB", "--dry-run"}, true},
+		{"cap disabled", []string{"discover", "-s", "0", "--dry-run"}, true},
+		{"default cap", []string{"discover", "--dry-run"}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := project(t, "", targets)
+			code, stdout, stderr := runMain(t, dir, tt.args...)
+			if code != ExitOK {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if got := strings.Contains(stdout, "notes.txt"); got != tt.wantBig {
+				t.Errorf("notes.txt discovered = %v, want %v:\n%s", got, tt.wantBig, stdout)
+			}
+			if !strings.Contains(stdout, "VERSION") {
+				t.Errorf("stdout missing VERSION:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// A bad --max-file-size is a usage error, reported before anything is scanned.
+func TestDiscoverBadMaxFileSize(t *testing.T) {
+	dir := project(t, "", map[string]string{"VERSION": "1.2.3\n"})
+	code, stdout, stderr := runMain(t, dir, "discover", "--max-file-size", "lots")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, ExitUsage)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty on a usage error", stdout)
+	}
+	if !strings.Contains(stderr, `"lots"`) {
+		t.Errorf("stderr = %q, want it to name the bad value", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "incrmit.toml")); !os.IsNotExist(err) {
+		t.Errorf("a config was written despite the usage error (err %v)", err)
 	}
 }
 

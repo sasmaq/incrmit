@@ -5,6 +5,7 @@ package files
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -170,13 +171,38 @@ func replaceToken(data []byte, oldToken, newToken string) ([]byte, int) {
 // detect it with errors.Is to phrase their own message.
 var ErrNotRegular = errors.New("not a regular file")
 
-// ReadTarget reads a file incrmit is about to inspect or bump. It establishes
-// that the target is an ordinary file before opening it, because opening a named
-// pipe blocks until a writer appears and a device such as /dev/zero never ends:
-// either would leave incrmit hanging with no output instead of reporting a
-// problem. The check follows symlinks, so a link to a real file is still read
-// (a write later replaces the link rather than following it).
+// TooLargeError reports that a target is bigger than the caller's size cap, so
+// it was not read. Size is the file's size in bytes and Limit the cap that
+// rejected it.
+type TooLargeError struct {
+	Size  int64
+	Limit int64
+}
+
+func (e *TooLargeError) Error() string {
+	return fmt.Sprintf("files: file is %d bytes, over the %d byte limit", e.Size, e.Limit)
+}
+
+// ReadTarget reads a file incrmit is about to inspect or bump, with no size
+// cap. See ReadTargetWithLimit for the details of what it refuses to read.
 func ReadTarget(path string) ([]byte, error) {
+	return ReadTargetWithLimit(path, 0)
+}
+
+// ReadTargetWithLimit reads a file incrmit is about to inspect or bump, refusing
+// one larger than maxBytes with a *TooLargeError (maxBytes <= 0 means no cap).
+// It establishes that the target is an ordinary file before opening it, because
+// opening a named pipe blocks until a writer appears and a device such as
+// /dev/zero never ends: either would leave incrmit hanging with no output
+// instead of reporting a problem. The check follows symlinks, so a link to a
+// real file is still read (a write later replaces the link rather than
+// following it).
+//
+// A file that grows past the cap between the size check and the read is
+// reported as too large rather than returned truncated: the caller writes the
+// bumped contents back over the file, so short data would silently discard the
+// rest of it.
+func ReadTargetWithLimit(path string, maxBytes int64) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -184,7 +210,31 @@ func ReadTarget(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, ErrNotRegular
 	}
-	return os.ReadFile(path)
+	if maxBytes <= 0 {
+		return os.ReadFile(path)
+	}
+	if info.Size() > maxBytes {
+		return nil, &TooLargeError{Size: info.Size(), Limit: maxBytes}
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		size := int64(len(data))
+		if fi, ferr := f.Stat(); ferr == nil {
+			size = fi.Size()
+		}
+		return nil, &TooLargeError{Size: size, Limit: maxBytes}
+	}
+	return data, nil
 }
 
 // ReadVersion reads path and returns the semantic version it contains.

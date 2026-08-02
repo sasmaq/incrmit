@@ -521,7 +521,7 @@ func TestDiscoverSkipsOversizedFiles(t *testing.T) {
 	}
 	// Sparse: one byte past the cap makes the file oversized without writing
 	// the whole payload.
-	if err := f.Truncate(maxScanBytes + 1); err != nil {
+	if err := f.Truncate(DefaultMaxScanBytes + 1); err != nil {
 		_ = f.Close()
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestDiscoverSkipsOversizedFiles(t *testing.T) {
 // ordinary files are never dropped.
 func TestDiscoverScansFileAtSizeCap(t *testing.T) {
 	root := t.TempDir()
-	padding := strings.Repeat("x", maxScanBytes-len("\nver 1.2.3\n"))
+	padding := strings.Repeat("x", DefaultMaxScanBytes-len("\nver 1.2.3\n"))
 	mustWrite(t, root, "atcap.txt", padding+"\nver 1.2.3\n")
 
 	got, err := Discover(root)
@@ -555,6 +555,44 @@ func TestDiscoverScansFileAtSizeCap(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Path != "atcap.txt" {
 		t.Fatalf("got %+v, want atcap.txt to be scanned", got)
+	}
+	if firstVersion(got[0]) != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
+		t.Errorf("got %v, want 1.2.3", firstVersion(got[0]))
+	}
+}
+
+// A caller-supplied cap replaces the default one, so a scan can be tightened
+// to skip files the default would have read.
+func TestDiscoverWithLimitSkipsAboveCap(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "small.txt", "ver 1.2.3\n")
+	mustWrite(t, root, "large.txt", strings.Repeat("x", 4096)+"\nver 4.5.6\n")
+
+	got, err := DiscoverWithLimit(root, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "small.txt" {
+		t.Fatalf("got %+v, want only small.txt (large.txt is over the 1KiB cap)", got)
+	}
+}
+
+// A cap of zero removes the limit, so even a file past the default cap is
+// scanned.
+func TestDiscoverWithLimitZeroScansEverything(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "huge.txt", strings.Repeat("x", DefaultMaxScanBytes+1)+"\nver 1.2.3\n")
+
+	if got, err := Discover(root); err != nil || len(got) != 0 {
+		t.Fatalf("Discover = %+v (err %v), want the oversized file skipped by default", got, err)
+	}
+
+	got, err := DiscoverWithLimit(root, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "huge.txt" {
+		t.Fatalf("got %+v, want huge.txt to be scanned with the cap disabled", got)
 	}
 	if firstVersion(got[0]) != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
 		t.Errorf("got %v, want 1.2.3", firstVersion(got[0]))

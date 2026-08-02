@@ -345,6 +345,87 @@ func TestWriteAtomicPreservesMode(t *testing.T) {
 	}
 }
 
+// ReadTarget has no size cap of its own: a file listed in the config is read
+// whatever its size unless the caller asks for a limit.
+func TestReadTargetHasNoSizeCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.txt")
+	body := strings.Repeat("x", 4<<20) + "\n1.2.3\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadTarget(path)
+	if err != nil {
+		t.Fatalf("ReadTarget: %v", err)
+	}
+	if len(got) != len(body) {
+		t.Errorf("read %d bytes, want the whole %d byte file", len(got), len(body))
+	}
+}
+
+// Under an explicit cap, a file up to the limit is read whole and a larger one
+// is refused with a *TooLargeError reporting both sizes. It is never returned
+// truncated: the caller writes the result back over the file.
+func TestReadTargetWithLimit(t *testing.T) {
+	dir := t.TempDir()
+	body := "version 1.2.3\n"
+	path := filepath.Join(dir, "VERSION")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	size := int64(len(body))
+
+	tests := []struct {
+		name     string
+		limit    int64
+		wantRead bool
+	}{
+		{"under the cap", size + 10, true},
+		{"exactly at the cap", size, true},
+		{"over the cap", size - 1, false},
+		{"cap disabled", 0, true},
+		{"negative cap disabled", -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ReadTargetWithLimit(path, tt.limit)
+			if tt.wantRead {
+				if err != nil {
+					t.Fatalf("ReadTargetWithLimit: %v", err)
+				}
+				if string(got) != body {
+					t.Errorf("content = %q, want %q", got, body)
+				}
+				return
+			}
+			var tooLarge *TooLargeError
+			if !errors.As(err, &tooLarge) {
+				t.Fatalf("err = %v, want a *TooLargeError", err)
+			}
+			if got != nil {
+				t.Errorf("content = %q, want nil so a truncated file is never written back", got)
+			}
+			if tooLarge.Size != size || tooLarge.Limit != tt.limit {
+				t.Errorf("error = %+v, want size %d and limit %d", tooLarge, size, tt.limit)
+			}
+		})
+	}
+}
+
+// The size check never turns a non-regular target into a size complaint: the
+// kind of file is still what gets reported.
+func TestReadTargetWithLimitRejectsNonRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe")
+	if err := testutil.Mkfifo(fifo); err != nil {
+		t.Skipf("FIFOs unsupported: %v", err)
+	}
+	if _, err := ReadTargetWithLimit(fifo, 1<<20); !errors.Is(err, ErrNotRegular) {
+		t.Errorf("err = %v, want ErrNotRegular", err)
+	}
+}
+
 // A non-regular target must be reported rather than opened: opening a named pipe
 // blocks until a writer appears, which would hang incrmit with no output. The
 // test's own deadline catches a regression.

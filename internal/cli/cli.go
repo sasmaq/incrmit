@@ -42,6 +42,7 @@ func fprint(w io.Writer, s string) {
 // on the (often path-duplicated) raw OS error text. action is a verb such as
 // "reading" or "writing"; display is the path as the user knows it.
 func fsErrorMessage(action, display string, err error) string {
+	var tooLarge *files.TooLargeError
 	switch {
 	case errors.Is(err, fs.ErrPermission):
 		return fmt.Sprintf("%s %s: permission denied", action, display)
@@ -49,6 +50,9 @@ func fsErrorMessage(action, display string, err error) string {
 		return fmt.Sprintf("%s %s: file does not exist", action, display)
 	case errors.Is(err, files.ErrNotRegular):
 		return fmt.Sprintf("%s %s: not a regular file", action, display)
+	case errors.As(err, &tooLarge):
+		return fmt.Sprintf("%s %s: file is %s, over the --max-file-size limit of %s",
+			action, display, formatSize(tooLarge.Size), formatSize(tooLarge.Limit))
 	default:
 		return fmt.Sprintf("%s %s: %v", action, display, err)
 	}
@@ -116,12 +120,13 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 }
 
 type bumpOptions struct {
-	configPath string
-	file       string
-	major      bool
-	minor      bool
-	patch      bool
-	dryRun     bool
+	configPath  string
+	file        string
+	major       bool
+	minor       bool
+	patch       bool
+	dryRun      bool
+	maxFileSize int64 // per-file read cap in bytes; 0 means no limit
 }
 
 func runBump(args []string, stdout, stderr io.Writer) int {
@@ -146,7 +151,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	// are grouped by file: a single file may be listed several times (once per
 	// distinct version it contains), and all of those versions are bumped in one
 	// pass so the writes never clobber each other.
-	groups, code := planGroups(targets, bump, stderr)
+	groups, code := planGroups(targets, bump, opts.maxFileSize, stderr)
 	if code != ExitOK {
 		return code
 	}
@@ -239,17 +244,18 @@ type fileGroup struct {
 }
 
 // planGroups reads every target file once and computes the old/new version for
-// each config entry, grouping entries that refer to the same file. File order
-// and entry order are preserved for deterministic output. On failure it reports
-// the problem to stderr and returns the appropriate exit code; ExitOK indicates
-// success.
-func planGroups(targets []target, bump func(version.Version) version.Version, stderr io.Writer) ([]fileGroup, int) {
+// each config entry, grouping entries that refer to the same file. A target
+// larger than maxBytes is reported rather than read (maxBytes of 0 means no
+// limit). File order and entry order are preserved for deterministic output. On
+// failure it reports the problem to stderr and returns the appropriate exit
+// code; ExitOK indicates success.
+func planGroups(targets []target, bump func(version.Version) version.Version, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	var groups []fileGroup
 	index := make(map[string]int, len(targets))
 	for _, tgt := range targets {
 		gi, ok := index[tgt.fsPath]
 		if !ok {
-			data, err := files.ReadTarget(tgt.fsPath)
+			data, err := files.ReadTargetWithLimit(tgt.fsPath, maxBytes)
 			if err != nil {
 				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", tgt.display, err))
 				return nil, classify(err)
@@ -306,6 +312,7 @@ func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) 
 	fs.BoolVar(&opts.patch, "p", true, "bump the patch version (shorthand)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print the new version without writing")
 	fs.BoolVar(&opts.dryRun, "d", false, "print the new version without writing (shorthand)")
+	maxFileSizeVar(fs, &opts.maxFileSize, 0, "refuse to read a target larger than this size")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -379,9 +386,10 @@ func resolveTargets(opts bumpOptions) ([]target, string, []string, error) {
 }
 
 type discoverOptions struct {
-	path   string
-	output string
-	dryRun bool
+	path        string
+	output      string
+	dryRun      bool
+	maxFileSize int64 // per-file scan cap in bytes; 0 means no limit
 }
 
 func runDiscover(args []string, stdout, stderr io.Writer) int {
@@ -401,7 +409,7 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return classify(err)
 	}
 
-	results, err := discovery.Discover(opts.path, ignore...)
+	results, err := discovery.DiscoverWithLimit(opts.path, opts.maxFileSize, ignore...)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -476,6 +484,7 @@ func parseDiscoverFlags(args []string, stdout, stderr io.Writer) (discoverOption
 	fs.StringVar(&opts.output, "o", config.DefaultPath, "path to write the generated config (shorthand)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print discovered files without writing the config")
 	fs.BoolVar(&opts.dryRun, "d", false, "print discovered files without writing the config (shorthand)")
+	maxFileSizeVar(fs, &opts.maxFileSize, discovery.DefaultMaxScanBytes, "skip files larger than this size")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

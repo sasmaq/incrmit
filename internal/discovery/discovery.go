@@ -50,11 +50,12 @@ var ignoredDirs = map[string]struct{}{
 	"target":       {},
 }
 
-// maxScanBytes bounds how much of any one file discovery will read. Version
-// tokens live in small text files (manifests, VERSION files, source headers), so
-// a larger file is not a plausible target and is skipped rather than pulled into
-// memory. This keeps a scan bounded when a tree contains very large files.
-const maxScanBytes = 32 << 20 // 32 MiB
+// DefaultMaxScanBytes bounds how much of any one file discovery will read
+// unless a caller asks for a different cap. Version tokens live in small text
+// files (manifests, VERSION files, source headers), so a larger file is not a
+// plausible target and is skipped rather than pulled into memory. This keeps a
+// scan bounded when a tree contains very large files.
+const DefaultMaxScanBytes = 32 << 20 // 32 MiB
 
 // versionRe matches a run of two or more dot-separated integer groups,
 // optionally prefixed by a single leading "v" or "V", bounded by non-word
@@ -76,7 +77,17 @@ var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+\b`)
 // applied in addition to the built-in ignoredDirs: any file or directory whose
 // path (relative to root) matches a pattern is skipped, and a matching directory
 // prunes its whole subtree. See ignore.go for the matching semantics.
+//
+// Files larger than DefaultMaxScanBytes are skipped; use DiscoverWithLimit to
+// choose a different cap.
 func Discover(root string, ignore ...string) ([]Result, error) {
+	return DiscoverWithLimit(root, DefaultMaxScanBytes, ignore...)
+}
+
+// DiscoverWithLimit is Discover with an explicit per-file size cap: a file
+// larger than maxBytes is skipped rather than read. A maxBytes of zero (or less)
+// removes the cap, so every regular file is scanned no matter its size.
+func DiscoverWithLimit(root string, maxBytes int64, ignore ...string) ([]Result, error) {
 	matcher := newIgnoreMatcher(ignore)
 	var results []Result
 
@@ -121,7 +132,7 @@ func Discover(root string, ignore ...string) ([]Result, error) {
 			return nil
 		}
 
-		occ, ok := detect(p)
+		occ, ok := detect(p, maxBytes)
 		if !ok {
 			return nil
 		}
@@ -183,19 +194,22 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 
 // detect reads the file at path and returns every [v]MAJOR.MINOR.PATCH token it
 // contains, in the order they appear, each tagged with its 1-based line number
-// and the trimmed text of that line. It is best-effort: unreadable, oversized,
+// and the trimmed text of that line. Files larger than maxBytes are skipped
+// (maxBytes <= 0 means no cap). It is best-effort: unreadable, oversized,
 // non-regular, and binary files yield ok == false. versionRe also matches
 // dotted-number runs that are not versions (two-component numbers like 3.9,
 // four-octet IPv4 addresses like 192.168.1.1, ...); those fail version.Parse and
 // are skipped, so only real three-component versions are reported.
-func detect(path string) ([]Occurrence, bool) {
+func detect(path string, maxBytes int64) ([]Occurrence, bool) {
+	capped := maxBytes > 0
+
 	// Establish the file type before opening: opening a FIFO blocks until a
 	// writer appears, so a pipe in the tree would hang the whole scan. Only
 	// regular files within the size cap are read; a character device such as
 	// /dev/zero would otherwise stream without end. The walk has already
 	// excluded symlinks, so Lstat reports the entry itself.
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxScanBytes {
+	if err != nil || !info.Mode().IsRegular() || (capped && info.Size() > maxBytes) {
 		return nil, false
 	}
 
@@ -207,13 +221,18 @@ func detect(path string) ([]Occurrence, bool) {
 
 	// Re-check on the descriptor, so a path swapped for something else between
 	// the stat and the open is still rejected.
-	if fi, ferr := f.Stat(); ferr != nil || !fi.Mode().IsRegular() || fi.Size() > maxScanBytes {
+	if fi, ferr := f.Stat(); ferr != nil || !fi.Mode().IsRegular() || (capped && fi.Size() > maxBytes) {
 		return nil, false
 	}
 
 	// LimitReader is a second guard: the file may still grow past the cap
-	// between the stat above and the read here.
-	data, err := io.ReadAll(io.LimitReader(f, maxScanBytes))
+	// between the stat above and the read here. With the cap removed there is
+	// nothing to guard against, so the file is read whole.
+	var r io.Reader = f
+	if capped {
+		r = io.LimitReader(f, maxBytes)
+	}
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, false
 	}

@@ -5,7 +5,20 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.15] - 2026-08-02
+## [0.1.15] - 2026-08-03
+
+### Added
+
+- A `--max-file-size` / `-s` flag sets the largest file `incrmit` will read.
+  Values are written as a byte count (`1048576`) or with a unit suffix (`512KB`,
+  `32MiB`, `2G`), and `0` means no limit.
+  - `incrmit discover --max-file-size` adjusts the 32 MiB cap that decides which
+    files a scan reads: lower it to keep a scan light on a tree full of large
+    generated files, or set `0` to scan everything.
+  - `incrmit --max-file-size` puts a cap on the files a bump reads. There is
+    still no cap by default, since targets are listed by hand; when one is set,
+    a target over the limit is reported (naming the file and the limit) and the
+    bump writes nothing at all.
 
 ### Security
 
@@ -37,9 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions in both workflows are pinned to commit SHAs instead of movable
   tags, workflow permissions default to read-only with write granted only to the
   jobs that publish, and `govulncheck` now gates both CI and the release. Steps
-  that install a Go tool set `GOPROXY` and `GOSUMDB` explicitly, so the checksum
-  verification that makes a pinned version immutable cannot be lost to a change in
-  the runner's defaults.
+  that install a Go tool set `GOPROXY` and `GOSUMDB` explicitly, so the
+  checksum verification that makes a pinned version immutable cannot be lost
+  to a change in the runner's defaults.
 
 ### Fixed
 

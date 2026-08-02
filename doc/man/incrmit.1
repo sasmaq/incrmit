@@ -10,12 +10,14 @@
 .Op Fl c Ar config
 .Op Fl f Ar file
 .Op Fl M | m | p
+.Op Fl s Ar size
 .Op Fl d
 .Pp
 .Nm incrmit
 .Cm discover
 .Op Fl P Ar path
 .Op Fl o Ar output
+.Op Fl s Ar size
 .Op Fl d
 .Pp
 .Nm incrmit
@@ -53,7 +55,8 @@ Scan a directory tree for version-bearing files and write
 The scan stays inside the directory it is given: symlinks are never followed,
 only regular files are read
 .Pq never pipes, devices, or sockets ,
-and files larger than 32 MiB are skipped.
+and files larger than 32 MiB are skipped
+.Pq see Fl -max-file-size .
 .It Cm undo
 Revert the most recent bump, restoring the previous version in every file it
 changed and in
@@ -105,6 +108,25 @@ and
 .Fl p
 is supplied, the highest component wins
 .Pq major > minor > patch .
+.It Fl s , Fl -max-file-size Ar size
+Largest file to read.
+A
+.Ar size
+is a plain byte count
+.Pq 1048576
+or a value with a unit suffix such as
+.Ar 512KB ,
+.Ar 32MiB ,
+or
+.Ar 2G ;
+a size of
+.Ar 0
+means no limit.
+For the default command, a target over the limit is reported as an error and
+nothing is written; the default is no limit.
+For
+.Cm discover ,
+a file over the limit is skipped; the default is 32MiB.
 .It Fl d , Fl -dry-run
 Print the new version without writing files.
 .It Fl P , Fl -path Ar dir

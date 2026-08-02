@@ -310,7 +310,8 @@ reads ordinary files:
   without end.
 - **Files larger than 32 MiB are skipped.** Version strings live in small text
   files, so this bounds how much a scan reads no matter what the tree contains.
-  Files listed in the config by hand are not subject to this limit.
+  Use [`--max-file-size`](#limiting-how-much-is-read) to raise, lower, or remove
+  the cap. Files listed in the config by hand are not subject to it.
 
 ```bash
 incrmit discover
@@ -360,6 +361,7 @@ finding.
 | ---- | ----- | ----------- | ------- |
 | `--path` | `-P` | Root directory to scan | `.` |
 | `--output` | `-o` | Path to write the generated config file | `incrmit.toml` |
+| `--max-file-size` | `-s` | Skip files larger than this size | `32MiB` |
 | `--dry-run` | `-d` | Print discovered files without writing config | `false` |
 
 ```bash
@@ -368,6 +370,34 @@ incrmit discover --path ./src --dry-run
 
 # Write the config to a custom location
 incrmit discover --output release/incrmit.toml
+```
+
+### Limiting how much is read
+
+`--max-file-size` (`-s`) sets the largest file `incrmit` will read. A value is
+either a plain byte count or a number with a unit suffix — `512KB`, `32MiB`,
+`2G` — and `0` means no limit. The bare `K`, `M`, and `G` suffixes are binary
+(1024-based), while `KB`, `MB`, and `GB` are decimal (1000-based).
+
+The two commands treat the cap differently, because they face different input:
+
+- **`discover` skips** a file over the cap and carries on, since it is scanning
+  a whole tree and a huge file is simply not a plausible version target. The
+  default cap is `32MiB`.
+- **A bump fails** on a target over the cap, naming the file and the limit, and
+  writes nothing at all (the size is checked while planning, before any file is
+  touched). Targets are listed by hand, so a bump has **no cap by default** —
+  pass `--max-file-size` to opt in.
+
+```bash
+# Scan a tree with big generated files, keeping the scan light
+incrmit discover --max-file-size 256KB
+
+# Scan everything, however large
+incrmit discover -s 0
+
+# Refuse to bump a target that has grown unexpectedly large
+incrmit --max-file-size 1MiB
 ```
 
 ## Undo
@@ -444,6 +474,7 @@ incrmit [flags]
 | `--major` | `-M` | Bump the major version (resets minor and patch) | `false` |
 | `--minor` | `-m` | Bump the minor version (resets patch) | `false` |
 | `--patch` | `-p` | Bump the patch version | `true` |
+| `--max-file-size` | `-s` | [Refuse to read a target larger than this](#limiting-how-much-is-read) | *no limit* |
 | `--dry-run` | `-d` | Print the new version without writing files | `false` |
 
 When no `--major`, `--minor`, or `--patch` flag is given, a patch bump is

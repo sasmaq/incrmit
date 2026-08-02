@@ -11,21 +11,30 @@ import "io"
 // command's flag block. They are composed into both the per-command help
 // (bumpHelp, discoverHelp) and the top-level overview so the flag text never
 // drifts out of sync or gets duplicated across help strings.
-const bumpFlags = `  -c, --config string  path to the TOML config file (default "incrmit.toml")
-  -f, --file string    bump the version in one file (skips config)
-  -M, --major          bump the major version (resets minor and patch)
-  -m, --minor          bump the minor version (resets patch)
-  -p, --patch          bump the patch version (default)
-  -d, --dry-run        print the new version without writing
+const bumpFlags = `  -c, --config string       path to the TOML config file (default "incrmit.toml")
+  -f, --file string         bump the version in one file (skips config)
+  -M, --major               bump the major version (resets minor and patch)
+  -m, --minor               bump the minor version (resets patch)
+  -p, --patch               bump the patch version (default)
+  -s, --max-file-size size  refuse to read a larger target (default no limit)
+  -d, --dry-run             print the new version without writing
 `
 
-const discoverFlags = `  -P, --path string    root directory to scan (default ".")
-  -o, --output string  path to write the generated config (default "incrmit.toml")
-  -d, --dry-run        print discovered files without writing the config
+const discoverFlags = `  -P, --path string         root directory to scan (default ".")
+  -o, --output string       path for the generated config (default "incrmit.toml")
+  -s, --max-file-size size  skip files larger than this (default 32MiB)
+  -d, --dry-run             print discovered files without writing the config
 `
 
 const undoFlags = `  -c, --config string  path to the TOML config file (default "incrmit.toml")
   -d, --dry-run        preview the revert (new -> old) without writing
+`
+
+// sizeNote explains the --max-file-size value format once, and is appended to
+// the help of each command that takes it.
+const sizeNote = `
+A size is a plain byte count (1048576) or a value with a unit suffix such as
+512KB, 32MiB, or 2G. A size of 0 means no limit.
 `
 
 const helpFlags = `      --no-banner      hide the ASCII banner above the overview
@@ -67,6 +76,9 @@ Help flags (incrmit help, incrmit -h):
 The version command takes no flags. The --version, -version, and -v flags
 print the tool version.
 
+A --max-file-size value is a plain byte count (1048576) or a value with a unit
+suffix such as 512KB, 32MiB, or 2G. A size of 0 means no limit.
+
 Run "incrmit help <command>" for details, for example "incrmit help discover".
 `
 
@@ -77,7 +89,7 @@ const bumpHelp = `usage: incrmit [flags]
 Bump the semantic version in the configured files.
 
 Flags:
-` + bumpFlags
+` + bumpFlags + sizeNote
 
 // discoverHelp documents the discover command. It is shown by
 // `incrmit discover -h`, `incrmit help discover`, and on a discover usage error.
@@ -86,7 +98,7 @@ const discoverHelp = `usage: incrmit discover [flags]
 Scan a directory tree for version-bearing files and generate a config.
 
 Flags:
-` + discoverFlags
+` + discoverFlags + sizeNote
 
 // undoHelp documents the undo command. It is shown by `incrmit undo -h`,
 // `incrmit help undo`, and on an undo usage error.

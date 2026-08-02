@@ -219,14 +219,15 @@ type Version struct {
 incrmit [flags]
 ```
 
-| Flag        | Short | Description                                        | Default        |
-| ----------- | ----- | -------------------------------------------------- | -------------- |
-| `--config`  | `-c`  | Path to the TOML config file                       | `incrmit.toml` |
-| `--file`    | `-f`  | Bump the version in one file (skips config)        | _none_         |
-| `--major`   | `-M`  | Bump the major version (resets minor and patch)    | `false`        |
-| `--minor`   | `-m`  | Bump the minor version (resets patch)              | `false`        |
-| `--patch`   | `-p`  | Bump the patch version                             | `true`         |
-| `--dry-run` | `-d`  | Print the new version without writing to the files | `false`        |
+| Flag              | Short | Description                                        | Default        |
+| ----------------- | ----- | -------------------------------------------------- | -------------- |
+| `--config`        | `-c`  | Path to the TOML config file                       | `incrmit.toml` |
+| `--file`          | `-f`  | Bump the version in one file (skips config)        | *none*         |
+| `--major`         | `-M`  | Bump the major version (resets minor and patch)    | `false`        |
+| `--minor`         | `-m`  | Bump the minor version (resets patch)              | `false`        |
+| `--patch`         | `-p`  | Bump the patch version                             | `true`         |
+| `--max-file-size` | `-s`  | Refuse to read a target larger than this size      | `0` (no limit) |
+| `--dry-run`       | `-d`  | Print the new version without writing to the files | `false`        |
 
 ### Discover command
 
@@ -234,14 +235,20 @@ incrmit [flags]
 incrmit discover [flags]
 ```
 
-| Flag        | Short | Description                                       | Default        |
-| ----------- | ----- | ------------------------------------------------- | -------------- |
-| `--path`    | `-P`  | Root directory to scan                            | `.`            |
-| `--output`  | `-o`  | Path to write the generated config file           | `incrmit.toml` |
-| `--dry-run` | `-d`  | Print discovered files without writing the config | `false`        |
+| Flag              | Short | Description                                       | Default        |
+| ----------------- | ----- | ------------------------------------------------- | -------------- |
+| `--path`          | `-P`  | Root directory to scan                            | `.`            |
+| `--output`        | `-o`  | Path to write the generated config file           | `incrmit.toml` |
+| `--max-file-size` | `-s`  | Skip files larger than this size                  | `32MiB`        |
+| `--dry-run`       | `-d`  | Print discovered files without writing the config | `false`        |
 
 If more than one of `--major`, `--minor`, `--patch` is supplied, the highest
 component wins (major > minor > patch). When none is supplied, patch is used.
+
+A `--max-file-size` value is parsed by `cli.parseSize`: a plain byte count
+(`1048576`) or a value with a unit suffix (`512KB`, `32MiB`, `2G`; bare `K`/`M`/
+`G` are binary, `KB`/`MB`/`GB` decimal), case-insensitive. A size of `0` means
+no limit; a negative or unparseable value is a usage error (exit `2`).
 
 ### Undo command
 
@@ -249,10 +256,10 @@ component wins (major > minor > patch). When none is supplied, patch is used.
 incrmit undo [flags]
 ```
 
-| Flag        | Short | Description                                    | Default        |
-| ----------- | ----- | ---------------------------------------------- | -------------- |
-| `--config`  | `-c`  | Path to the TOML config file (locates state)   | `incrmit.toml` |
-| `--dry-run` | `-d`  | Preview the revert (`new -> old`) without writing | `false`     |
+| Flag        | Short | Description                                       | Default        |
+| ----------- | ----- | ------------------------------------------------- | -------------- |
+| `--config`  | `-c`  | Path to the TOML config file (locates state)      | `incrmit.toml` |
+| `--dry-run` | `-d`  | Preview the revert (`new -> old`) without writing | `false`        |
 
 Reverts the most recent recorded bump: it restores the previous version token
 in every file that bump wrote and rewrites the config's recorded versions to
@@ -316,7 +323,9 @@ list every flag without duplicating the flag text.
    - If `--file` is set, use that single file.
    - Otherwise load the config from `--config`.
 3. Group config entries by file (a file listed once per distinct version is a
-   single group) and read each file once. For every entry, determine the old
+   single group) and read each file once, refusing one larger than
+   `--max-file-size` when a cap is set (see
+   [section 9.1](#91-scan-boundaries)). For every entry, determine the old
    version (from the config `version`, or by scanning the file when none is
    recorded) and apply the bump to get the new version.
 4. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
@@ -349,8 +358,9 @@ list every flag without duplicating the flag text.
 3. For each candidate file, extract *every* semantic version occurrence,
    recording each one's line number and the trimmed text of its line
    (`discovery.Occurrence`). A file with at least one occurrence becomes a
-   `Result`. Only regular files no larger than `maxScanBytes` (32 MiB) are read;
-   see [section 9.1](#91-scan-boundaries).
+   `Result`. Only regular files no larger than the scan cap
+   (`--max-file-size`, default `discovery.DefaultMaxScanBytes` = 32 MiB) are
+   read; see [section 9.1](#91-scan-boundaries).
 4. Turn results into config entries: one `[[files]]` entry per distinct version
    in each file (first-seen order), so identical repeats collapse and differing
    versions each get an entry sharing the path. The `ignore` list is written
@@ -462,11 +472,20 @@ only what it was aimed at and only what it can read in bounded time and memory:
   whole scan), and a character device such as `/dev/zero` streams without end.
   The check is repeated on the open descriptor so a path swapped in between is
   still rejected.
-- **Reads are capped at `maxScanBytes` (32 MiB)**, enforced by the size check and
-  again by an `io.LimitReader` in case the file grows in between. Version tokens
-  live in small text files, so the cap costs nothing in practice while keeping
-  peak memory bounded regardless of what the tree contains. Files listed
-  explicitly in the config are not scanned this way and have no cap.
+- **Reads are capped at `DefaultMaxScanBytes` (32 MiB)**, enforced by the size
+  check and again by an `io.LimitReader` in case the file grows in between.
+  Version tokens live in small text files, so the cap costs nothing in practice
+  while keeping peak memory bounded regardless of what the tree contains.
+  `DiscoverWithLimit` takes the cap as a parameter (`Discover` supplies the
+  default), which is what `discover --max-file-size` sets; a cap of `0` disables
+  it and scans every regular file.
+- **Bump targets have no cap by default.** Files listed in the config are chosen
+  by the user, so `files.ReadTarget` reads them whole. Passing
+  `--max-file-size` to a bump switches it to `files.ReadTargetWithLimit`, which
+  refuses an oversized target with a `*files.TooLargeError` during planning, so
+  nothing is written. Unlike the scan, a capped read never returns truncated
+  data: the bumped bytes are written back over the file, so a file that grew
+  past the cap mid-read is rejected rather than shortened.
 
 Config target paths are a separate matter: they are trusted input (see
 [section 6.1](#61-config-schema-toml)) and may be absolute or reach outside the
@@ -491,8 +510,8 @@ from that and are intentional:
 The temp file is created with `os.CreateTemp` in the target's own directory —
 never a shared temp directory — which gives it an unpredictable name, `O_EXCL`
 creation, and mode `0600` for the duration of the write. Its mode is set through
-the open descriptor (`(*os.File).Chmod`) rather than by name, so the mode lands on
-the file just written even if the name is replaced first. The final mode is
+the open descriptor (`(*os.File).Chmod`) rather than by name, so the mode lands
+on the file just written even if the name is replaced first. The final mode is
 exactly the target's previous mode, or `0644` for a newly created file: a write
 never widens permissions.
 
@@ -559,9 +578,10 @@ incrmit/
 
 ## 13. Build and Release
 
-- Build: `make build` (stamps the version via `-ldflags`) or `go build -o incrmit .`.
-  All Makefile builds pass `-trimpath`, so a binary carries no absolute path from
-  the machine that produced it and the same source yields the same bytes anywhere.
+- Build: `make build` (stamps the version via `-ldflags`) or
+  `go build -o incrmit .`. All Makefile builds pass `-trimpath`, so a binary
+  carries no absolute path from the machine that produced it and the same source
+  yields the same bytes anywhere.
 - Test: `go test ./...` (or `make check` for fmt/vet/lint/coverage).
 - Lint: `go vet ./...` and `gofmt`/`golangci-lint`.
 - Cross-compile: `make dist VERSION=X.Y.Z` builds static binaries for
@@ -715,13 +735,14 @@ Supply-chain measures in both workflows:
   validation), so a known vulnerability reachable from this module's code fails
   the build rather than shipping.
 - **Go tools installed in CI** (`govulncheck`, `nfpm`) are pinned to a module
-  version, which is a stronger guarantee than the SHA pinning above rather than a
-  weaker one: the module proxy serves a given version's content immutably and the
-  go command verifies it against the checksum database, so a moved upstream tag
-  fails the build instead of quietly running new code. A GitHub Action tag has no
-  such protection, which is why those need explicit SHAs. Because that guarantee
-  rests on `GOPROXY` and `GOSUMDB`, both are set explicitly on the install steps
-  rather than inherited from the runner's defaults.
+  version, which is a stronger guarantee than the SHA pinning above rather than
+  a weaker one: the module proxy serves a given version's content immutably
+  and the go command verifies it against the checksum database, so a moved
+  upstream tag fails the build instead of quietly running new code. A GitHub
+  Action tag has no such protection, which is why those need explicit SHAs.
+  Because that guarantee rests on `GOPROXY` and `GOSUMDB`, both are set
+  explicitly on the install steps rather than inherited from the runner's
+  defaults.
 
   Recording those tool hashes in this repo's own `go.sum` (via a Go `tool`
   directive) was considered and rejected: it would pull the tools' dependency

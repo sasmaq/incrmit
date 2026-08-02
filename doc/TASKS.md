@@ -512,13 +512,14 @@ completed.
       `Makefile`. Verified both cases write where the config points.
 - [x] Confirm atomic writes create temp files securely (restrictive permissions,
       same directory, no predictable/guessable names, no world-writable temp).
-      All good. `os.CreateTemp(dir, ".incrmit-*.tmp")` creates the temp file in the
-      *target's own* directory (never a shared temp dir, so the rename is always
-      same-filesystem and atomic) with `O_EXCL` and a random suffix — observed
-      `.incrmit-1623281899.tmp` at mode 0600 mid-write. Nothing is left behind on
-      success or failure. Hardened one narrow race: the mode is now set through the
-      open descriptor (`(*os.File).Chmod`) instead of by name, so a name swapped
-      between close and chmod cannot redirect the mode change.
+      All good. `os.CreateTemp(dir, ".incrmit-*.tmp")` creates the temp file
+      in the *target's own* directory (never a shared temp dir, so the rename
+      is always same-filesystem and atomic) with `O_EXCL` and a random suffix
+      — observed `.incrmit-1623281899.tmp` at mode 0600 mid-write. Nothing is
+      left behind on success or failure. Hardened one narrow race: the mode is
+      now set through the open descriptor (`(*os.File).Chmod`) instead of by
+      name, so a name swapped between close and chmod cannot redirect the mode
+      change.
 - [x] Verify the tool never follows or writes through symlinks unexpectedly and
       preserves (does not widen) the original file mode on write.
       Confirmed both. A symlinked target is *replaced* by a regular file rather
@@ -532,31 +533,33 @@ completed.
       pathological files during discovery (bounded memory, no unbounded reads);
       ensure binary/non-text files are reliably skipped.
       Found and fixed two denial-of-service vectors. A FIFO anywhere in the tree
-      hung `discover` forever, because `os.ReadFile` on a named pipe blocks until a
-      writer appears — and the block is in `open`, so the type has to be checked
-      *before* opening. A symlink to `/dev/zero` read without end. `detect` now
-      `os.Lstat`s first and reads only regular files, re-checking on the open
-      descriptor so a swapped path is still rejected. Reads are also capped at
-      `maxScanBytes` (32 MiB), enforced by the size check and again by an
-      `io.LimitReader` in case the file grows in between; a 250 MB file previously
-      went entirely into memory. Deep trees are fine (300 levels, exit 0), and
-      binary files are still reliably skipped via the NUL-byte check.
-      The same hang existed on the bump side, where a target is named explicitly
-      rather than discovered: a FIFO in `incrmit.toml` or passed to `--file` blocked
-      forever. Both read sites now go through `files.ReadTarget`, which checks the
-      type before opening and reports `reading <path>: not a regular file` (exit 1);
-      a symlink to a real file is still accepted.
+      hung `discover` forever, because `os.ReadFile` on a named pipe blocks until
+      a writer appears — and the block is in `open`, so the type has to be
+      checked *before* opening. A symlink to `/dev/zero` read without end.
+      `detect` now `os.Lstat`s first and reads only regular files, re-checking
+      on the open descriptor so a swapped path is still rejected. Reads are also
+      capped at `maxScanBytes` (32 MiB), enforced by the size check and again by
+      an `io.LimitReader` in case the file grows in between; a 250 MB file
+      previously went entirely into memory. Deep trees are fine (300 levels,
+      exit 0), and binary files are still reliably skipped via the NUL-byte
+      check. The same hang existed on the bump side, where a target is named
+      explicitly rather than discovered: a FIFO in `incrmit.toml` or passed to
+      `--file` blocked forever. Both read sites now go through
+      `files.ReadTarget`, which checks the type before opening and reports
+      `reading <path>: not a regular file` (exit 1); a symlink to a real file
+      is still accepted.
 - [x] Confirm no sensitive data (file contents, paths, environment) is leaked to
       logs, error messages, or the rewritten config beyond what is intended.
       Clean. The code never touches the environment (no `os.Getenv`, `os.Environ`,
-      or `os.LookupEnv` anywhere). Error messages name paths and positions but never
-      file contents — a malformed config reports `toml: line 3: expected …` without
-      echoing the line, and an unreadable target, a version-less target, and an undo
-      conflict all report only the path and versions. The state file holds absolute
-      paths of the config and targets (needed so `undo` works from any directory),
-      is documented as local working state, and is gitignored here; it carries
-      nothing secret. With symlink following removed, dry-run line context can now
-      only come from files inside the tree that was scanned on purpose.
+      or `os.LookupEnv` anywhere). Error messages name paths and positions but
+      never file contents — a malformed config reports
+      `toml: line 3: expected …` without echoing the line, and an unreadable
+      target, a version-less target, and an undo conflict all report only the
+      path and versions. The state file holds absolute paths of the config and
+      targets (needed so `undo` works from any directory), is documented as
+      local working state, and is gitignored here; it carries nothing secret.
+      With symlink following removed, dry-run line context can now only come
+      from files inside the tree that was scanned on purpose.
 - [x] Review the release pipeline supply chain: pinned GitHub Actions, minimal
       `GITHUB_TOKEN`/workflow permissions, no secret leakage in logs, and
       reproducible `-ldflags` version stamping.
@@ -578,15 +581,16 @@ completed.
 - [x] Verify published `checksums.txt` (SHA-256) covers every artifact and the
       documented verification steps in `README.md` actually succeed against the
       released assets.
-      Found a real gap: of 12 publishable artifacts, `checksums.txt` covered 10 —
-      both macOS `.pkg` installers had no published hash, even though `README.md`
-      claimed hashes "of every artifact" and showed an example verifying a `.pkg`
-      against `checksums.txt`, a step that could not succeed. The `.pkg` files are
-      built on a separate macOS runner, so two machines cannot append to one file;
-      added a `pkg-checksums` target writing `dist/checksums-macos.txt`, a
-      `release-macos` target that runs both, and made the macOS job upload it.
-      Re-verified with a full local build: all 12 artifacts now hash-covered and
-      `shasum -a 256 -c` passes `OK` against both files.
+      Found a real gap: of 12 publishable artifacts, `checksums.txt` covered
+      10 — both macOS `.pkg` installers had no published hash, even though
+      `README.md` claimed hashes "of every artifact" and showed an example
+      verifying a `.pkg` against `checksums.txt`, a step that could not succeed.
+      The `.pkg` files are built on a separate macOS runner, so two machines
+      cannot append to one file; added a `pkg-checksums` target writing
+      `dist/checksums-macos.txt`, a `release-macos` target that runs both, and
+      made the macOS job upload it. Re-verified with a full local build: all 12
+      artifacts now hash-covered and `shasum -a 256 -c` passes `OK` against both
+      files.
 - [x] Run a Bugbot and/or security review pass over the final diff for v1.0.0 and
       triage every finding before tagging.
       Ran a security review pass over the change set. It found no high or critical
@@ -612,17 +616,19 @@ completed.
         be delivered by a git clone and needs local write access on the same
         filesystem, so it is not reachable through the "scan an unfamiliar checkout"
         path that motivated the symlink fix.
-      - *Local TOCTOU: `Open` without `O_NOFOLLOW` after the `Lstat`.* Accepted. It
-        needs a colluding writer racing inside the directory being scanned, i.e.
-        same host and same user; the descriptor re-check already rejects the result.
+      - *Local TOCTOU: `Open` without `O_NOFOLLOW` after the `Lstat`.*
+        Accepted. It needs a colluding writer racing inside the directory being
+        scanned, i.e. same host and same user; the descriptor re-check already
+        rejects the result.
       - *A `.incrmit-*.tmp` file is briefly listable at the target's final mode
-        before the rename.* Accepted. It holds the same bytes the target is about to
-        hold, at the same mode, in the same directory.
+        before the rename.* Accepted. It holds the same bytes the target is
+        about to hold, at the same mode, in the same directory.
       - *No cap on file count or total walk time; config/bump reads are uncapped.*
-        Accepted and already documented. Discovery reads sequentially so peak memory
-        stays bounded by the per-file cap, and config targets are trusted input.
-      - *Pre-existing and out of scope for this diff:* `go-version: stable` and the
-        unsigned macOS `.pkg`.
+        Accepted and already documented. Discovery reads sequentially so peak
+        memory stays bounded by the per-file cap, and config targets are trusted
+        input.
+      - *Pre-existing and out of scope for this diff:* `go-version: stable` and
+        the unsigned macOS `.pkg`.
 
 ## Milestone 27 — v1.0.0 Release: Publish
 
