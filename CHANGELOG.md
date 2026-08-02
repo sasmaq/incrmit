@@ -5,6 +5,50 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-08-02
+
+### Security
+
+- `incrmit discover` no longer follows symlinks. Previously a link inside the
+  scanned tree pointing at a file elsewhere was read, its matched line shown in
+  `--dry-run` output, and — once recorded in the config — its contents copied into
+  the tree by the next bump. Scanning a checkout you did not author can no longer
+  reach outside the directory you pointed at.
+- `incrmit discover` now reads only regular files. A named pipe in the tree used
+  to hang the scan indefinitely (a read waits for a writer), and a link to an
+  endless device such as `/dev/zero` read without limit until memory ran out.
+- A bump target that is not an ordinary file is now reported instead of hanging.
+  Naming a pipe in `incrmit.toml` or passing one to `--file` used to leave
+  `incrmit` waiting forever with no output. A config entry is rejected up front
+  as `config: target <path> is not a regular file`, alongside the existing check
+  for a target that is a directory; a `--file` target is reported as
+  `reading <path>: not a regular file`.
+- `incrmit discover` now skips files larger than 32 MiB, so one very large file
+  in a tree can no longer drive the scan's memory use without bound. Version
+  strings live in small text files, and files listed in the config by hand are
+  unaffected.
+- Every published artifact now has a SHA-256 hash. The macOS `.pkg` installers
+  previously shipped with none, even though `README.md` documented verifying them;
+  their hashes are now published as `checksums-macos.txt` alongside the existing
+  `checksums.txt`.
+- Release binaries are built with `-trimpath`, so they no longer embed absolute
+  paths from the machine that built them and the same source produces the same
+  bytes anywhere.
+- GitHub Actions in both workflows are pinned to commit SHAs instead of movable
+  tags, workflow permissions default to read-only with write granted only to the
+  jobs that publish, and `govulncheck` now gates both CI and the release. Steps
+  that install a Go tool set `GOPROXY` and `GOSUMDB` explicitly, so the checksum
+  verification that makes a pinned version immutable cannot be lost to a change in
+  the runner's defaults.
+
+### Fixed
+
+- Documented that `incrmit.toml` is trusted input: a target `path` may be
+  absolute or reach outside the config's directory with `../`, so review a config
+  before running `incrmit` in a checkout you do not control.
+- Documented that a target which is a symlink is replaced by a regular file rather
+  than written through, leaving whatever it pointed at untouched.
+
 ## [0.1.14] - 2026-07-30
 
 ### Added

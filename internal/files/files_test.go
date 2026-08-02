@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sasmaq/incrmit/internal/testutil"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -340,6 +342,127 @@ func TestWriteAtomicPreservesMode(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("directory has %d entries, want 1 (leftover temp file?)", len(entries))
+	}
+}
+
+// A non-regular target must be reported rather than opened: opening a named pipe
+// blocks until a writer appears, which would hang incrmit with no output. The
+// test's own deadline catches a regression.
+func TestReadTargetRejectsNonRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe")
+	if err := testutil.Mkfifo(fifo); err != nil {
+		t.Skipf("FIFOs unsupported: %v", err)
+	}
+
+	type result struct {
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, err := ReadTarget(fifo)
+		done <- result{err}
+	}()
+
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, ErrNotRegular) {
+			t.Errorf("err = %v, want ErrNotRegular", got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReadTarget blocked on the FIFO instead of rejecting it")
+	}
+}
+
+// A symlink to a real file is still a usable target: only the type check follows
+// the link, and a later write replaces the link rather than passing through it.
+func TestReadTargetFollowsSymlinkToRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "VERSION")
+	if err := os.WriteFile(target, []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	got, err := ReadTarget(link)
+	if err != nil {
+		t.Fatalf("ReadTarget: %v", err)
+	}
+	if string(got) != "1.2.3\n" {
+		t.Errorf("content = %q, want %q", got, "1.2.3\n")
+	}
+}
+
+// A write must never widen a file's permissions, whatever mode it starts with.
+func TestWriteAtomicNeverWidensMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o400, 0o600, 0o640, 0o644, 0o700, 0o755} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "VERSION")
+		if err := os.WriteFile(path, []byte("1.2.3\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := WriteAtomic(path, []byte("1.2.4\n")); err != nil {
+			t.Fatalf("WriteAtomic with mode %v: %v", mode, err)
+		}
+
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != mode {
+			t.Errorf("mode %v became %v, want it preserved", mode, got)
+		}
+	}
+}
+
+// A target that is a symlink must be replaced by a regular file rather than
+// written through, so a link in the tree cannot redirect a write to whatever it
+// points at.
+func TestWriteAtomicDoesNotWriteThroughSymlink(t *testing.T) {
+	outside := t.TempDir()
+	target := filepath.Join(outside, "outside.txt")
+	if err := os.WriteFile(target, []byte("untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	link := filepath.Join(dir, "VERSION")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	if err := WriteAtomic(link, []byte("1.2.4\n")); err != nil {
+		t.Fatalf("WriteAtomic: %v", err)
+	}
+
+	outsideData, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outsideData) != "untouched\n" {
+		t.Errorf("the link target was written through: content = %q", outsideData)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("path is still a symlink, so the write went through the link")
+	}
+	linkData, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkData) != "1.2.4\n" {
+		t.Errorf("content = %q, want the new version written in place of the link", linkData)
 	}
 }
 

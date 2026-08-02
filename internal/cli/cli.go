@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -48,6 +47,8 @@ func fsErrorMessage(action, display string, err error) string {
 		return fmt.Sprintf("%s %s: permission denied", action, display)
 	case errors.Is(err, fs.ErrNotExist):
 		return fmt.Sprintf("%s %s: file does not exist", action, display)
+	case errors.Is(err, files.ErrNotRegular):
+		return fmt.Sprintf("%s %s: not a regular file", action, display)
 	default:
 		return fmt.Sprintf("%s %s: %v", action, display, err)
 	}
@@ -248,7 +249,7 @@ func planGroups(targets []target, bump func(version.Version) version.Version, st
 	for _, tgt := range targets {
 		gi, ok := index[tgt.fsPath]
 		if !ok {
-			data, err := os.ReadFile(tgt.fsPath)
+			data, err := files.ReadTarget(tgt.fsPath)
 			if err != nil {
 				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", tgt.display, err))
 				return nil, classify(err)
@@ -682,7 +683,7 @@ func planReverts(entry history.Entry, stderr io.Writer) ([]revertGroup, int) {
 	for _, c := range entry.Changes {
 		gi, ok := index[c.FS]
 		if !ok {
-			data, err := os.ReadFile(c.FS)
+			data, err := files.ReadTarget(c.FS)
 			if err != nil {
 				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", c.Path, err))
 				return nil, classify(err)

@@ -50,6 +50,10 @@ Bump the semantic version in configured files.
 .It Cm discover
 Scan a directory tree for version-bearing files and write
 .Pa incrmit.toml .
+The scan stays inside the directory it is given: symlinks are never followed,
+only regular files are read
+.Pq never pipes, devices, or sockets ,
+and files larger than 32 MiB are skipped.
 .It Cm undo
 Revert the most recent bump, restoring the previous version in every file it
 changed and in

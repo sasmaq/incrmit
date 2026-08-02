@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sasmaq/incrmit/internal/config"
+	"github.com/sasmaq/incrmit/internal/testutil"
 )
 
 // runMain invokes Main with the given args inside dir (as the working
@@ -781,6 +783,39 @@ func TestBumpUnreadableFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "permission denied") {
 		t.Errorf("stderr = %q, want a clear permission message", stderr)
+	}
+}
+
+// A target that is not an ordinary file must be reported, not opened: opening a
+// named pipe waits for a writer, which used to hang incrmit with no output. The
+// test's own deadline catches a regression.
+func TestBumpNonRegularFileTarget(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe")
+	if err := testutil.Mkfifo(fifo); err != nil {
+		t.Skipf("FIFOs unsupported: %v", err)
+	}
+
+	type outcome struct {
+		code   int
+		stderr string
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		code, _, stderr := runMain(t, "", "--file", fifo)
+		done <- outcome{code, stderr}
+	}()
+
+	select {
+	case got := <-done:
+		if got.code != ExitError {
+			t.Errorf("exit = %d, want %d (stderr %q)", got.code, ExitError, got.stderr)
+		}
+		if !strings.Contains(got.stderr, "not a regular file") {
+			t.Errorf("stderr = %q, want it to say the target is not a regular file", got.stderr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("bump blocked on the FIFO instead of reporting it")
 	}
 }
 

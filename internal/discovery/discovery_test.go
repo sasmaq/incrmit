@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sasmaq/incrmit/internal/config"
+	"github.com/sasmaq/incrmit/internal/testutil"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -422,6 +424,140 @@ func TestDiscoverSkipsBinaryFiles(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got %+v, want 0 results (binary file should be skipped)", got)
+	}
+}
+
+// A symlink to a file outside the scan root must not be discovered. Following
+// one would read a file the scan was never pointed at, expose a matched line in
+// the dry-run output, and let a later bump copy that content into the tree.
+func TestDiscoverSkipsSymlinkToOutsideFile(t *testing.T) {
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.conf")
+	if err := os.WriteFile(secret, []byte("TOKEN=shh\nversion 9.9.9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	mustWrite(t, root, "real.txt", "ver 1.2.3\n")
+	if err := os.Symlink(secret, filepath.Join(root, "link.conf")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "real.txt" {
+		t.Fatalf("got %+v, want only real.txt (the symlink must be skipped)", got)
+	}
+}
+
+// A symlinked directory must not be traversed, so files under it are not
+// reported under the link's name.
+func TestDiscoverSkipsSymlinkedDirectory(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sub", "v.txt"), []byte("ver 7.7.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	mustWrite(t, root, "real.txt", "ver 1.2.3\n")
+	if err := os.Symlink(filepath.Join(outside, "sub"), filepath.Join(root, "linkdir")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "real.txt" {
+		t.Fatalf("got %+v, want only real.txt (the linked directory must be skipped)", got)
+	}
+}
+
+// A FIFO in the tree must be skipped rather than read: reading one blocks until
+// a writer appears, which would hang the scan indefinitely. The test fails via
+// its own deadline if the skip regresses.
+func TestDiscoverSkipsNonRegularFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "real.txt", "ver 1.2.3\n")
+	fifo := filepath.Join(root, "pipe")
+	if err := testutil.Mkfifo(fifo); err != nil {
+		t.Skipf("FIFOs unsupported: %v", err)
+	}
+
+	done := make(chan []Result, 1)
+	go func() {
+		got, err := Discover(root)
+		if err != nil {
+			t.Errorf("Discover: %v", err)
+		}
+		done <- got
+	}()
+
+	select {
+	case got := <-done:
+		if len(got) != 1 || got[0].Path != "real.txt" {
+			t.Fatalf("got %+v, want only real.txt (the FIFO must be skipped)", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Discover blocked on the FIFO instead of skipping it")
+	}
+}
+
+// A file larger than the scan cap is skipped so one pathological file cannot
+// pull an unbounded amount of data into memory.
+func TestDiscoverSkipsOversizedFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root, "small.txt", "ver 1.2.3\n")
+
+	big := filepath.Join(root, "big.txt")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sparse: one byte past the cap makes the file oversized without writing
+	// the whole payload.
+	if err := f.Truncate(maxScanBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("ver 4.5.6\n"), 0); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "small.txt" {
+		t.Fatalf("got %+v, want only small.txt (the oversized file must be skipped)", got)
+	}
+}
+
+// A file right at the cap is still scanned, so the limit is inclusive and
+// ordinary files are never dropped.
+func TestDiscoverScansFileAtSizeCap(t *testing.T) {
+	root := t.TempDir()
+	padding := strings.Repeat("x", maxScanBytes-len("\nver 1.2.3\n"))
+	mustWrite(t, root, "atcap.txt", padding+"\nver 1.2.3\n")
+
+	got, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Path != "atcap.txt" {
+		t.Fatalf("got %+v, want atcap.txt to be scanned", got)
+	}
+	if firstVersion(got[0]) != (version.Version{Major: 1, Minor: 2, Patch: 3}) {
+		t.Errorf("got %v, want 1.2.3", firstVersion(got[0]))
 	}
 }
 

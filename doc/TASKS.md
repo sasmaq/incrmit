@@ -481,30 +481,148 @@ completed.
 
 ## Milestone 26 — v1.0.0 Release Readiness: Security Testing
 
-- [ ] Run `govulncheck ./...` and address any reported vulnerabilities in the
+- [x] Run `govulncheck ./...` and address any reported vulnerabilities in the
       code or dependencies; wire it into CI as a gate.
-- [ ] Run `go list -m all` and review every dependency for maintenance status,
+      Clean: "No vulnerabilities found" with `govulncheck@v1.6.0` against Go
+      1.26.5 and DB `vuln.go.dev`. Added a `vulncheck` job to `ci.yml` and a
+      `govulncheck` step to the release workflow's validation job, both pinned to
+      `@v1.6.0` so a scanner upgrade is a deliberate change.
+- [x] Run `go list -m all` and review every dependency for maintenance status,
       known CVEs, and license compatibility; pin/upgrade as needed.
-- [ ] Audit path handling in `discovery` and `files` for path traversal and
+      One direct dependency, `github.com/BurntSushi/toml v1.6.0`, and zero
+      transitive ones. v1.6.0 is the latest release; the module is actively
+      maintained and MIT licensed (permissive, compatible). Both the module and
+      its `go.mod` hashes are recorded in `go.sum`, so builds are verified against
+      the Go checksum database.
+- [x] Audit path handling in `discovery` and `files` for path traversal and
       symlink escape (e.g. a config `path` or discovered file pointing outside
       the intended tree, or a symlink to a sensitive file).
-- [ ] Confirm atomic writes create temp files securely (restrictive permissions,
+      Found and fixed a real symlink escape in discovery: `filepath.WalkDir`
+      reports a symlinked *file* as an ordinary entry, and `os.ReadFile` then
+      followed it. A link to a 0600 file outside the tree was scanned, its matched
+      line printed in `--dry-run` output, and after `discover` recorded it the next
+      bump copied the outside file's contents into the tree (replacing the link).
+      `Discover` now skips any entry whose type includes `fs.ModeSymlink`.
+      Symlinked *directories* were already safe (WalkDir does not descend into
+      them), as was a symlinked scan root (it yields no results either way, both
+      before and after the change).
+      Config `path` traversal is intentional and now documented: a relative path
+      resolves against the config's directory, and an absolute path or one with
+      `../` is honoured, so `incrmit.toml` is trusted input on a par with a
+      `Makefile`. Verified both cases write where the config points.
+- [x] Confirm atomic writes create temp files securely (restrictive permissions,
       same directory, no predictable/guessable names, no world-writable temp).
-- [ ] Verify the tool never follows or writes through symlinks unexpectedly and
+      All good. `os.CreateTemp(dir, ".incrmit-*.tmp")` creates the temp file in the
+      *target's own* directory (never a shared temp dir, so the rename is always
+      same-filesystem and atomic) with `O_EXCL` and a random suffix — observed
+      `.incrmit-1623281899.tmp` at mode 0600 mid-write. Nothing is left behind on
+      success or failure. Hardened one narrow race: the mode is now set through the
+      open descriptor (`(*os.File).Chmod`) instead of by name, so a name swapped
+      between close and chmod cannot redirect the mode change.
+- [x] Verify the tool never follows or writes through symlinks unexpectedly and
       preserves (does not widen) the original file mode on write.
-- [ ] Review resource-exhaustion vectors: deep/large directory trees and huge or
+      Confirmed both. A symlinked target is *replaced* by a regular file rather
+      than written through — the link's target is left untouched, so a link cannot
+      redirect a write elsewhere. Mode is preserved exactly across 400, 600, 640,
+      660, 664, 700, 755, and 777 (0644 only for a newly created file); a write
+      never widens permissions. Locked in by
+      `TestWriteAtomicDoesNotWriteThroughSymlink` and
+      `TestWriteAtomicNeverWidensMode`.
+- [x] Review resource-exhaustion vectors: deep/large directory trees and huge or
       pathological files during discovery (bounded memory, no unbounded reads);
       ensure binary/non-text files are reliably skipped.
-- [ ] Confirm no sensitive data (file contents, paths, environment) is leaked to
+      Found and fixed two denial-of-service vectors. A FIFO anywhere in the tree
+      hung `discover` forever, because `os.ReadFile` on a named pipe blocks until a
+      writer appears — and the block is in `open`, so the type has to be checked
+      *before* opening. A symlink to `/dev/zero` read without end. `detect` now
+      `os.Lstat`s first and reads only regular files, re-checking on the open
+      descriptor so a swapped path is still rejected. Reads are also capped at
+      `maxScanBytes` (32 MiB), enforced by the size check and again by an
+      `io.LimitReader` in case the file grows in between; a 250 MB file previously
+      went entirely into memory. Deep trees are fine (300 levels, exit 0), and
+      binary files are still reliably skipped via the NUL-byte check.
+      The same hang existed on the bump side, where a target is named explicitly
+      rather than discovered: a FIFO in `incrmit.toml` or passed to `--file` blocked
+      forever. Both read sites now go through `files.ReadTarget`, which checks the
+      type before opening and reports `reading <path>: not a regular file` (exit 1);
+      a symlink to a real file is still accepted.
+- [x] Confirm no sensitive data (file contents, paths, environment) is leaked to
       logs, error messages, or the rewritten config beyond what is intended.
-- [ ] Review the release pipeline supply chain: pinned GitHub Actions, minimal
+      Clean. The code never touches the environment (no `os.Getenv`, `os.Environ`,
+      or `os.LookupEnv` anywhere). Error messages name paths and positions but never
+      file contents — a malformed config reports `toml: line 3: expected …` without
+      echoing the line, and an unreadable target, a version-less target, and an undo
+      conflict all report only the path and versions. The state file holds absolute
+      paths of the config and targets (needed so `undo` works from any directory),
+      is documented as local working state, and is gitignored here; it carries
+      nothing secret. With symlink following removed, dry-run line context can now
+      only come from files inside the tree that was scanned on purpose.
+- [x] Review the release pipeline supply chain: pinned GitHub Actions, minimal
       `GITHUB_TOKEN`/workflow permissions, no secret leakage in logs, and
       reproducible `-ldflags` version stamping.
-- [ ] Verify published `checksums.txt` (SHA-256) covers every artifact and the
+      Fixed three weaknesses. (1) All four actions were pinned to movable major
+      tags; they are now pinned to commit SHAs with the release in a trailing
+      comment (`actions/checkout` v4.4.0, `actions/setup-go` v5.6.0,
+      `golangci/golangci-lint-action` v8.0.0, `softprops/action-gh-release`
+      v2.6.2) — the last of these runs in a job that can write to the repository.
+      (2) `release.yml` granted `contents: write` at the workflow level, so the
+      validation job held a write-capable token; the default is now `contents:
+      read` with `write` raised only on the two publishing jobs. (3) The release
+      job's `golangci-lint` was unpinned while CI pinned v2.12.2, so the release
+      gate could differ from CI; both now pin v2.12.2.
+      Version stamping: builds were deterministic but not path-independent, and
+      embedded 10 absolute source paths from the build machine. All Makefile builds
+      now pass `-trimpath`; a released linux/amd64 binary contains zero builder
+      paths and rebuilds byte-identically. The only credential is the built-in
+      `GITHUB_TOKEN`; no workflow step echoes a secret.
+- [x] Verify published `checksums.txt` (SHA-256) covers every artifact and the
       documented verification steps in `README.md` actually succeed against the
       released assets.
-- [ ] Run a Bugbot and/or security review pass over the final diff for v1.0.0 and
+      Found a real gap: of 12 publishable artifacts, `checksums.txt` covered 10 —
+      both macOS `.pkg` installers had no published hash, even though `README.md`
+      claimed hashes "of every artifact" and showed an example verifying a `.pkg`
+      against `checksums.txt`, a step that could not succeed. The `.pkg` files are
+      built on a separate macOS runner, so two machines cannot append to one file;
+      added a `pkg-checksums` target writing `dist/checksums-macos.txt`, a
+      `release-macos` target that runs both, and made the macOS job upload it.
+      Re-verified with a full local build: all 12 artifacts now hash-covered and
+      `shasum -a 256 -c` passes `OK` against both files.
+- [x] Run a Bugbot and/or security review pass over the final diff for v1.0.0 and
       triage every finding before tagging.
+      Ran a security review pass over the change set. It found no high or critical
+      issues and confirmed the discovery boundaries, atomic write, and workflow
+      permission model. Triage of everything it raised:
+      - *Medium — `govulncheck` installed from a "movable" tag while Actions are
+        SHA-pinned.* Partly accepted. The stated attack path (someone moves the
+        `v1.6.0` tag and CI runs their code) does not apply to Go modules: the proxy
+        serves a version's content immutably and the go command verifies it against
+        the checksum database, so a moved tag fails the build. Confirmed the pinned
+        version has a published hash in the transparency log
+        (`golang.org/x/vuln v1.6.0 h1:FeMO9Rm/…`, commit `19b0bb6a`) and that
+        `GOSUMDB=sum.golang.org` is the default. The real residual is that the
+        guarantee depends on the runner's environment, so `GOPROXY` and `GOSUMDB`
+        are now set explicitly on the `govulncheck` steps and on the `nfpm` install
+        (which runs in a job that can write to the repository). Recording the tool
+        hashes in this repo's `go.sum` via a Go `tool` directive was rejected: it
+        would pull the tools' dependency trees into `go.mod`, and one dependency
+        with no transitive ones is worth more than re-pinning what the checksum
+        database already pins.
+      - *Hard link inside the tree pointing at a file elsewhere is still read.*
+        Accepted as-is, and the reviewer agreed it is not medium+. A hard link cannot
+        be delivered by a git clone and needs local write access on the same
+        filesystem, so it is not reachable through the "scan an unfamiliar checkout"
+        path that motivated the symlink fix.
+      - *Local TOCTOU: `Open` without `O_NOFOLLOW` after the `Lstat`.* Accepted. It
+        needs a colluding writer racing inside the directory being scanned, i.e.
+        same host and same user; the descriptor re-check already rejects the result.
+      - *A `.incrmit-*.tmp` file is briefly listable at the target's final mode
+        before the rename.* Accepted. It holds the same bytes the target is about to
+        hold, at the same mode, in the same directory.
+      - *No cap on file count or total walk time; config/bump reads are uncapped.*
+        Accepted and already documented. Discovery reads sequentially so peak memory
+        stays bounded by the per-file cap, and config targets are trusted input.
+      - *Pre-existing and out of scope for this diff:* `go-version: stable` and the
+        unsigned macOS `.pkg`.
 
 ## Milestone 27 — v1.0.0 Release: Publish
 

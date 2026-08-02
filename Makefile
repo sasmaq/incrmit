@@ -1,8 +1,12 @@
 BINARY := incrmit
 # Static version, kept in sync by incrmit itself (see incrmit.toml). Override on
 # the command line for one-off builds, e.g. `make build VERSION=1.2.3`.
-VERSION ?= 0.1.14
+VERSION ?= 0.1.15
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
+# -trimpath keeps the builder's absolute source paths out of the binary, so an
+# artifact neither discloses the directory it was built in nor depends on it:
+# the same source then produces the same bytes on any machine.
+BUILDFLAGS := -trimpath -ldflags "$(LDFLAGS)"
 COVER_THRESHOLD ?= 80
 DIST := dist
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
@@ -11,10 +15,10 @@ DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg checksums release test cover vet fmt fmt-check lint check clean
+.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg checksums pkg-checksums release release-macos test cover vet fmt fmt-check lint check clean
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	go build $(BUILDFLAGS) -o $(BINARY) .
 
 dist:
 	@rm -rf $(DIST)
@@ -25,7 +29,7 @@ dist:
 		out=$(DIST)/$(BINARY)-$(VERSION)-$$os-$$arch$$ext; \
 		echo "building $$out"; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
-			go build -ldflags "$(LDFLAGS)" -o $$out . || exit 1; \
+			go build $(BUILDFLAGS) -o $$out . || exit 1; \
 	done
 	@echo "binaries written to $(DIST)/"
 
@@ -53,7 +57,7 @@ linux-binaries:
 		if [ ! -f "$$out" ]; then \
 			echo "building $$out"; \
 			GOOS=linux GOARCH=$$arch CGO_ENABLED=0 \
-				go build -ldflags "$(LDFLAGS)" -o $$out . || exit 1; \
+				go build $(BUILDFLAGS) -o $$out . || exit 1; \
 		fi; \
 	done
 
@@ -65,7 +69,7 @@ darwin-binaries:
 		if [ ! -f "$$out" ]; then \
 			echo "building $$out"; \
 			GOOS=darwin GOARCH=$$arch CGO_ENABLED=0 \
-				go build -ldflags "$(LDFLAGS)" -o $$out . || exit 1; \
+				go build $(BUILDFLAGS) -o $$out . || exit 1; \
 		fi; \
 	done
 
@@ -130,8 +134,29 @@ checksums:
 	}
 	@echo "checksums written to $(DIST)/checksums.txt"
 
+# pkg-checksums records SHA-256 hashes of the macOS .pkg installers so they can
+# be verified like every other published artifact. They get their own file
+# because they are built on a macOS runner, separately from the artifacts in
+# checksums.txt, and two runners cannot append to one file.
+pkg-checksums: pkg
+	@cd $(DIST) && { \
+		rm -f checksums-macos.txt; \
+		for f in $(BINARY)-$(VERSION)-darwin-*.pkg; do \
+			[ -f "$$f" ] || continue; \
+			if command -v sha256sum >/dev/null 2>&1; then \
+				sha256sum "$$f"; \
+			else \
+				shasum -a 256 "$$f"; \
+			fi; \
+		done > checksums-macos.txt; \
+	}
+	@echo "checksums written to $(DIST)/checksums-macos.txt"
+
 # release builds cross-compiled binaries, archives, Linux packages, and checksums for CI.
 release: dist-archives deb rpm checksums
+
+# release-macos builds the macOS installers and their checksum file for CI.
+release-macos: pkg pkg-checksums
 
 test:
 	go test ./...

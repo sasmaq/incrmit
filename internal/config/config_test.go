@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sasmaq/incrmit/internal/testutil"
 )
 
 // writeConfig writes a config file plus any named target files into a fresh
@@ -212,6 +215,7 @@ func TestValidateErrorMessages(t *testing.T) {
 			"duplicate path",
 		},
 		{"missing", &Config{Files: []FileEntry{{Path: "nope"}}}, "does not exist"},
+		{"directory", &Config{Files: []FileEntry{{Path: "."}}}, "is a directory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -223,6 +227,35 @@ func TestValidateErrorMessages(t *testing.T) {
 				t.Errorf("Validate() error = %q, want substring %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// A target that exists but is not an ordinary file must be rejected during
+// validation, naming the config entry at fault. Validate only stats the path, so
+// it never blocks on the pipe; the test's own deadline catches a regression that
+// opened it instead.
+func TestValidateRejectsNonRegularTarget(t *testing.T) {
+	dir := t.TempDir()
+	if err := testutil.Mkfifo(filepath.Join(dir, "pipe")); err != nil {
+		t.Skipf("FIFOs unsupported: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		cfg := &Config{Files: []FileEntry{{Path: "pipe"}}}
+		done <- cfg.Validate(dir)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Validate() = nil, want error for a named pipe target")
+		}
+		if !strings.Contains(err.Error(), "is not a regular file") {
+			t.Errorf("Validate() error = %q, want substring %q", err, "is not a regular file")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Validate blocked on a named pipe instead of rejecting it")
 	}
 }
 

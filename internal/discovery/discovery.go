@@ -5,6 +5,7 @@ package discovery
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -49,6 +50,12 @@ var ignoredDirs = map[string]struct{}{
 	"target":       {},
 }
 
+// maxScanBytes bounds how much of any one file discovery will read. Version
+// tokens live in small text files (manifests, VERSION files, source headers), so
+// a larger file is not a plausible target and is skipped rather than pulled into
+// memory. This keeps a scan bounded when a tree contains very large files.
+const maxScanBytes = 32 << 20 // 32 MiB
+
 // versionRe matches a run of two or more dot-separated integer groups,
 // optionally prefixed by a single leading "v" or "V", bounded by non-word
 // characters. It deliberately matches more than just MAJOR.MINOR.PATCH: a
@@ -82,6 +89,15 @@ func Discover(root string, ignore ...string) ([]Result, error) {
 			rel = p
 		}
 		relSlash := filepath.ToSlash(rel)
+
+		// Never follow a symlink found inside the tree. Following one would let
+		// a link read (and, on a later bump, copy in) a file outside the scan
+		// root, so links are reported by neither name. Go's WalkDir already
+		// declines to descend into symlinked directories; this also covers
+		// symlinks to files, devices, and sockets.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 
 		if d.IsDir() {
 			if p != root {
@@ -167,13 +183,37 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 
 // detect reads the file at path and returns every [v]MAJOR.MINOR.PATCH token it
 // contains, in the order they appear, each tagged with its 1-based line number
-// and the trimmed text of that line. It is best-effort: unreadable and binary
-// files yield ok == false. versionRe also matches dotted-number runs that are
-// not versions (two-component numbers like 3.9, four-octet IPv4 addresses like
-// 192.168.1.1, ...); those fail version.Parse and are skipped, so only real
-// three-component versions are reported.
+// and the trimmed text of that line. It is best-effort: unreadable, oversized,
+// non-regular, and binary files yield ok == false. versionRe also matches
+// dotted-number runs that are not versions (two-component numbers like 3.9,
+// four-octet IPv4 addresses like 192.168.1.1, ...); those fail version.Parse and
+// are skipped, so only real three-component versions are reported.
 func detect(path string) ([]Occurrence, bool) {
-	data, err := os.ReadFile(path)
+	// Establish the file type before opening: opening a FIFO blocks until a
+	// writer appears, so a pipe in the tree would hang the whole scan. Only
+	// regular files within the size cap are read; a character device such as
+	// /dev/zero would otherwise stream without end. The walk has already
+	// excluded symlinks, so Lstat reports the entry itself.
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxScanBytes {
+		return nil, false
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+
+	// Re-check on the descriptor, so a path swapped for something else between
+	// the stat and the open is still rejected.
+	if fi, ferr := f.Stat(); ferr != nil || !fi.Mode().IsRegular() || fi.Size() > maxScanBytes {
+		return nil, false
+	}
+
+	// LimitReader is a second guard: the file may still grow past the cap
+	// between the stat above and the read here.
+	data, err := io.ReadAll(io.LimitReader(f, maxScanBytes))
 	if err != nil {
 		return nil, false
 	}

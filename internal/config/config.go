@@ -155,7 +155,8 @@ func (c *Config) normalizeIgnore() {
 }
 
 // Validate checks that the config is usable: it must list at least one file,
-// each entry must have a non-empty path, and every target must exist on disk.
+// each entry must have a non-empty path, and every target must exist on disk as
+// an ordinary file (not a directory, named pipe, device, or socket).
 // A path may be listed in more than one entry as long as each such entry pins a
 // distinct, non-empty version (so a file containing several differing versions
 // can be tracked); exact (path, version) duplicates are rejected, as is a
@@ -212,6 +213,13 @@ func (c *Config) Validate(baseDir string) error {
 		}
 		if info.IsDir() {
 			return fmt.Errorf("config: target %q is a directory, not a file", f.Path)
+		}
+		// Named pipes, devices, and sockets cannot hold a version token, and
+		// opening one would block or stream without end. Rejecting them here
+		// names the config entry at fault instead of surfacing the problem
+		// later as a read failure.
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("config: target %q is not a regular file", f.Path)
 		}
 	}
 

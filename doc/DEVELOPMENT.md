@@ -343,12 +343,14 @@ list every flag without duplicating the flag text.
    (`config.LoadIgnore`); an absent/unparseable file just yields no patterns.
 2. Walk the tree from `--path`, skipping the built-in ignored directories
    (e.g. `.git`, `node_modules`, `vendor`, build outputs), the config file
-   (`incrmit.toml` by name, plus the resolved `--output` path), and anything
-   matched by the `ignore` patterns (see [section 8.3](#83-ignore-matching)).
+   (`incrmit.toml` by name, plus the resolved `--output` path), symlinks of any
+   kind, and anything matched by the `ignore` patterns (see
+   [section 8.3](#83-ignore-matching)).
 3. For each candidate file, extract *every* semantic version occurrence,
    recording each one's line number and the trimmed text of its line
    (`discovery.Occurrence`). A file with at least one occurrence becomes a
-   `Result`.
+   `Result`. Only regular files no larger than `maxScanBytes` (32 MiB) are read;
+   see [section 9.1](#91-scan-boundaries).
 4. Turn results into config entries: one `[[files]]` entry per distinct version
    in each file (first-seen order), so identical repeats collapse and differing
    versions each get an entry sharing the path. The `ignore` list is written
@@ -444,6 +446,32 @@ configured pattern matches.
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
 - On write, replace only the matched token to preserve surrounding formatting.
 
+### 9.1 Scan boundaries
+
+Discovery may be pointed at a tree the user did not author, so `Discover` reads
+only what it was aimed at and only what it can read in bounded time and memory:
+
+- **Symlinks are skipped** (`d.Type()&fs.ModeSymlink`), both to files and to
+  directories. Go's `filepath.WalkDir` already declines to descend into a
+  symlinked directory, but it reports symlinked *files* as ordinary entries, and
+  reading one follows the link. Following a link would let an entry outside the
+  tree be read, printed as dry-run context, and — once written to the config —
+  copied into the tree by the next bump.
+- **Only regular files are read.** `detect` stats the path *before* opening it,
+  because opening a FIFO blocks until a writer appears (which would hang the
+  whole scan), and a character device such as `/dev/zero` streams without end.
+  The check is repeated on the open descriptor so a path swapped in between is
+  still rejected.
+- **Reads are capped at `maxScanBytes` (32 MiB)**, enforced by the size check and
+  again by an `io.LimitReader` in case the file grows in between. Version tokens
+  live in small text files, so the cap costs nothing in practice while keeping
+  peak memory bounded regardless of what the tree contains. Files listed
+  explicitly in the config are not scanned this way and have no cap.
+
+Config target paths are a separate matter: they are trusted input (see
+[section 6.1](#61-config-schema-toml)) and may be absolute or reach outside the
+config's directory.
+
 ### Consequences of the atomic write
 
 `files.WriteAtomic` writes a temp file in the target's directory and renames it
@@ -456,6 +484,17 @@ from that and are intentional:
 - An **unwritable directory fails before any change**: the temp file cannot be
   created, so the target keeps its original contents and no partial write or
   stray temp file is left behind.
+- A **symlinked target is replaced, not written through**: the rename swaps the
+  name itself, so the link becomes a regular file and whatever it pointed at is
+  untouched. A link inside the tree therefore cannot redirect a write elsewhere.
+
+The temp file is created with `os.CreateTemp` in the target's own directory —
+never a shared temp directory — which gives it an unpredictable name, `O_EXCL`
+creation, and mode `0600` for the duration of the write. Its mode is set through
+the open descriptor (`(*os.File).Chmod`) rather than by name, so the mode lands on
+the file just written even if the name is replaced first. The final mode is
+exactly the target's previous mode, or `0644` for a newly created file: a write
+never widens permissions.
 
 ## 10. Error Handling
 
@@ -465,6 +504,11 @@ from that and are intentional:
 - Multiple versions found in a single file: report ambiguity and skip unless a
   format-specific rule resolves it.
 - Filesystem/permission errors: surface the underlying error and exit non-zero.
+- A target that is not an ordinary file (a named pipe, device, or socket, whether
+  named directly or reached through a symlink): report
+  `reading <path>: not a regular file` and exit `1`. `files.ReadTarget` checks the
+  type before opening, because opening a pipe blocks until a writer appears and
+  would otherwise leave incrmit hanging with no output at all.
 - Undo with nothing to revert (no journal or an emptied one): print a friendly
   message and exit `0` — it is not an error.
 - Undo conflict (a file edited since the bump no longer holds the recorded `new`
@@ -491,7 +535,8 @@ incrmit/
 │   ├── discovery/          # filesystem scan and config generation
 │   ├── history/            # bump journal (state file) for undo
 │   ├── files/              # read/write helpers
-│   └── buildinfo/          # tool version (stamped via -ldflags)
+│   ├── buildinfo/          # tool version (stamped via -ldflags)
+│   └── testutil/           # helpers shared by tests in several packages
 ├── doc/
 │   ├── DEVELOPMENT.md      # this document
 │   ├── tasks.md            # milestone checklist
@@ -515,6 +560,8 @@ incrmit/
 ## 13. Build and Release
 
 - Build: `make build` (stamps the version via `-ldflags`) or `go build -o incrmit .`.
+  All Makefile builds pass `-trimpath`, so a binary carries no absolute path from
+  the machine that produced it and the same source yields the same bytes anywhere.
 - Test: `go test ./...` (or `make check` for fmt/vet/lint/coverage).
 - Lint: `go vet ./...` and `gofmt`/`golangci-lint`.
 - Cross-compile: `make dist VERSION=X.Y.Z` builds static binaries for
@@ -536,6 +583,11 @@ incrmit/
   `dist/` with `pkgbuild` (see `scripts/build-pkg.sh`). Requires the macOS
   toolchain, so this target must run on macOS. The package installs
   `/usr/local/bin/incrmit` and `/usr/local/share/man/man1/incrmit.1`.
+- macOS release: `make release-macos VERSION=X.Y.Z` runs `pkg` and then
+  `pkg-checksums`, writing `dist/checksums-macos.txt`. The `.pkg` installers need
+  their own checksum file because they are built on a macOS runner while
+  `checksums.txt` is produced on the Linux runner, and two machines cannot append
+  to one file. Together the two files cover every published artifact.
 
 ### Debian packaging (`.deb`)
 
@@ -635,17 +687,47 @@ sudo pkgutil --forget com.github.sasmaq.incrmit
 The `.github/workflows/release.yml` workflow runs when a tag matching `v*` is
 pushed (not on branch pushes). It:
 
-1. Runs the same validation gates as CI (fmt, vet, test, coverage, lint).
+1. Runs the same validation gates as CI (fmt, vet, test, coverage, lint,
+   `govulncheck`).
 2. Derives the version from `${GITHUB_REF_NAME}` (strips the `v` prefix) and
    passes it to `make release VERSION=…`.
 3. Extracts the matching `CHANGELOG.md` section with `scripts/changelog-notes.sh`.
 4. Creates a GitHub Release via `softprops/action-gh-release`, uploading the
-   archives, `.deb` and `.rpm` packages, and `checksums.txt`. The workflow uses
-   the built-in `GITHUB_TOKEN` with `contents: write` (no extra secrets).
+   archives, `.deb` and `.rpm` packages, and `checksums.txt`.
 
 A separate `release-macos` job runs on a `macos-latest` runner, builds the
-`.pkg` installers with `make pkg`, and uploads them to the same release (the
-macOS toolchain needed by `pkgbuild` is unavailable on the Linux runner).
+`.pkg` installers and their checksum file with `make release-macos`, and uploads
+both to the same release (the macOS toolchain needed by `pkgbuild` is unavailable
+on the Linux runner).
+
+Supply-chain measures in both workflows:
+
+- **Actions are pinned to a commit SHA**, with the corresponding release in a
+  trailing comment. A tag can be moved to point at different code, so pinning is
+  what makes a run reproducible and keeps a hijacked release out of a job that
+  publishes artifacts. Bump the SHA and the comment together.
+- **Permissions default to `contents: read`** at the workflow level, and only the
+  two publishing jobs raise themselves to `contents: write`. The validation job
+  never holds a token that can write to the repository.
+- The built-in `GITHUB_TOKEN` is the only credential; there are no extra secrets,
+  and nothing in the workflows echoes one.
+- **`govulncheck` gates both workflows** (its own job in CI, a step in the release
+  validation), so a known vulnerability reachable from this module's code fails
+  the build rather than shipping.
+- **Go tools installed in CI** (`govulncheck`, `nfpm`) are pinned to a module
+  version, which is a stronger guarantee than the SHA pinning above rather than a
+  weaker one: the module proxy serves a given version's content immutably and the
+  go command verifies it against the checksum database, so a moved upstream tag
+  fails the build instead of quietly running new code. A GitHub Action tag has no
+  such protection, which is why those need explicit SHAs. Because that guarantee
+  rests on `GOPROXY` and `GOSUMDB`, both are set explicitly on the install steps
+  rather than inherited from the runner's defaults.
+
+  Recording those tool hashes in this repo's own `go.sum` (via a Go `tool`
+  directive) was considered and rejected: it would pull the tools' dependency
+  trees into `go.mod` as requirements, and keeping the module at exactly one
+  dependency with no transitive ones is worth more than re-pinning something the
+  checksum database already pins.
 
 Release checklist:
 

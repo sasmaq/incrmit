@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.1.14
+## Version: 0.1.15
 
 ## Overview
 
@@ -48,13 +48,18 @@ directly (replace `X.Y.Z` with the release version):
 | Fedora / RHEL x86_64 | `incrmit-X.Y.Z-1.x86_64.rpm` |
 | Fedora / RHEL aarch64 | `incrmit-X.Y.Z-1.aarch64.rpm` |
 
-Each release includes `checksums.txt` with SHA-256 hashes of every artifact.
-After downloading an asset, verify its integrity by fetching `checksums.txt`
-from the same release and comparing hashes (replace `X.Y.Z` with the release
-version):
+Every artifact has a published SHA-256 hash, split across two files because the
+macOS installers are built on a separate machine from everything else:
+
+- `checksums.txt` — the tarballs, zips, `.deb`, and `.rpm` packages.
+- `checksums-macos.txt` — the macOS `.pkg` installers.
+
+After downloading an asset, verify its integrity by fetching the matching
+checksum file from the same release and comparing hashes (replace `X.Y.Z` with
+the release version):
 
 ```bash
-VERSION=0.1.14
+VERSION=0.1.15
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -64,20 +69,22 @@ sha256sum --ignore-missing -c checksums.txt
 shasum -a 256 -c checksums.txt --ignore-missing
 ```
 
-A successful check prints `OK` next to each verified file. `checksums.txt`
-holds one `<sha256>␣␣<filename>` line per artifact, so you can also compare a
-single hash by hand:
+A successful check prints `OK` next to each verified file. Each file holds one
+`<sha256>␣␣<filename>` line per artifact, so you can also compare a single hash
+by hand — here for a `.pkg`, whose hashes live in `checksums-macos.txt`:
 
 ```bash
-# Recompute the hash and eyeball it against the matching line in checksums.txt
+curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums-macos.txt"
+
+# Recompute the hash and eyeball it against the matching line
 shasum -a 256 "incrmit-${VERSION}-darwin-arm64.pkg"   # sha256sum on Linux
-grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums.txt
+grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums-macos.txt
 ```
 
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.1.14
+VERSION=0.1.15
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -86,7 +93,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.1.14
+VERSION=0.1.15
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -96,7 +103,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.1.14
+VERSION=0.1.15
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
@@ -107,7 +114,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.1.14
+VERSION=0.1.15
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -192,6 +199,21 @@ outside `incrmit.toml`.
 A `--dry-run` previews the change and writes nothing — neither the targets
 nor the config.
 
+A `path` is resolved relative to the directory holding the config, and may also
+be absolute or reach outside that directory with `../`. `incrmit.toml` is
+therefore treated as trusted input, on a par with a `Makefile`: whatever it lists
+is what gets rewritten. Review the config before running `incrmit` in a checkout
+you do not control, and prefer paths inside the project.
+
+If a listed `path` happens to be a symlink, `incrmit` writes the new version *in
+place of the link* rather than through it: the link becomes an ordinary file and
+whatever it pointed at is left untouched. Point entries at real files to avoid
+the surprise.
+
+A target must be an ordinary file. A named pipe, device, or socket is reported as
+`reading <path>: not a regular file` (exit `1`) rather than opened, since reading
+one could block forever.
+
 ### Ignoring folders and files
 
 An optional top-level `ignore` list tells `discover` which folders and files to
@@ -275,6 +297,20 @@ build outputs) are skipped, as is the config file itself (`incrmit.toml` and
 the `--output` path), so it is never listed as a target. Any folders and files
 matched by the config's [`ignore` list](#ignoring-folders-and-files) are skipped
 too.
+
+Discovery also stays strictly inside the directory it was pointed at, and only
+reads ordinary files:
+
+- **Symlinks are never followed.** A link to a file or folder outside the tree is
+  not scanned and not listed, so scanning an unfamiliar checkout cannot read (or
+  later copy in) a file the scan was never aimed at. A file inside the tree is
+  still found under its real path.
+- **Only regular files are read.** Named pipes, devices, and sockets are skipped
+  rather than opened, since reading one could block indefinitely or stream
+  without end.
+- **Files larger than 32 MiB are skipped.** Version strings live in small text
+  files, so this bounds how much a scan reads no matter what the tree contains.
+  Files listed in the config by hand are not subject to this limit.
 
 ```bash
 incrmit discover
@@ -387,7 +423,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.1.14
+# incrmit 0.1.15
 ```
 
 The version is baked into the binary and can be overridden at build time

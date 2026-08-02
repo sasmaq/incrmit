@@ -166,9 +166,30 @@ func replaceToken(data []byte, oldToken, newToken string) ([]byte, int) {
 	return []byte(b.String()), count
 }
 
+// ErrNotRegular reports that a target is not an ordinary file. Callers can
+// detect it with errors.Is to phrase their own message.
+var ErrNotRegular = errors.New("not a regular file")
+
+// ReadTarget reads a file incrmit is about to inspect or bump. It establishes
+// that the target is an ordinary file before opening it, because opening a named
+// pipe blocks until a writer appears and a device such as /dev/zero never ends:
+// either would leave incrmit hanging with no output instead of reporting a
+// problem. The check follows symlinks, so a link to a real file is still read
+// (a write later replaces the link rather than following it).
+func ReadTarget(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
+	return os.ReadFile(path)
+}
+
 // ReadVersion reads path and returns the semantic version it contains.
 func ReadVersion(path string) (version.Version, error) {
-	data, err := os.ReadFile(path)
+	data, err := ReadTarget(path)
 	if err != nil {
 		return version.Version{}, fmt.Errorf("files: reading %q: %w", path, err)
 	}
@@ -184,7 +205,7 @@ func ReadVersion(path string) (version.Version, error) {
 // versions. The selection of which component to bump is the caller's concern;
 // this function only applies the supplied transform.
 func ApplyBump(path string, bump func(version.Version) version.Version, dryRun bool) (oldVer, newVer version.Version, err error) {
-	data, err := os.ReadFile(path)
+	data, err := ReadTarget(path)
 	if err != nil {
 		return version.Version{}, version.Version{}, fmt.Errorf("files: reading %q: %w", path, err)
 	}
@@ -213,6 +234,16 @@ func ApplyBump(path string, bump func(version.Version) version.Version, dryRun b
 // directory and renaming it over the target. The rename is atomic on the same
 // filesystem, so a crash mid-write never leaves a partially written file. The
 // existing file mode is preserved when the target already exists.
+//
+// The temp file is created in the target's own directory (never a shared temp
+// directory) under an unpredictable name with O_EXCL, and holds mode 0600 while
+// the data is written, so its contents are never readable at a wider mode than
+// the target ends up with. Nothing here widens permissions: the final mode is
+// exactly the target's previous one, or 0644 for a file being created.
+//
+// Because the rename replaces the name itself, a path that is a symlink ends up
+// a regular file: incrmit never writes *through* a link to whatever it points
+// at, which keeps a link in the tree from redirecting a write elsewhere.
 func WriteAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 
@@ -241,11 +272,15 @@ func WriteAtomic(path string, data []byte) error {
 		_ = tmp.Close()
 		return fmt.Errorf("files: syncing temp file: %w", err)
 	}
+	// Set the mode through the open descriptor rather than the temp file's name,
+	// so the mode lands on the file just written even if something replaces that
+	// name in the meantime.
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("files: setting mode on temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("files: closing temp file: %w", err)
-	}
-	if err := os.Chmod(tmpName, perm); err != nil {
-		return fmt.Errorf("files: setting mode on temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("files: renaming temp file to %q: %w", path, err)

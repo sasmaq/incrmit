@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Extract the CHANGELOG.md section for a release version (without the leading "v").
-# Usage: scripts/changelog-notes.sh 0.1.14 [CHANGELOG.md]
+# Usage: scripts/changelog-notes.sh 0.1.15 [CHANGELOG.md]
 set -euo pipefail
 
-version="${1:?version required (e.g. 0.1.14)}"
+version="${1:?version required (e.g. 0.1.15)}"
 changelog="${2:-CHANGELOG.md}"
 
 if [ ! -f "$changelog" ]; then
