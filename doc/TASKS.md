@@ -630,7 +630,53 @@ completed.
       - *Pre-existing and out of scope for this diff:* `go-version: stable` and
         the unsigned macOS `.pkg`.
 
-## Milestone 27 — v1.0.0 Release: Publish
+## Milestone 27 — Bump Preview Command
+
+A read-only command that visualizes, for every entry in `incrmit.toml`, the
+current version alongside what a `--patch`, `--minor`, and `--major` bump would
+produce — so the user can see all three outcomes at once without running a
+`--dry-run` per component.
+
+- [ ] Decide the command name and document it (`preview` is the working name;
+      alternatives considered: `show`, `plan`, `list`). Pick one, and keep it a
+      read-only command that never writes files, config, or state.
+- [ ] Implement the subcommand in `internal/cli`: load the config (same
+      resolution as bump, honoring `--config`/`-c`), parse each entry's version,
+      and compute the patch, minor, and major results for it.
+- [ ] Render an aligned table with one row per config entry and the columns
+      `path`, `current`, `patch`, `minor`, `major` (e.g.
+      `README.md  0.1.15  0.1.16  0.2.0  1.0.0`), padding columns to the widest
+      value so the output stays readable in a plain terminal.
+- [ ] Preserve the `v`/`V` prefix in every projected version so a `v1.2.3` entry
+      previews as `v1.2.4` / `v1.3.0` / `v2.0.0`, matching what a real bump
+      would write.
+- [ ] Group or de-duplicate repeated paths sensibly: a file with several
+      occurrences (Milestone 20) appears once per distinct version token, and
+      identical `path` + `version` rows are not printed twice.
+- [ ] Add `--file`/`-f` to preview a single target (bypassing the config, same
+      semantics as bump) and reuse the shared target-resolution code rather than
+      duplicating it.
+- [ ] Support a machine-readable mode (e.g. `--json`, or a plain
+      tab-separated `--plain` for `awk`/`cut`) so the preview can be scripted;
+      decide and document which one ships.
+- [ ] Highlight entries that are out of sync — when the config holds versions
+      that differ from each other, mark the rows (or print a short note) so a
+      drifting file is visible in the preview.
+- [ ] Handle the error paths with the documented exit codes: missing config
+      suggests `discover` (exit `1`), bad flags exit `2`, and an unparseable or
+      missing version token exits `3` with the offending path named.
+- [ ] Wire the command into the help system: add it to `overviewHelp`, add a
+      `previewHelp` block with its flags, and support `incrmit help preview`,
+      keeping all text centralized in `internal/cli/help.go`.
+- [ ] Add tests: table rendering against a golden file (multi-entry config,
+      mixed `v`-prefixed and bare versions, differing column widths), the
+      `--file` path, the machine-readable output, and each error/exit-code case;
+      assert the command writes nothing to disk.
+- [ ] Document the command in `README.md` (with sample output), the
+      `incrmit(1)` man page, and `doc/DEVELOPMENT.md`, and add a `CHANGELOG.md`
+      entry under `Added`.
+
+## Milestone 28 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -644,3 +690,41 @@ completed.
       GitHub Release with the `1.0.0` changelog notes.
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
+
+## Milestone 29 — apt / dnf Repo via GitHub Pages
+
+Host signed apt and dnf repositories on GitHub Pages so users can
+`apt install incrmit` / `dnf install incrmit` after adding the repo once.
+Reuses the existing nFPM `.deb` / `.rpm` artifacts from the release workflow;
+does not replace per-release download instructions.
+
+- [ ] Choose tooling for repo metadata and document the rationale in
+      `doc/DEVELOPMENT.md`: apt (`reprepro`, `aptly`, or `dpkg-scanpackages` +
+      `apt-ftparchive`) and dnf (`createrepo_c`). Prefer tools that run cleanly
+      on `ubuntu-latest` in Actions.
+- [ ] Decide the public Pages URL and on-disk layout (e.g.
+      `https://sasmaq.github.io/incrmit/deb/` with `pool/` + `dists/`, and
+      `…/rpm/$basearch/` with `repodata/`). Enable GitHub Pages for the chosen
+      source (branch such as `gh-pages`, or a `docs/` / Actions upload).
+- [ ] Create a long-lived GPG key for signing apt `Release` / `InRelease` (and
+      preferably RPM packages / `repomd.xml`). Store the private key and
+      passphrase as GitHub Actions secrets; publish the public key at a stable
+      Pages URL (e.g. `…/incrmit.gpg` and/or `…/RPM-GPG-KEY`).
+- [ ] Add a release-workflow job (or extend the existing publish job) that,
+      after `.deb` / `.rpm` are built:
+      1. Checks out or downloads the current Pages site content.
+      2. Imports the new packages into the apt and yum trees.
+      3. Regenerates metadata (`Packages` / `Release` / `InRelease`,
+         `repodata/`).
+      4. Signs with the GPG secret.
+      5. Publishes the updated tree to Pages.
+- [ ] Keep older package versions in the repo (or document a retention policy)
+      so `apt` / `dnf` upgrades remain deterministic across releases.
+- [ ] Add a small install helper or copy-paste snippets: Debian/Ubuntu
+      `sources.list.d` entry with `signed-by=` pointing at the published keyring,
+      and a Fedora/RHEL `.repo` file with `baseurl`, `gpgcheck=1`, and `gpgkey=`.
+- [ ] Document end-user install in `README.md` (add repo → `apt update && apt
+      install incrmit` / `dnf install incrmit`) and the maintainer flow in
+      `doc/DEVELOPMENT.md` (secrets, Pages branch, how a tag updates the repo).
+- [ ] Confirm Pages size/bandwidth stays reasonable as versions accumulate;
+      prune or archive old packages if the tree grows too large.
