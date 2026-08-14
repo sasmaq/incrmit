@@ -662,3 +662,73 @@ func mustWrite(t *testing.T, dir, name, body string) {
 		t.Fatal(err)
 	}
 }
+
+// Discovery records the whole semver token, so a prerelease target survives a
+// regeneration of the config with the exact text the file holds.
+func TestDiscoverRecordsPrereleaseAndBuild(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"VERSION":      "1.2.3-rc.1\n",
+		"build.txt":    "ver=1.2.3+build.7\n",
+		"sub/tag.yaml": "tag: v2.0.0-beta.1+exp.sha.5114f85\n",
+	}
+	for name, body := range files {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	results, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	want := map[string]string{
+		"VERSION":      "1.2.3-rc.1",
+		"build.txt":    "1.2.3+build.7",
+		"sub/tag.yaml": "v2.0.0-beta.1+exp.sha.5114f85",
+	}
+	if len(results) != len(want) {
+		t.Fatalf("got %d results, want %d: %+v", len(results), len(want), results)
+	}
+	for _, r := range results {
+		if got := firstVersion(r).String(); got != want[r.Path] {
+			t.Errorf("%s: got %q, want %q", r.Path, got, want[r.Path])
+		}
+	}
+
+	// The generated config carries the same tokens, one entry per file.
+	data, err := Generate(results)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for path, v := range want {
+		if !strings.Contains(string(data), `version = "`+v+`"`) {
+			t.Errorf("config missing %s -> %q:\n%s", path, v, data)
+		}
+	}
+}
+
+// A file holding both a prerelease and the release it names yields two distinct
+// entries, exactly as two unrelated versions would.
+func TestDiscoverPrereleaseAndReleaseAreDistinct(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("next: 1.2.4-rc.1\nnow: 1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	got := distinct(results[0])
+	if len(got) != 2 || got[0].String() != "1.2.4-rc.1" || got[1].String() != "1.2.3" {
+		t.Errorf("distinct versions = %v, want [1.2.4-rc.1 1.2.3]", got)
+	}
+}

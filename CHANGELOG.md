@@ -5,6 +5,33 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Semver prerelease and build metadata are now first-class:
+  `1.2.3-rc.1`, `1.2.3+build.7`, and `v2.0.0-beta.1+exp.sha.5114f85` are parsed,
+  recorded by `incrmit discover`, and rewritten as whole tokens. A `version`
+  pinned in `incrmit.toml` matches the full token, so a prerelease and the
+  release it names are never mistaken for each other, even in the same file.
+- A `--release` / `-r` flag promotes a prerelease to the release it names
+  (`1.2.3-rc.1` -> `1.2.3`) without touching the numbers. Using it on a version
+  that has no prerelease, or alongside `--pre` or a component flag, is a usage
+  error (exit `2`).
+- A `--pre <id>` / `-e <id>` flag starts or advances a prerelease:
+  `1.2.3` -> `1.2.4-rc.1`, then `1.2.4-rc.1` -> `1.2.4-rc.2`. Naming a component
+  alongside it opens a new release line instead (`--minor --pre rc` gives
+  `1.3.0-rc.1`).
+
+### Fixed
+
+- A bump no longer mangles a prerelease or build version. The token matcher
+  stopped at the numeric core, so `1.2.3-rc.1` bumped to `1.2.4-rc.1` and
+  `1.2.3+build.7` to `1.2.4+build.7` — both wrong under semver, and both leaving
+  a suffix attached to a version it no longer described. A `--major`, `--minor`,
+  or `--patch` bump now drops both sections (`1.2.3-rc.1` -> `1.2.4`), matching
+  every other bump tool; use `--release` or `--pre` to work within a prerelease.
+
 ## [0.1.15] - 2026-08-03
 
 ### Added

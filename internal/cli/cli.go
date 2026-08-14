@@ -125,8 +125,18 @@ type bumpOptions struct {
 	major       bool
 	minor       bool
 	patch       bool
+	release     bool
+	pre         string
 	dryRun      bool
 	maxFileSize int64 // per-file read cap in bytes; 0 means no limit
+
+	// preSet and componentSet record whether the user named those flags
+	// explicitly. --patch defaults to true and --pre defaults to the empty
+	// string, so the values alone cannot tell "asked for" from "left at the
+	// default", which is what decides whether --pre bumps a component before
+	// starting a prerelease.
+	preSet       bool
+	componentSet bool
 }
 
 func runBump(args []string, stdout, stderr io.Writer) int {
@@ -138,7 +148,12 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 
-	bump, label := resolveBump(opts.major, opts.minor, opts.patch)
+	bump, label, err := resolveBump(opts)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		fprint(stderr, bumpHelp)
+		return ExitUsage
+	}
 
 	targets, cfgPath, ignore, err := resolveTargets(opts)
 	if err != nil {
@@ -157,7 +172,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if opts.dryRun {
-		fprintf(stdout, "Dry run: would apply a %s bump (no files changed)\n", label)
+		fprintf(stdout, "Dry run: would apply a %s (no files changed)\n", label)
 		for _, g := range groups {
 			for _, e := range g.entries {
 				fprintf(stdout, "  %s: %s -> %s\n", g.display, e.oldVer, e.newVer)
@@ -217,7 +232,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	fprintf(stdout, "Applied a %s bump to %d file(s):\n", label, len(groups))
+	fprintf(stdout, "Applied a %s to %d file(s):\n", label, len(groups))
 	for _, g := range groups {
 		for _, e := range g.entries {
 			fprintf(stdout, "  %s: %s -> %s\n", g.display, e.oldVer, e.newVer)
@@ -249,7 +264,7 @@ type fileGroup struct {
 // limit). File order and entry order are preserved for deterministic output. On
 // failure it reports the problem to stderr and returns the appropriate exit
 // code; ExitOK indicates success.
-func planGroups(targets []target, bump func(version.Version) version.Version, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
+func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	var groups []fileGroup
 	index := make(map[string]int, len(targets))
 	for _, tgt := range targets {
@@ -283,7 +298,12 @@ func planGroups(targets []target, bump func(version.Version) version.Version, ma
 				return nil, classify(err)
 			}
 		}
-		groups[gi].entries = append(groups[gi].entries, entryPlan{oldVer: oldVer, newVer: bump(oldVer)})
+		newVer, err := bump(oldVer)
+		if err != nil {
+			fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
+			return nil, classify(err)
+		}
+		groups[gi].entries = append(groups[gi].entries, entryPlan{oldVer: oldVer, newVer: newVer})
 	}
 	return groups, ExitOK
 }
@@ -310,6 +330,10 @@ func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) 
 	fs.BoolVar(&opts.minor, "m", false, "bump the minor version (shorthand)")
 	fs.BoolVar(&opts.patch, "patch", true, "bump the patch version")
 	fs.BoolVar(&opts.patch, "p", true, "bump the patch version (shorthand)")
+	fs.BoolVar(&opts.release, "release", false, "promote a prerelease to its release")
+	fs.BoolVar(&opts.release, "r", false, "promote a prerelease to its release (shorthand)")
+	fs.StringVar(&opts.pre, "pre", "", "start or advance a prerelease with this identifier")
+	fs.StringVar(&opts.pre, "e", "", "start or advance a prerelease with this identifier (shorthand)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print the new version without writing")
 	fs.BoolVar(&opts.dryRun, "d", false, "print the new version without writing (shorthand)")
 	maxFileSizeVar(fs, &opts.maxFileSize, 0, "refuse to read a target larger than this size")
@@ -327,21 +351,104 @@ func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) 
 		fprint(stderr, bumpHelp)
 		return opts, ExitUsage
 	}
+
+	// Record which of the overlapping flags were named on the command line:
+	// --patch is on by default and --pre defaults to the empty string, so their
+	// values cannot distinguish an explicit choice from the default.
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "pre", "e":
+			opts.preSet = true
+		case "major", "M", "minor", "m", "patch", "p":
+			opts.componentSet = true
+		}
+	})
 	return opts, ExitOK
 }
 
-// resolveBump picks the bump transform. If more than one of major/minor/patch
-// is requested, the highest component wins (major > minor > patch). When none
-// is requested, patch is used.
-func resolveBump(major, minor, patch bool) (func(version.Version) version.Version, string) {
+// bumpFunc computes the new version for one target from the version it holds
+// today. It returns an error when the requested transform is meaningless for
+// that particular version — promoting a version that has no prerelease, say —
+// which is a usage error even though it can only be detected once the file (or
+// the config entry) has been read.
+type bumpFunc func(version.Version) (version.Version, error)
+
+// usageError marks a failure caused by the flags the user chose rather than by
+// the state of a file, so classify maps it to ExitUsage.
+type usageError struct{ msg string }
+
+func (e *usageError) Error() string { return e.msg }
+
+func usagef(format string, a ...any) error {
+	return &usageError{msg: fmt.Sprintf(format, a...)}
+}
+
+// resolveBump picks the bump transform and the label used in the summary lines.
+//
+// Plain component bumps are unchanged: if more than one of major/minor/patch is
+// requested the highest component wins (major > minor > patch), and patch is the
+// default. --release and --pre select the two prerelease transforms instead; see
+// prereleaseBump for how --pre combines with a component flag. Flag combinations
+// that cannot mean anything are rejected here with a usage error.
+func resolveBump(opts bumpOptions) (bumpFunc, string, error) {
+	component, label := componentBump(opts)
+
 	switch {
-	case major:
-		return version.Version.BumpMajor, "major"
-	case minor:
-		return version.Version.BumpMinor, "minor"
+	case opts.release && opts.preSet:
+		return nil, "", usagef("--release and --pre are mutually exclusive: one drops a prerelease, the other starts or advances one")
+
+	case opts.release:
+		if opts.componentSet {
+			return nil, "", usagef("--release promotes a prerelease in place and changes no numbers; drop --major/--minor/--patch")
+		}
+		return func(v version.Version) (version.Version, error) {
+			if !v.IsPrerelease() {
+				return version.Version{}, usagef("%s is not a prerelease, so there is nothing to promote with --release", v)
+			}
+			return v.Release(), nil
+		}, "release promotion", nil
+
+	case opts.preSet:
+		if err := version.ValidPrereleaseID(opts.pre); err != nil {
+			return nil, "", usagef("invalid --pre value %q: %v", opts.pre, err)
+		}
+		return prereleaseBump(opts, component), fmt.Sprintf("%s prerelease bump", opts.pre), nil
+
 	default:
-		_ = patch
-		return version.Version.BumpPatch, "patch"
+		return func(v version.Version) (version.Version, error) { return component(v), nil }, label, nil
+	}
+}
+
+// componentBump returns the plain numeric transform selected by the
+// major/minor/patch flags, along with its summary label.
+func componentBump(opts bumpOptions) (func(version.Version) version.Version, string) {
+	switch {
+	case opts.major:
+		return version.Version.BumpMajor, "major bump"
+	case opts.minor:
+		return version.Version.BumpMinor, "minor bump"
+	default:
+		return version.Version.BumpPatch, "patch bump"
+	}
+}
+
+// prereleaseBump implements --pre. Naming a component explicitly always opens a
+// new release line, so `--minor --pre rc` on 1.2.3 gives 1.3.0-rc.1 whatever the
+// current version looks like. With no component flag the behavior follows the
+// version at hand: a release starts the next patch's prerelease
+// (1.2.3 -> 1.2.4-rc.1), and a version already in a prerelease iterates on the
+// spot (1.2.4-rc.1 -> 1.2.4-rc.2, or 1.2.4-beta.2 -> 1.2.4-rc.1 for a different
+// series) rather than skipping a patch number for every preview.
+func prereleaseBump(opts bumpOptions, component func(version.Version) version.Version) bumpFunc {
+	return func(v version.Version) (version.Version, error) {
+		switch {
+		case opts.componentSet:
+			return component(v).StartPrerelease(opts.pre), nil
+		case !v.IsPrerelease():
+			return v.BumpPatch().StartPrerelease(opts.pre), nil
+		default:
+			return v.BumpPrerelease(opts.pre), nil
+		}
 	}
 }
 
@@ -758,7 +865,10 @@ func parseUndoFlags(args []string, stdout, stderr io.Writer) (undoOptions, int) 
 // classify maps an error to the appropriate process exit code.
 func classify(err error) int {
 	var ambiguous *files.AmbiguousError
+	var usage *usageError
 	switch {
+	case errors.As(err, &usage):
+		return ExitUsage
 	case errors.Is(err, files.ErrNoVersion),
 		errors.Is(err, files.ErrVersionNotFound),
 		errors.As(err, &ambiguous):

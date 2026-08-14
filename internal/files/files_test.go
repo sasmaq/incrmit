@@ -589,3 +589,88 @@ func TestApplyBumpDryRun(t *testing.T) {
 		t.Errorf("dry-run modified file: %q", got)
 	}
 }
+
+// The token matcher spans the whole semver token, so a prerelease or build
+// section is found as part of the version rather than left dangling beside it.
+func TestFindVersionWholeToken(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"prerelease", "version = \"1.2.3-rc.1\"\n", "1.2.3-rc.1"},
+		{"build", "ver=1.2.3+build.7\n", "1.2.3+build.7"},
+		{"both", "v = v2.0.0-beta.1+exp.sha.5114f85\n", "v2.0.0-beta.1+exp.sha.5114f85"},
+		{"hyphenated identifier", "1.2.3-rc-1\n", "1.2.3-rc-1"},
+		// A trailing dot ends a sentence, not an identifier.
+		{"end of sentence", "Ships as 1.2.3-rc.1.\n", "1.2.3-rc.1"},
+		// "_" is a word character, so no token boundary falls before it and the
+		// match stops at the numeric core rather than swallowing a malformed
+		// suffix.
+		{"underscore suffix", "pkg-1.2.3-rc_1\n", "1.2.3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FindVersion([]byte(tt.in))
+			if err != nil {
+				t.Fatalf("FindVersion(%q): %v", tt.in, err)
+			}
+			if got.String() != tt.want {
+				t.Errorf("FindVersion(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A prerelease and the release it names are distinct tokens: neither is
+// rewritten when the other one is the known version.
+func TestSetKnownVersionDistinguishesPrerelease(t *testing.T) {
+	in := []byte("current: 1.2.3-rc.1\nreleased: 1.2.3\n")
+
+	pre := version.Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1"}
+	bare := version.Version{Major: 1, Minor: 2, Patch: 3}
+	next := version.Version{Major: 1, Minor: 2, Patch: 4}
+
+	got, err := SetKnownVersion(in, pre, next)
+	if err != nil {
+		t.Fatalf("SetKnownVersion(prerelease): %v", err)
+	}
+	if want := "current: 1.2.4\nreleased: 1.2.3\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	got, err = SetKnownVersion(in, bare, next)
+	if err != nil {
+		t.Fatalf("SetKnownVersion(release): %v", err)
+	}
+	if want := "current: 1.2.3-rc.1\nreleased: 1.2.4\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// SetKnownVersions keys on the full token too, so a prerelease and its release
+// can be rewritten in the same pass without either matching the other.
+func TestSetKnownVersionsDistinguishesPrerelease(t *testing.T) {
+	in := []byte("preview: 1.2.4-rc.1\nstable: 1.2.3\n")
+	got, counts := SetKnownVersions(in, map[string]string{
+		"1.2.4-rc.1": "1.2.4-rc.2",
+		"1.2.3":      "1.2.4",
+	})
+	if want := "preview: 1.2.4-rc.2\nstable: 1.2.4\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	for tok, n := range counts {
+		if n != 1 {
+			t.Errorf("token %q replaced %d times, want 1", tok, n)
+		}
+	}
+}
+
+// A file holding a version and its prerelease holds two distinct versions, so
+// a generic (unpinned) replacement is ambiguous rather than silently guessing.
+func TestFindVersionPrereleaseAndBareAreAmbiguous(t *testing.T) {
+	var ambiguous *AmbiguousError
+	if _, err := FindVersion([]byte("1.2.3-rc.1 and 1.2.3\n")); !errors.As(err, &ambiguous) {
+		t.Fatalf("err = %v, want *AmbiguousError", err)
+	}
+}

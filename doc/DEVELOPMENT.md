@@ -13,8 +13,11 @@ must share the same version number and be incremented together.
 
 In scope:
 
-- Parsing semantic versions (`MAJOR.MINOR.PATCH`) from text files.
+- Parsing semantic versions (`[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`) from
+  text files.
 - Incrementing the major, minor, or patch component.
+- Promoting a prerelease to its release (`--release`) and starting or advancing
+  one (`--pre`).
 - Reading target files from a TOML configuration file.
 - Discovering version-bearing files and generating a config automatically.
 - Bumping a single file directly, bypassing the config.
@@ -24,7 +27,6 @@ In scope:
 
 Out of scope (for the initial version):
 
-- Pre-release and build metadata segments (e.g. `1.2.3-rc.1+build.5`).
 - Git tagging, committing, or changelog generation.
 - Non-semantic version schemes (date-based, monotonic integers, etc.).
 
@@ -44,13 +46,14 @@ Out of scope (for the initial version):
 
 ## 3. Terminology
 
-| Term      | Meaning                                                    |
-| --------- | ---------------------------------------------------------- |
-| Version   | A semantic version of the form `MAJOR.MINOR.PATCH`.        |
-| Bump      | Incrementing one version component by one.                 |
-| Target    | A file whose version value `incrmit` reads and updates.    |
-| Config    | The TOML file listing targets (`incrmit.toml` by default). |
-| Discovery | Scanning the tree to find targets and generate a config.   |
+| Term      | Meaning                                                            |
+| --------- | ------------------------------------------------------------------ |
+| Version   | A semver 2.0.0 token: `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`. |
+| Bump      | Incrementing one version component by one.                         |
+| Promote   | Dropping a prerelease to reach its release.                        |
+| Target    | A file whose version value `incrmit` reads and updates.            |
+| Config    | The TOML file listing targets (`incrmit.toml` by default).         |
+| Discovery | Scanning the tree to find targets and generate a config.           |
 
 ## 4. Requirements
 
@@ -102,7 +105,8 @@ packages:
 - `main` — parses flags, selects the command (default bump or `discover`), and
   wires components together.
 - `config` — loads and validates the TOML config into an in-memory model.
-- `version` — parses semantic versions and applies major/minor/patch bumps.
+- `version` — parses semantic versions and applies major/minor/patch bumps,
+  prerelease promotion, and prerelease iteration.
 - `discovery` — walks the filesystem, detects version strings, and emits config.
 - `files` — reads and writes target files, replacing only the version token.
 - `output` — formats human-readable results and dry-run previews.
@@ -226,6 +230,8 @@ incrmit [flags]
 | `--major`         | `-M`  | Bump the major version (resets minor and patch)    | `false`        |
 | `--minor`         | `-m`  | Bump the minor version (resets patch)              | `false`        |
 | `--patch`         | `-p`  | Bump the patch version                             | `true`         |
+| `--release`       | `-r`  | Promote a prerelease (`1.2.3-rc.1` -> `1.2.3`)     | `false`        |
+| `--pre`           | `-e`  | Start or advance a prerelease with this identifier | *none*         |
 | `--max-file-size` | `-s`  | Refuse to read a target larger than this size      | `0` (no limit) |
 | `--dry-run`       | `-d`  | Print the new version without writing to the files | `false`        |
 
@@ -244,6 +250,10 @@ incrmit discover [flags]
 
 If more than one of `--major`, `--minor`, `--patch` is supplied, the highest
 component wins (major > minor > patch). When none is supplied, patch is used.
+
+`--release` and `--pre` select the prerelease transforms instead of a plain
+component bump; see [section 9.2](#92-prerelease-and-build-metadata) for their
+semantics and the combinations that exit `2`.
 
 A `--max-file-size` value is parsed by `cli.parseSize`: a plain byte count
 (`1048576`) or a value with a unit suffix (`512KB`, `32MiB`, `2G`; bare `K`/`M`/
@@ -418,12 +428,30 @@ configured pattern matches.
 
 ## 9. Version Detection Strategy
 
-- Match candidate tokens with a regular expression: `\b[vV]?\d+(?:\.\d+)+\b`
-  (a run of two or more dot-separated integer groups). The same pattern is used
-  by both `discovery` (scanning) and `files` (rewriting) so the two never
-  disagree about what counts as a token. The pattern intentionally matches more
-  than `MAJOR.MINOR.PATCH`; `version.Parse` is the authority on validity and
-  accepts only exactly three components.
+- Match candidate tokens with a regular expression:
+
+  ```text
+  \b[vV]?\d+(?:\.\d+)+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b
+  ```
+
+  a run of two or more dot-separated integer groups, plus the optional
+  `-prerelease` and `+build` sections. The same pattern is used by both
+  `discovery` (scanning) and `files` (rewriting) so the two never disagree about
+  what counts as a token. The pattern intentionally matches more than a valid
+  version; `version.Parse` is the authority on validity and accepts only exactly
+  three numeric components.
+- The suffixes are part of the token, not trailing text beside it. Stopping at
+  the numeric core would rewrite the `1.2.3` inside `1.2.3-rc.1` and leave the
+  `-rc.1` dangling on a version it no longer names — the bug Milestone 28 fixed.
+  Because RE2 has no look-ahead, the trailing `\b` is what stops a suffix from
+  running into an adjacent word: `1.2.3-rc_1` matches only `1.2.3`, since `_` is
+  a word character and no boundary falls before it, and a token at the end of a
+  sentence (`... 1.2.3-rc.1.`) keeps its identifiers but not the full stop.
+- The cost of matching whole tokens is that a hyphenated suffix which is not
+  really a prerelease is still read as one: `1.2.3-linux` parses as `1.2.3` with
+  prerelease `linux`, so a patch bump writes `1.2.4`. Semver offers no way to
+  tell the two apart. The recorded `version` in `incrmit.toml` (and `--dry-run`)
+  makes what will be rewritten visible before it happens.
 - IPv4 addresses are not versions. Because the pattern matches the whole dotted
   run greedily, an address such as `192.168.1.1` is captured as a single
   four-component token and rejected by `Parse` — rather than having `192.168.1`
@@ -514,6 +542,62 @@ the open descriptor (`(*os.File).Chmod`) rather than by name, so the mode lands
 on the file just written even if the name is replaced first. The final mode is
 exactly the target's previous mode, or `0644` for a newly created file: a write
 never widens permissions.
+
+### 9.2 Prerelease and build metadata
+
+`version.Version` carries `Prerelease` and `Build` alongside `Prefix`, each
+holding its section without the leading `-`/`+`. `Parse` enforces the semver
+2.0.0 grammar for both (dot-separated identifiers of ASCII letters, digits, and
+hyphens; a numeric prerelease identifier may not carry a leading zero, though
+build identifiers may), and `String` re-emits them, so any accepted token
+round-trips unchanged. Build metadata is split off first: `+` cannot appear
+anywhere else, while `-` may appear inside a build identifier (`1.2.3+exp-1`).
+Because both characters are consumed by those splits, a signed component such as
+`+1.2.3` or `1.-2.3` now fails as an empty or short numeric core rather than
+through a dedicated sign check.
+
+Bump semantics:
+
+- `BumpMajor` / `BumpMinor` / `BumpPatch` **drop both sections**: `1.2.3-rc.1`
+  patches to `1.2.4`. Carrying a prerelease forward would claim the new version
+  is still a preview of a release it no longer names, and build metadata
+  describes one build, so it is never inherited. This matches `bump2version`,
+  `npm version`, and `cargo-release`.
+- `Release` promotes in place (`1.2.3-rc.1` -> `1.2.3`), changing no numbers.
+- `StartPrerelease(id)` sets `-id.1`; `AdvancePrerelease` increments the trailing
+  numeric identifier (`rc.1` -> `rc.2`, `rc` -> `rc.1`); `BumpPrerelease(id)`
+  advances when the series matches and starts it otherwise. All three drop build
+  metadata.
+
+The CLI exposes these as `--release`/`-r` and `--pre`/`-e <id>` rather than
+overloading the component flags. `--pre` combines with them by rule: naming a
+component explicitly always opens a new release line
+(`--minor --pre rc` -> `1.3.0-rc.1`), while with no component flag the current
+version decides — a release starts the next patch's prerelease
+(`1.2.3` -> `1.2.4-rc.1`) and a version already in a prerelease iterates on the
+spot (`1.2.4-rc.1` -> `1.2.4-rc.2`) rather than skipping a patch per preview.
+`--patch` defaults to `true` and `--pre` to `""`, so the values alone cannot
+distinguish an explicit choice from a default; `flag.FlagSet.Visit` records
+which flags the user actually named.
+
+Meaningless combinations exit `2` (`ExitUsage`): `--release` with `--pre`,
+`--release` with a component flag, an invalid `--pre` identifier, and `--release`
+on a version that has no prerelease. The last one can only be detected once a
+target's version is known, so the bump transform returns an error rather than a
+bare `Version`; `cli.usageError` marks it and `classify` maps it to `ExitUsage`.
+
+Because a bump transform can now fail per target, the plan phase (`planGroups`)
+reports the error and aborts before anything is written — an out-of-sync config
+where only some entries carry a prerelease fails fast rather than half-applying.
+
+`version.Compare` implements semver precedence (numeric components, then the
+prerelease rules: a prerelease precedes its release, numeric identifiers compare
+numerically and rank below alphanumeric ones, a shorter run of otherwise-equal
+identifiers ranks lower). Neither `Prefix` nor `Build` affects precedence.
+Nothing in the bump, discover, or undo paths needs ordering — they match tokens,
+never compare them — so `Compare` exists for the out-of-sync/preview reporting
+of Milestone 27 and for any future check that has to say which of two versions
+is newer.
 
 ## 10. Error Handling
 

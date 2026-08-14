@@ -57,16 +57,23 @@ var ignoredDirs = map[string]struct{}{
 // scan bounded when a tree contains very large files.
 const DefaultMaxScanBytes = 32 << 20 // 32 MiB
 
-// versionRe matches a run of two or more dot-separated integer groups,
-// optionally prefixed by a single leading "v" or "V", bounded by non-word
-// characters. It deliberately matches more than just MAJOR.MINOR.PATCH: a
-// candidate is validated with version.Parse, which accepts only exactly three
-// components. Matching the whole dotted run (greedily) is what lets an IPv4
-// address such as 192.168.1.1 be seen as a single four-component token and
-// rejected, rather than having 192.168.1 (or 168.1.1) pulled out of it. The
-// leading \b before the optional [vV] keeps the prefix from being taken out of
-// the middle of a word (so "rev1.2.3"/"dev1.2.3" are not treated as versions).
-var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+\b`)
+// versionRe matches a candidate version token: a run of two or more
+// dot-separated integer groups, optionally prefixed by a single leading "v" or
+// "V" and followed by the optional "-prerelease" and "+build" sections of
+// semver, bounded by non-word characters. It deliberately matches more than just
+// a valid version: a candidate is validated with version.Parse, which accepts
+// only exactly three numeric components. Matching the whole dotted run
+// (greedily) is what lets an IPv4 address such as 192.168.1.1 be seen as a
+// single four-component token and rejected, rather than having 192.168.1 (or
+// 168.1.1) pulled out of it, and matching the suffixes is what records
+// "1.2.3-rc.1" as one token rather than the bare "1.2.3" inside it.
+//
+// The leading \b before the optional [vV] keeps the prefix from being taken out
+// of the middle of a word (so "rev1.2.3"/"dev1.2.3" are not treated as
+// versions); the trailing \b keeps a suffix from running into an adjacent word.
+// It is kept identical to the pattern in package files, so what discovery
+// records is exactly what a bump later rewrites.
+var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b`)
 
 // Discover walks the tree rooted at root and returns every file that contains a
 // semantic version token, sorted by path for deterministic output. It scans the

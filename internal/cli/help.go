@@ -16,6 +16,8 @@ const bumpFlags = `  -c, --config string       path to the TOML config file (def
   -M, --major               bump the major version (resets minor and patch)
   -m, --minor               bump the minor version (resets patch)
   -p, --patch               bump the patch version (default)
+  -r, --release             promote a prerelease (1.2.3-rc.1 -> 1.2.3)
+  -e, --pre id              start or advance a prerelease (1.2.3 -> 1.2.4-id.1)
   -s, --max-file-size size  refuse to read a larger target (default no limit)
   -d, --dry-run             print the new version without writing
 `
@@ -28,6 +30,21 @@ const discoverFlags = `  -P, --path string         root directory to scan (defau
 
 const undoFlags = `  -c, --config string  path to the TOML config file (default "incrmit.toml")
   -d, --dry-run        preview the revert (new -> old) without writing
+`
+
+// prereleaseNote documents how prereleases and build metadata are handled. It
+// is appended to the bump help, where the flags it describes live.
+const prereleaseNote = `
+A version may carry the semver prerelease and build-metadata sections
+(1.2.3-rc.1, 1.2.3+build.7, v2.0.0-beta.1+exp.sha.5114f85); the whole token is
+matched and rewritten, never just the numbers inside it.
+
+A --major/--minor/--patch bump drops both sections, so 1.2.3-rc.1 patches to
+1.2.4. Use --release to promote a prerelease in place (1.2.3-rc.1 -> 1.2.3);
+it is an error (exit 2) on a version that has no prerelease. Use --pre to
+start or advance one: 1.2.3 -> 1.2.4-rc.1, then 1.2.4-rc.1 -> 1.2.4-rc.2.
+Naming a component alongside --pre opens a new line instead, so --minor --pre
+rc gives 1.3.0-rc.1. --release and --pre cannot be combined.
 `
 
 // sizeNote explains the --max-file-size value format once, and is appended to
@@ -76,6 +93,10 @@ Help flags (incrmit help, incrmit -h):
 The version command takes no flags. The --version, -version, and -v flags
 print the tool version.
 
+A prerelease or build section is part of the version token: 1.2.3-rc.1 patches
+to 1.2.4 (both sections are dropped), --release promotes it to 1.2.3, and
+--pre rc starts or advances one (1.2.3 -> 1.2.4-rc.1 -> 1.2.4-rc.2).
+
 A --max-file-size value is a plain byte count (1048576) or a value with a unit
 suffix such as 512KB, 32MiB, or 2G. A size of 0 means no limit.
 
@@ -89,7 +110,7 @@ const bumpHelp = `usage: incrmit [flags]
 Bump the semantic version in the configured files.
 
 Flags:
-` + bumpFlags + sizeNote
+` + bumpFlags + prereleaseNote + sizeNote
 
 // discoverHelp documents the discover command. It is shown by
 // `incrmit discover -h`, `incrmit help discover`, and on a discover usage error.

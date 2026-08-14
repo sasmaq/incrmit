@@ -19,8 +19,11 @@ workflows.
 - Discovers files containing version strings and generates a config automatically.
 - Reads file locations from a TOML config file (no need to pass paths manually).
 - Updates multiple files in a single run, keeping their versions in sync.
-- Parses each file and locates a semantic version (`MAJOR.MINOR.PATCH`).
+- Parses each file and locates a semantic version
+  (`[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`).
 - Increments the major, minor, or patch component.
+- Handles prereleases end to end: promote one with `--release`, start or
+  advance one with `--pre rc`.
 - Writes the updated version back to the source files in place (atomic,
   only the version token changes).
 - Reverts the most recent bump with `incrmit undo`, restoring the previous
@@ -186,7 +189,9 @@ parsed and bumped together so their versions stay in sync.
 
 An entry may also record a `version`, which pins the exact value to bump
 (useful for files that contain several version-like strings). When `version`
-is omitted, `incrmit` scans the file for the first `MAJOR.MINOR.PATCH` token.
+is omitted, `incrmit` scans the file for the first version token. A pinned
+`version` is matched whole, prerelease and build sections included, so an entry
+holding `1.2.3-rc.1` never matches a bare `1.2.3` elsewhere in the same file.
 After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's
 `version` reflects the new value, keeping the config in step with the files
 it manages.
@@ -265,7 +270,9 @@ the project for files that contain a semantic version string and generate an
 `incrmit.toml` for you.
 
 Discovery walks the directory tree and inspects the contents of every text
-file, recording every `MAJOR.MINOR.PATCH` token it finds in each. It is
+file, recording every `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]` token it
+finds in each — the whole token, so a prerelease target survives a
+regeneration of the config exactly as written in the file. It is
 not limited to specific file names or types — any file (`VERSION`,
 `package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain text,
 etc.) is matched the same way.
@@ -474,6 +481,8 @@ incrmit [flags]
 | `--major` | `-M` | Bump the major version (resets minor and patch) | `false` |
 | `--minor` | `-m` | Bump the minor version (resets patch) | `false` |
 | `--patch` | `-p` | Bump the patch version | `true` |
+| `--release` | `-r` | [Promote a prerelease](#prereleases-and-build-metadata) (`1.2.3-rc.1` -> `1.2.3`) | `false` |
+| `--pre` | `-e` | [Start or advance a prerelease](#prereleases-and-build-metadata) (`1.2.3` -> `1.2.4-rc.1`) | *none* |
 | `--max-file-size` | `-s` | [Refuse to read a target larger than this](#limiting-how-much-is-read) | *no limit* |
 | `--dry-run` | `-d` | Print the new version without writing files | `false` |
 
@@ -538,6 +547,70 @@ Preview the change without writing it:
 incrmit --dry-run
 incrmit -d
 ```
+
+### Prereleases and build metadata
+
+A version token is `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`, following
+[semver 2.0.0](https://semver.org): `1.2.3`, `v1.2.3`, `1.2.3-rc.1`,
+`1.2.3+build.7`, `v2.0.0-beta.1+exp.sha.5114f85`. The prerelease and build
+sections are dot-separated identifiers of ASCII letters, digits, and hyphens; a
+numeric prerelease identifier may not carry a leading zero (`1.2.3-rc.01` is
+not a version).
+
+The whole token is matched and rewritten as a unit, so `1.2.3-rc.1` is never
+confused with the `1.2.3` inside it — a config entry pinning one does not match
+the other, even in the same file.
+
+A `--major`, `--minor`, or `--patch` bump drops both sections, which is how
+every other bump tool behaves. Build metadata describes one specific build and
+is never carried forward:
+
+```bash
+incrmit --file VERSION
+# 1.2.3-rc.1 -> 1.2.4
+# 1.2.3+build.7 -> 1.2.4
+```
+
+Use `--release` to promote a prerelease to the release it names, leaving the
+numbers alone:
+
+```bash
+incrmit --release
+incrmit -r
+# 1.2.3-rc.1 -> 1.2.3
+```
+
+Use `--pre <id>` to start or advance one. Off a release it bumps the patch
+first (the preview cannot claim the version already published); within the same
+series it advances the counter; in a different series it restarts on the same
+numbers:
+
+```bash
+incrmit --pre rc
+# 1.2.3 -> 1.2.4-rc.1
+incrmit --pre rc
+# 1.2.4-rc.1 -> 1.2.4-rc.2
+incrmit --pre beta
+# 1.2.4-rc.2 -> 1.2.4-beta.1
+```
+
+Naming a component alongside `--pre` opens a new release line instead:
+
+```bash
+incrmit --minor --pre rc
+# 1.2.3 -> 1.3.0-rc.1
+```
+
+Combinations that cannot mean anything exit with code `2` and write nothing:
+`--release` together with `--pre`, `--release` with a component flag,
+`--release` on a version that has no prerelease, and a `--pre` value that is not
+a valid identifier list.
+
+Because the whole token is matched, a hyphenated suffix that is *not* a
+prerelease is still read as one: `1.2.3-linux` is a version with the prerelease
+`linux`, and bumping it yields `1.2.4`. Semver cannot distinguish the two cases;
+pin the exact token in `incrmit.toml` (`incrmit discover` records it) so you can
+see what will be rewritten, or use `--dry-run` to check.
 
 ## Help
 

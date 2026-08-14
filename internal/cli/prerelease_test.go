@@ -7,19 +7,13 @@ import (
 	"testing"
 )
 
-// These tests pin the CURRENT, INCORRECT handling of semver prerelease and
-// build metadata, as the first task of Milestone 28 asks. They are not a
-// statement of desired behavior.
-//
-// version.Parse only understands a bare MAJOR.MINOR.PATCH, but the token
-// matcher in internal/files (`\b[vV]?\d+(?:\.\d+)+\b`) matches the numeric core
-// inside a larger token. The suffix is therefore left dangling on a bumped
-// version instead of the input being rejected or the prerelease being handled:
-// a patch bump off 1.2.3-rc.1 is 1.2.3 (promote) or 1.2.3-rc.2 (iterate) under
-// semver 2.0.0, never 1.2.4-rc.1.
-//
-// When Milestone 28 lands, these expectations must be REPLACED with the correct
-// ones. Do not delete them to make a change pass.
+// These tests cover semver prerelease and build metadata end to end (Milestone
+// 28). They started life pinning the old, incorrect handling: version.Parse
+// understood only a bare MAJOR.MINOR.PATCH while the token matcher stopped at
+// the numeric core, so a bump rewrote the "1.2.3" inside "1.2.3-rc.1" and left
+// the "-rc.1" dangling on a version it no longer belonged to. The expectations
+// below are the corrected ones — the whole token is matched, and a component
+// bump drops both suffixes.
 
 func bumpOneFile(t *testing.T, body string, args ...string) (int, string, string, string) {
 	t.Helper()
@@ -36,15 +30,17 @@ func bumpOneFile(t *testing.T, body string, args ...string) (int, string, string
 	return code, stdout, stderr, string(got)
 }
 
-func TestBumpCurrentlyMishandlesPrerelease(t *testing.T) {
+// A patch bump off a prerelease is the next patch release: the prerelease and
+// the build metadata are both dropped, and the rest of the line is untouched.
+func TestBumpDropsPrereleaseAndBuild(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want string // current (wrong) output; see the file comment
+		want string
 	}{
-		{"prerelease", "version = \"1.2.3-rc.1\"\n", "version = \"1.2.4-rc.1\"\n"},
-		{"build metadata", "ver=1.2.3+build.7\n", "ver=1.2.4+build.7\n"},
-		{"both", "v = v2.0.0-beta.1+exp.sha.5114f85\n", "v = v2.0.1-beta.1+exp.sha.5114f85\n"},
+		{"prerelease", "version = \"1.2.3-rc.1\"\n", "version = \"1.2.4\"\n"},
+		{"build metadata", "ver=1.2.3+build.7\n", "ver=1.2.4\n"},
+		{"both", "v = v2.0.0-beta.1+exp.sha.5114f85\n", "v = v2.0.1\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,21 +49,20 @@ func TestBumpCurrentlyMishandlesPrerelease(t *testing.T) {
 				t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitOK, stderr)
 			}
 			if got != tc.want {
-				t.Errorf("got %q, want %q (current behavior; Milestone 28 changes this)", got, tc.want)
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// A minor or major bump loses the same way: the suffix rides along instead of
-// being dropped.
-func TestBumpCurrentlyKeepsPrereleaseAcrossComponents(t *testing.T) {
+// A minor or major bump drops the suffixes the same way.
+func TestBumpDropsPrereleaseAcrossComponents(t *testing.T) {
 	cases := []struct {
 		flag string
 		want string
 	}{
-		{"--minor", "1.3.0-rc.1\n"},
-		{"--major", "2.0.0-rc.1\n"},
+		{"--minor", "1.3.0\n"},
+		{"--major", "2.0.0\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.flag, func(t *testing.T) {
@@ -76,32 +71,138 @@ func TestBumpCurrentlyKeepsPrereleaseAcrossComponents(t *testing.T) {
 				t.Fatalf("exit = %d (stderr %q)", code, stderr)
 			}
 			if got != tc.want {
-				t.Errorf("got %q, want %q (current behavior; Milestone 28 changes this)", got, tc.want)
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// The dry-run summary reports only the numeric core, so the preview does not
-// reveal that the suffix will be left behind. Worth pinning: it is the output a
-// user checks before committing to a bump.
-func TestDryRunCurrentlyHidesPrereleaseSuffix(t *testing.T) {
+// The dry-run summary shows the whole token on both sides, so what the preview
+// promises is what a real bump writes.
+func TestDryRunShowsWholePrereleaseToken(t *testing.T) {
 	code, stdout, stderr, got := bumpOneFile(t, "1.2.3-rc.1\n", "--dry-run")
 	if code != ExitOK {
 		t.Fatalf("exit = %d (stderr %q)", code, stderr)
 	}
-	if !strings.Contains(stdout, "1.2.3 -> 1.2.4") {
-		t.Errorf("stdout = %q, want the bare-core preview the tool prints today", stdout)
+	if !strings.Contains(stdout, "1.2.3-rc.1 -> 1.2.4") {
+		t.Errorf("stdout = %q, want the full token in the preview", stdout)
 	}
 	if got != "1.2.3-rc.1\n" {
 		t.Errorf("dry run modified the file: %q", got)
 	}
 }
 
-// A file whose only version carries a prerelease suffix is discovered as its
-// bare core, so the generated config records a version that is not the token in
-// the file. Pinning this makes the config-side half of Milestone 28 visible.
-func TestDiscoverCurrentlyRecordsBareCoreOfPrerelease(t *testing.T) {
+// --release promotes a prerelease to the release it names, without touching the
+// numbers. Build metadata goes with it.
+func TestReleaseFlagPromotesPrerelease(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"prerelease", "1.2.3-rc.1\n", "1.2.3\n"},
+		{"with build", "v1.2.3-rc.1+build.7\n", "v1.2.3\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr, got := bumpOneFile(t, tc.in, "--release")
+			if code != ExitOK {
+				t.Fatalf("exit = %d (stderr %q)", code, stderr)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+			if !strings.Contains(stdout, "release promotion") {
+				t.Errorf("stdout = %q, want the summary to name the promotion", stdout)
+			}
+		})
+	}
+}
+
+// --release on a version that has no prerelease is a usage error: there is
+// nothing to promote, and silently doing nothing would look like a success.
+func TestReleaseFlagRejectsPlainVersion(t *testing.T) {
+	code, _, stderr, got := bumpOneFile(t, "1.2.3\n", "--release")
+	if code != ExitUsage {
+		t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitUsage, stderr)
+	}
+	if !strings.Contains(stderr, "1.2.3") || !strings.Contains(stderr, "--release") {
+		t.Errorf("stderr = %q, want the offending version and the flag named", stderr)
+	}
+	if got != "1.2.3\n" {
+		t.Errorf("file was modified: %q", got)
+	}
+}
+
+// --pre starts a prerelease off a release (bumping the patch first, since the
+// release it previews cannot be the one already published) and advances one
+// that is already running.
+func TestPreFlagStartsAndAdvances(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		args []string
+		want string
+	}{
+		{"start from release", "1.2.3\n", []string{"--pre", "rc"}, "1.2.4-rc.1\n"},
+		{"advance same series", "1.2.4-rc.1\n", []string{"--pre", "rc"}, "1.2.4-rc.2\n"},
+		{"advance past nine", "1.2.4-rc.9\n", []string{"--pre", "rc"}, "1.2.4-rc.10\n"},
+		{"switch series", "1.2.4-beta.2\n", []string{"--pre", "rc"}, "1.2.4-rc.1\n"},
+		{"with minor", "1.2.3\n", []string{"--minor", "--pre", "rc"}, "1.3.0-rc.1\n"},
+		{"with major", "1.2.3\n", []string{"--major", "--pre", "rc"}, "2.0.0-rc.1\n"},
+		{"minor off a prerelease", "1.2.4-rc.1\n", []string{"--minor", "--pre", "rc"}, "1.3.0-rc.1\n"},
+		{"prefix preserved", "v1.2.3\n", []string{"--pre", "beta"}, "v1.2.4-beta.1\n"},
+		{"build dropped", "1.2.4-rc.1+build.7\n", []string{"--pre", "rc"}, "1.2.4-rc.2\n"},
+		{"shorthand", "1.2.3\n", []string{"-e", "rc"}, "1.2.4-rc.1\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _, stderr, got := bumpOneFile(t, tc.in, tc.args...)
+			if code != ExitOK {
+				t.Fatalf("exit = %d (stderr %q)", code, stderr)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Meaningless or malformed flag combinations exit 2 and write nothing.
+func TestPrereleaseFlagUsageErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string // substring expected on stderr
+	}{
+		{"release and pre", []string{"--release", "--pre", "rc"}, "mutually exclusive"},
+		{"release with major", []string{"--release", "--major"}, "changes no numbers"},
+		{"empty pre id", []string{"--pre", ""}, "invalid --pre"},
+		{"bad pre id", []string{"--pre", "rc_1"}, "invalid --pre"},
+		{"leading-zero pre id", []string{"--pre", "rc.01"}, "invalid --pre"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr, got := bumpOneFile(t, "1.2.3-rc.1\n", tc.args...)
+			if code != ExitUsage {
+				t.Fatalf("exit = %d, want %d (stderr %q)", code, ExitUsage, stderr)
+			}
+			if !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr, tc.want)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty on a usage error", stdout)
+			}
+			if got != "1.2.3-rc.1\n" {
+				t.Errorf("file was modified: %q", got)
+			}
+		})
+	}
+}
+
+// discover records the whole token, so a prerelease target survives a
+// regeneration and the config says exactly what is written in the file.
+func TestDiscoverRecordsWholePrereleaseToken(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte("1.2.3-rc.1\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -115,10 +216,119 @@ func TestDiscoverCurrentlyRecordsBareCoreOfPrerelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfg), "version = \"1.2.3\"") {
-		t.Errorf("config = %q, want the bare core it records today", cfg)
+	if !strings.Contains(string(cfg), `version = "1.2.3-rc.1"`) {
+		t.Errorf("config = %q, want the full token recorded", cfg)
 	}
-	if strings.Contains(string(cfg), "rc.1") {
-		t.Errorf("config unexpectedly kept the prerelease; Milestone 28 may already be done: %q", cfg)
+}
+
+// A config pinning a prerelease must not match the bare release elsewhere in
+// the same file: the recorded token is matched whole, so only the entry's own
+// occurrence is rewritten.
+func TestConfiguredPrereleaseDoesNotMatchBareVersion(t *testing.T) {
+	dir := project(t, `
+[[files]]
+  path = "notes.md"
+  version = "1.2.3-rc.1"
+`, map[string]string{
+		"notes.md": "current: 1.2.3-rc.1\nreleased: 1.2.3\n",
+	})
+
+	code, _, stderr := runMain(t, dir, "--pre", "rc")
+	if code != ExitOK {
+		t.Fatalf("exit = %d (stderr %q)", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "notes.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "current: 1.2.3-rc.2\nreleased: 1.2.3\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// The mirror of the case above: an entry pinning the bare release leaves a
+// prerelease of the same numbers alone.
+func TestConfiguredBareVersionDoesNotMatchPrerelease(t *testing.T) {
+	dir := project(t, `
+[[files]]
+  path = "notes.md"
+  version = "1.2.3"
+`, map[string]string{
+		"notes.md": "released: 1.2.3\npreview: 1.2.3-rc.1\n",
+	})
+
+	code, _, stderr := runMain(t, dir)
+	if code != ExitOK {
+		t.Fatalf("exit = %d (stderr %q)", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "notes.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "released: 1.2.4\npreview: 1.2.3-rc.1\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A full round trip: start a prerelease, iterate on it, then promote it, with
+// the config and the file staying in step throughout.
+func TestPrereleaseLifecycleThroughConfig(t *testing.T) {
+	dir := project(t, `
+[[files]]
+  path = "VERSION"
+  version = "1.2.3"
+`, map[string]string{"VERSION": "1.2.3\n"})
+
+	steps := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--pre", "rc"}, "1.2.4-rc.1\n"},
+		{[]string{"--pre", "rc"}, "1.2.4-rc.2\n"},
+		{[]string{"--release"}, "1.2.4\n"},
+		{nil, "1.2.5\n"},
+	}
+	for _, step := range steps {
+		code, _, stderr := runMain(t, dir, step.args...)
+		if code != ExitOK {
+			t.Fatalf("%v: exit = %d (stderr %q)", step.args, code, stderr)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != step.want {
+			t.Fatalf("%v: file = %q, want %q", step.args, got, step.want)
+		}
+		cfg, err := os.ReadFile(filepath.Join(dir, "incrmit.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(cfg), `version = "`+strings.TrimSpace(step.want)+`"`) {
+			t.Fatalf("%v: config out of step with the file: %q", step.args, cfg)
+		}
+	}
+}
+
+// undo reverts a prerelease step like any other bump, restoring the exact token.
+func TestUndoRestoresPrereleaseToken(t *testing.T) {
+	dir := project(t, `
+[[files]]
+  path = "VERSION"
+  version = "1.2.3-rc.1"
+`, map[string]string{"VERSION": "1.2.3-rc.1\n"})
+
+	if code, _, stderr := runMain(t, dir, "--release"); code != ExitOK {
+		t.Fatalf("bump: exit = %d (stderr %q)", code, stderr)
+	}
+	if code, _, stderr := runMain(t, dir, "undo"); code != ExitOK {
+		t.Fatalf("undo: exit = %d (stderr %q)", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "1.2.3-rc.1\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

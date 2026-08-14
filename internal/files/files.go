@@ -22,17 +22,27 @@ var ErrNoVersion = errors.New("files: no semantic version found")
 // version is not present in the file (e.g. the config is out of sync).
 var ErrVersionNotFound = errors.New("files: expected version not found")
 
-// versionRe matches a run of two or more dot-separated integer groups,
-// optionally prefixed by a single leading "v" or "V", bounded by non-word
-// characters. It deliberately does not understand any file format; structured
-// detection for specific formats lives in the discovery package. It matches
-// more than just MAJOR.MINOR.PATCH so that an IPv4 address (192.168.1.1) is seen
-// as one four-component token and rejected by version.Parse rather than having
-// a three-component slice pulled out of it; two-component numbers are likewise
-// rejected. The leading \b keeps the optional prefix from being taken out of the
-// middle of a word (so "rev1.2.3" is not matched), and a "v"-prefixed token is
+// versionRe matches a candidate version token: a run of two or more
+// dot-separated integer groups, optionally prefixed by a single leading "v" or
+// "V" and followed by the optional "-prerelease" and "+build" sections of
+// semver, bounded by non-word characters. It deliberately does not understand
+// any file format; structured detection for specific formats lives in the
+// discovery package.
+//
+// It matches more than just a valid version so that candidates are rejected
+// whole rather than sliced: an IPv4 address (192.168.1.1) is seen as one
+// four-component token and rejected by version.Parse instead of having a
+// three-component slice pulled out of it, and two-component numbers are likewise
+// rejected. Matching the suffixes is what keeps a prerelease intact — stopping
+// at the numeric core would rewrite the "1.2.3" inside "1.2.3-rc.1" and leave
+// the "-rc.1" dangling on a version it no longer belongs to.
+//
+// The leading \b keeps the optional prefix from being taken out of the middle of
+// a word (so "rev1.2.3" is not matched), and the trailing \b keeps a suffix from
+// running into an adjacent word: "1.2.3-rc_1" matches only "1.2.3", because "_"
+// is a word character and no boundary falls before it. A "v"-prefixed token is
 // treated as distinct from its bare form so the exact written token is rewritten.
-var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+\b`)
+var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b`)
 
 // AmbiguousError reports that a file contains more than one distinct version
 // token, so a generic replacement cannot pick one safely.

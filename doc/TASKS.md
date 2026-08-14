@@ -686,38 +686,75 @@ semver — a patch bump off `1.2.3-rc.1` is `1.2.3` (promote) or `1.2.3-rc.2`
 (iterate), never `1.2.4-rc.1`. This is a correctness bug and should be closed
 before v1.0.0 freezes the behavior.
 
-- [ ] Add a regression test that pins the current wrong behavior first, so the
+- [x] Add a regression test that pins the current wrong behavior first, so the
       fix is demonstrably a change: `1.2.3-rc.1`, `1.2.3+build.7`, and
       `v2.0.0-beta.1+exp.sha.5114f85` through a real `--file` bump.
-- [ ] Extend `versionRe` (or add a wider "candidate token" pattern) so the
+      Pinned in `internal/cli/prerelease_test.go` (bump, per-component bump,
+      dry-run summary, and the config `discover` writes), then replaced in place
+      with the corrected expectations once the fix landed.
+- [x] Extend `versionRe` (or add a wider "candidate token" pattern) so the
       matcher sees the *whole* semver token including any `-prerelease` and
       `+build` suffix, rather than stopping at the numeric core. Keep the IPv4
       and two-component rejections from Milestone 18 working.
-- [ ] Extend `version.Version` with `Prerelease` and `Build` fields and teach
+      The pattern gained
+      `(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`
+      in both `internal/files` and `internal/discovery` (kept identical so
+      scanning and rewriting agree). The greedy numeric core still swallows an
+      IPv4 address whole, and the trailing `\b` keeps a suffix from running into
+      an adjacent word — RE2 has no look-ahead, so that boundary is what makes
+      `1.2.3-rc_1` match only `1.2.3`.
+- [x] Extend `version.Version` with `Prerelease` and `Build` fields and teach
       `Parse` the semver 2.0.0 grammar for both (dot-separated alphanumeric
       identifiers; numeric prerelease identifiers must not have leading zeros).
       Keep `Prefix` behavior from Milestone 17 intact.
-- [ ] Update `String()` to round-trip the full token
+      Build metadata is split off first, since `+` cannot appear anywhere else
+      while `-` may appear inside a build identifier (`1.2.3+exp-1`). Both
+      characters are consumed by the splits, so the old explicit sign check is
+      gone: `+1.2.3` and `1.-2.3` now fail as an empty or short numeric core.
+- [x] Update `String()` to round-trip the full token
       (`v1.2.3-rc.1+build.7` in, same out), and confirm the golden-file tests in
       `internal/files/testdata` still show only the version token changing.
-- [ ] Decide and document the bump semantics for a prerelease input, then
+      The four golden files pass unchanged.
+- [x] Decide and document the bump semantics for a prerelease input, then
       implement them: `BumpMajor`/`BumpMinor`/`BumpPatch` on `1.2.3-rc.1` should
       drop the prerelease and build metadata (`1.2.4`), matching how every other
       bump tool behaves. Build metadata is never carried forward.
-- [ ] Add explicit promote/iterate flags rather than overloading the existing
+- [x] Add explicit promote/iterate flags rather than overloading the existing
       ones: `--release` (drop the prerelease: `1.2.3-rc.1` -> `1.2.3`) and
       `--pre <id>` (start or advance a prerelease: `1.2.3` -> `1.2.4-rc.1`,
       `1.2.4-rc.1` -> `1.2.4-rc.2`). Reject combinations that are meaningless
       (e.g. `--release` on a version with no prerelease) with exit code `2`.
-- [ ] Make `discover` record the full token in `incrmit.toml` so a prerelease
+      Shipped as `-r, --release` and `-e, --pre <id>`. `--pre` combines with a
+      component flag by rule: naming one explicitly opens a new release line
+      (`--minor --pre rc` -> `1.3.0-rc.1`), while with none the current version
+      decides (a release starts the next patch's prerelease, a prerelease
+      iterates in place). Since `--patch` defaults to `true`, `FlagSet.Visit`
+      records which flags the user actually named. Rejected with exit `2`:
+      `--release` with `--pre`, `--release` with a component flag, an invalid
+      `--pre` identifier, and `--release` on a version with no prerelease — the
+      last is per-target, so the transform returns an error that `classify` maps
+      to `ExitUsage`, and the plan phase aborts before any file is written.
+- [x] Make `discover` record the full token in `incrmit.toml` so a prerelease
       target survives a regeneration, and confirm `SetKnownVersions` matches on
       the full token (a config holding `1.2.3-rc.1` must not match a bare
       `1.2.3` elsewhere in the same file).
-- [ ] Verify precedence ordering is not needed anywhere, or implement
+      Both directions are covered by tests: a pinned prerelease leaves the bare
+      release alone, and a pinned release leaves the prerelease alone.
+- [x] Verify precedence ordering is not needed anywhere, or implement
       `Compare` if the preview/out-of-sync check in Milestone 27 relies on it.
-- [ ] Update `README.md`, the `incrmit(1)` man page, and `doc/DEVELOPMENT.md`
+      Nothing in bump, discover, or undo compares versions — they match tokens —
+      so nothing needed it. `Compare` was implemented anyway (full semver
+      precedence, ignoring prefix and build) because Milestone 27's out-of-sync
+      check is the one place that will, and prereleases are exactly what makes
+      that ordering non-obvious.
+- [x] Update `README.md`, the `incrmit(1)` man page, and `doc/DEVELOPMENT.md`
       with the supported grammar and the promote/iterate flags; add a
       `CHANGELOG.md` entry under `Fixed` (mangling) and `Added` (flags).
+      README gained a "Prereleases and build metadata" section, the man page a
+      VERSION GRAMMAR section plus the two options, and DEVELOPMENT.md section
+      9.2. All three record the one real cost of matching whole tokens: a
+      hyphenated suffix that is not really a prerelease (`1.2.3-linux`) is now
+      read as one, which semver gives no way to tell apart.
 
 ## Milestone 29 — Git Integration (the "commit" in incrmit)
 

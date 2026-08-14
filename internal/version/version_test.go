@@ -19,6 +19,18 @@ func TestParse(t *testing.T) {
 		{"v-prefix", "v1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
 		{"V-prefix", "V1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Prefix: "V"}},
 		{"v-prefix-spaced", "  v10.0.42  ", Version{Major: 10, Minor: 0, Patch: 42, Prefix: "v"}},
+		{"prerelease", "1.2.3-rc.1", Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1"}},
+		{"prerelease-word", "1.2.3-beta", Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "beta"}},
+		{"prerelease-hyphenated", "1.2.3-rc-1.2", Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc-1.2"}},
+		{"prerelease-numeric", "1.2.3-0", Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "0"}},
+		{"build", "1.2.3+build.7", Version{Major: 1, Minor: 2, Patch: 3, Build: "build.7"}},
+		{"build-leading-zeros", "1.2.3+0007", Version{Major: 1, Minor: 2, Patch: 3, Build: "0007"}},
+		{"build-hyphen", "1.2.3+exp-1", Version{Major: 1, Minor: 2, Patch: 3, Build: "exp-1"}},
+		{"both", "1.2.3-rc.1+build.7", Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1", Build: "build.7"}},
+		{"both-v-prefixed", "v2.0.0-beta.1+exp.sha.5114f85", Version{
+			Major: 2, Prefix: "v", Prerelease: "beta.1", Build: "exp.sha.5114f85",
+		}},
+		{"prerelease-spaced", "  1.2.3-rc.1  ", Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,8 +65,15 @@ func TestParseErrors(t *testing.T) {
 		{"signed-minus-minor", "1.-2.3"},
 		{"negative-patch", "1.2.-3"},
 		{"inner-space", "1. 2.3"},
-		{"trailing-text", "1.2.3-rc.1"},
-		{"build-metadata", "1.2.3+build.5"},
+		{"empty-prerelease", "1.2.3-"},
+		{"empty-build", "1.2.3+"},
+		{"empty-prerelease-identifier", "1.2.3-rc..1"},
+		{"empty-build-identifier", "1.2.3+build..7"},
+		{"prerelease-leading-zero", "1.2.3-rc.01"},
+		{"prerelease-bad-char", "1.2.3-rc_1"},
+		{"build-bad-char", "1.2.3+build_7"},
+		{"prerelease-only", "-rc.1"},
+		{"prerelease-without-patch", "1.2-rc.1"},
 		{"prefix-only", "v"},
 		{"prefix-no-version", "vx.y.z"},
 		{"float", "1.2"},
@@ -149,6 +168,10 @@ func TestString(t *testing.T) {
 		{Version{Major: 10, Minor: 20, Patch: 30}, "10.20.30"},
 		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}, "v1.2.3"},
 		{Version{Major: 1, Minor: 2, Patch: 3, Prefix: "V"}, "V1.2.3"},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1"}, "1.2.3-rc.1"},
+		{Version{Major: 1, Minor: 2, Patch: 3, Build: "build.7"}, "1.2.3+build.7"},
+		{Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1", Build: "build.7"}, "1.2.3-rc.1+build.7"},
+		{Version{Major: 2, Prefix: "v", Prerelease: "beta.1", Build: "exp.sha.5114f85"}, "v2.0.0-beta.1+exp.sha.5114f85"},
 	}
 	for _, tt := range tests {
 		if got := tt.in.String(); got != tt.want {
@@ -158,7 +181,11 @@ func TestString(t *testing.T) {
 }
 
 func TestParseStringRoundTrip(t *testing.T) {
-	inputs := []string{"0.0.0", "1.2.3", "10.20.30", "100.0.1", "v1.2.3", "V0.1.9"}
+	inputs := []string{
+		"0.0.0", "1.2.3", "10.20.30", "100.0.1", "v1.2.3", "V0.1.9",
+		"1.2.3-rc.1", "1.2.3-beta", "1.2.3-0", "1.2.3+build.7", "1.2.3+0007",
+		"1.2.3-rc.1+build.7", "v2.0.0-beta.1+exp.sha.5114f85", "V1.0.0-alpha-1+exp-2",
+	}
 	for _, in := range inputs {
 		v, err := Parse(in)
 		if err != nil {
@@ -166,6 +193,173 @@ func TestParseStringRoundTrip(t *testing.T) {
 		}
 		if got := v.String(); got != in {
 			t.Errorf("round trip of %q = %q", in, got)
+		}
+	}
+}
+
+// Every component bump drops the prerelease and build sections: a patch bump of
+// 1.2.3-rc.1 is 1.2.4, never 1.2.4-rc.1. Build metadata is never carried
+// forward, and the "v" prefix still is.
+func TestBumpDropsPrereleaseAndBuild(t *testing.T) {
+	in := Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v", Prerelease: "rc.1", Build: "exp.sha.5114f85"}
+	tests := []struct {
+		name string
+		got  Version
+		want string
+	}{
+		{"major", in.BumpMajor(), "v2.0.0"},
+		{"minor", in.BumpMinor(), "v1.3.0"},
+		{"patch", in.BumpPatch(), "v1.2.4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got.Prerelease != "" || tt.got.Build != "" {
+				t.Errorf("%v kept a prerelease or build section: %+v", tt.name, tt.got)
+			}
+			if got := tt.got.String(); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRelease(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"1.2.3-rc.1", "1.2.3"},
+		{"v1.2.3-rc.1+build.7", "v1.2.3"},
+		{"1.2.3+build.7", "1.2.3"},
+		{"1.2.3", "1.2.3"},
+	}
+	for _, tt := range tests {
+		v, err := Parse(tt.in)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tt.in, err)
+		}
+		if got := v.Release().String(); got != tt.want {
+			t.Errorf("Parse(%q).Release() = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestPrereleaseHelpers(t *testing.T) {
+	tests := []struct {
+		in      string
+		id      string // PrereleaseID
+		start   string // StartPrerelease("rc")
+		advance string // AdvancePrerelease
+		bumpPre string // BumpPrerelease("rc")
+		isPre   bool
+	}{
+		{"1.2.3", "", "1.2.3-rc.1", "1.2.3", "1.2.3-rc.1", false},
+		{"1.2.3-rc.1", "rc", "1.2.3-rc.1", "1.2.3-rc.2", "1.2.3-rc.2", true},
+		{"1.2.3-rc.9", "rc", "1.2.3-rc.1", "1.2.3-rc.10", "1.2.3-rc.10", true},
+		{"1.2.3-rc", "rc", "1.2.3-rc.1", "1.2.3-rc.1", "1.2.3-rc.1", true},
+		{"1.2.3-beta.2", "beta", "1.2.3-rc.1", "1.2.3-beta.3", "1.2.3-rc.1", true},
+		{"1.2.3-1", "", "1.2.3-rc.1", "1.2.3-2", "1.2.3-rc.1", true},
+		{"v1.2.3-rc.1+b.1", "rc", "v1.2.3-rc.1", "v1.2.3-rc.2", "v1.2.3-rc.2", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			v, err := Parse(tt.in)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tt.in, err)
+			}
+			if got := v.PrereleaseID(); got != tt.id {
+				t.Errorf("PrereleaseID() = %q, want %q", got, tt.id)
+			}
+			if got := v.IsPrerelease(); got != tt.isPre {
+				t.Errorf("IsPrerelease() = %v, want %v", got, tt.isPre)
+			}
+			if got := v.StartPrerelease("rc").String(); got != tt.start {
+				t.Errorf("StartPrerelease(\"rc\") = %q, want %q", got, tt.start)
+			}
+			if got := v.AdvancePrerelease().String(); got != tt.advance {
+				t.Errorf("AdvancePrerelease() = %q, want %q", got, tt.advance)
+			}
+			if got := v.BumpPrerelease("rc").String(); got != tt.bumpPre {
+				t.Errorf("BumpPrerelease(\"rc\") = %q, want %q", got, tt.bumpPre)
+			}
+		})
+	}
+}
+
+// Build metadata describes one build, so it never survives a prerelease step.
+func TestPrereleaseStepsDropBuild(t *testing.T) {
+	v, err := Parse("1.2.3-rc.1+build.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]Version{
+		"StartPrerelease":   v.StartPrerelease("rc"),
+		"AdvancePrerelease": v.AdvancePrerelease(),
+		"BumpPrerelease":    v.BumpPrerelease("beta"),
+		"Release":           v.Release(),
+	} {
+		if got.Build != "" {
+			t.Errorf("%s kept build metadata %q", name, got.Build)
+		}
+	}
+}
+
+func TestValidPrereleaseID(t *testing.T) {
+	valid := []string{"rc", "beta", "alpha.1", "rc-1", "0", "1", "x.7.z-92"}
+	for _, id := range valid {
+		if err := ValidPrereleaseID(id); err != nil {
+			t.Errorf("ValidPrereleaseID(%q) = %v, want nil", id, err)
+		}
+	}
+	invalid := []string{"", "rc.", ".rc", "rc..1", "rc_1", "rc 1", "rc.01", "rc+1"}
+	for _, id := range invalid {
+		if err := ValidPrereleaseID(id); err == nil {
+			t.Errorf("ValidPrereleaseID(%q) = nil, want an error", id)
+		}
+	}
+}
+
+// Compare implements semver 2.0.0 precedence, including the prerelease rules
+// from the spec's own example ordering.
+func TestCompare(t *testing.T) {
+	// Each entry precedes the next.
+	ordered := []string{
+		"1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta",
+		"1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0",
+		"1.0.1", "1.1.0", "2.0.0",
+	}
+	for i := 0; i < len(ordered); i++ {
+		for j := 0; j < len(ordered); j++ {
+			a, err := Parse(ordered[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := Parse(ordered[j])
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := cmpInt(i, j)
+			if got := Compare(a, b); got != want {
+				t.Errorf("Compare(%q, %q) = %d, want %d", ordered[i], ordered[j], got, want)
+			}
+		}
+	}
+}
+
+// Neither the "v" prefix nor build metadata affects precedence.
+func TestCompareIgnoresPrefixAndBuild(t *testing.T) {
+	equal := []string{"1.2.3", "v1.2.3", "V1.2.3", "1.2.3+build.7", "v1.2.3+exp.sha.5114f85"}
+	base, err := Parse("1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range equal {
+		v, err := Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := Compare(base, v); got != 0 {
+			t.Errorf("Compare(1.2.3, %q) = %d, want 0", s, got)
 		}
 	}
 }

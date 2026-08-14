@@ -159,8 +159,8 @@ func TestOverviewListsAllCommands(t *testing.T) {
 func TestOverviewListsFlags(t *testing.T) {
 	for _, flag := range []string{
 		"-c, --config", "-f, --file", "-M, --major", "-m, --minor",
-		"-p, --patch", "-d, --dry-run", "-P, --path", "-o, --output",
-		"-s, --max-file-size", "--no-banner",
+		"-p, --patch", "-r, --release", "-e, --pre", "-d, --dry-run",
+		"-P, --path", "-o, --output", "-s, --max-file-size", "--no-banner",
 	} {
 		if !strings.Contains(overviewHelp, flag) {
 			t.Errorf("overviewHelp missing flag %q:\n%s", flag, overviewHelp)
@@ -228,7 +228,7 @@ func TestCommandHelpListsFlags(t *testing.T) {
 		text  string
 		flags []string
 	}{
-		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--major", "--minor", "--patch", "--max-file-size", "--dry-run"}},
+		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--major", "--minor", "--patch", "--release", "--pre", "--max-file-size", "--dry-run"}},
 		{"discoverHelp", discoverHelp, []string{"--path", "--output", "--max-file-size", "--dry-run"}},
 		{"undoHelp", undoHelp, []string{"--config", "--dry-run"}},
 	}
