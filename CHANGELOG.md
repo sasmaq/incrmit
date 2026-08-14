@@ -14,6 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded by `incrmit discover`, and rewritten as whole tokens. A `version`
   pinned in `incrmit.toml` matches the full token, so a prerelease and the
   release it names are never mistaken for each other, even in the same file.
+  A version welded into a longer hyphen-joined word keeps only its numbers, so
+  release filenames and download URLs still bump as expected
+  (`incrmit-1.2.3-linux-amd64.tar.gz` -> `incrmit-1.2.4-linux-amd64.tar.gz`)
+  rather than having the filename read as a prerelease and rewritten away.
+- `incrmit.toml` records a running prerelease in its own `prerelease` key (and
+  build metadata in `build`) beside the numeric `version`. `--pre` writes the
+  key, `--release` and any component bump remove it, so the config reads as the
+  project's actual state. Because the config now says which suffix belongs to
+  the version, a prerelease is tracked correctly even where it sits inside a
+  release filename: `--release` turns `app-1.2.3-rc.1.zip` into
+  `app-1.2.3.zip`, and a prerelease written into a download URL is found again
+  on the next step instead of being stranded at `-rc.1`. Configs that spell the
+  whole token in `version` (`version = "1.2.3-rc.1"`) keep working and are
+  migrated to the split form on the next write.
 - A `--release` / `-r` flag promotes a prerelease to the release it names
   (`1.2.3-rc.1` -> `1.2.3`) without touching the numbers. Using it on a version
   that has no prerelease, or alongside `--pre` or a component flag, is a usage

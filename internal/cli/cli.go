@@ -184,9 +184,9 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	// Phase 2: write each file once, replacing all of its known version tokens
 	// in a single pass so overlapping bumps do not cascade.
 	for _, g := range groups {
-		repl := make(map[string]string, len(g.entries))
+		repl := make([]files.Replacement, 0, len(g.entries))
 		for _, e := range g.entries {
-			repl[e.oldVer.String()] = e.newVer.String()
+			repl = append(repl, files.Replacement{Old: e.oldVer, New: e.newVer})
 		}
 		updated, counts := files.SetKnownVersions(g.data, repl)
 		for _, e := range g.entries {
@@ -211,7 +211,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		updated := &config.Config{Ignore: ignore}
 		for _, g := range groups {
 			for _, e := range g.entries {
-				updated.Files = append(updated.Files, config.FileEntry{Path: g.display, Version: e.newVer.String()})
+				updated.Files = append(updated.Files, config.EntryFor(g.display, e.newVer))
 			}
 		}
 		data, err := config.Marshal(updated)
@@ -486,7 +486,7 @@ func resolveTargets(opts bumpOptions) ([]target, string, []string, error) {
 		targets = append(targets, target{
 			display:  f.Path,
 			fsPath:   fsPath,
-			knownVer: f.Version,
+			knownVer: f.Token(),
 		})
 	}
 	return targets, cfgPath, cfg.Ignore, nil
@@ -748,8 +748,8 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 		}
 		for i := range cfg.Files {
 			f := &cfg.Files[i]
-			if old, ok := revert[f.Path+"\x00"+f.Version]; ok {
-				f.Version = old
+			if old, ok := revert[f.Path+"\x00"+f.Token()]; ok {
+				f.SetToken(old)
 			}
 		}
 		data, err := config.Marshal(cfg)
@@ -813,9 +813,17 @@ func planReverts(entry history.Entry, stderr io.Writer) ([]revertGroup, int) {
 
 	for i := range groups {
 		g := &groups[i]
-		repl := make(map[string]string, len(g.changes))
+		repl := make([]files.Replacement, 0, len(g.changes))
 		for _, c := range g.changes {
-			repl[c.New] = c.Old
+			// The journal stores whole tokens; parse them back so the revert
+			// matches the same way the bump did, prerelease suffix included.
+			oldVer, oldErr := version.Parse(c.Old)
+			newVer, newErr := version.Parse(c.New)
+			if oldErr != nil || newErr != nil {
+				fprintf(stderr, "incrmit: %s: recorded versions %q -> %q are not valid (refusing to undo)\n", g.display, c.Old, c.New)
+				return nil, ExitNoVersion
+			}
+			repl = append(repl, files.Replacement{Old: newVer, New: oldVer})
 		}
 		updated, counts := files.SetKnownVersions(g.updated, repl)
 		for _, c := range g.changes {

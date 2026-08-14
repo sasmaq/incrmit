@@ -62,6 +62,31 @@ is never mistaken for the
 .Sy 1.2.3
 inside it.
 .Pp
+A version welded into a longer hyphen-joined word keeps only its numbers, since
+a hyphen is also a legal prerelease character and
+.Sy incrmit-1.2.3-linux-amd64.tar.gz
+would otherwise be read as one token and rewritten whole.
+Such a filename therefore bumps to
+.Sy incrmit-1.2.4-linux-amd64.tar.gz ,
+while a version standing on its own keeps its full token.
+.Pp
+A running prerelease is recorded in its own
+.Sy prerelease
+key in
+.Pa incrmit.toml
+(and build metadata in
+.Sy build ) ,
+which says outright which suffix belongs to the version rather than leaving it
+to be guessed from the text.
+With one recorded,
+.Fl -release
+promotes a prerelease inside a filename too
+.Pq Sy app-1.2.3-rc.1.zip No -> Sy app-1.2.3.zip ;
+without a config to consult, as in
+.Fl -file
+mode, only the numbers there are rewritten.
+Any bump that drops the prerelease removes the key as well.
+.Pp
 A
 .Fl M ,
 .Fl m ,
@@ -221,6 +246,16 @@ which are the only commands that print the banner.
 .Bl -tag -width Pa
 .It Pa incrmit.toml
 Default configuration listing target files and optional pinned version values.
+A pinned version is written as up to three keys —
+.Sy version
+(the numeric core),
+.Sy prerelease ,
+and
+.Sy build .
+A token written whole in
+.Sy version
+.Pq Qq 1.2.3-rc.1
+is still accepted and is split on the next rewrite.
 .It Pa .incrmit.state.toml
 Bump-history state file written next to the config after a bump, used by
 .Cm undo .

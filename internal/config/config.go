@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/sasmaq/incrmit/internal/version"
 )
 
 // DefaultPath is the config file name resolved when no explicit path is given.
@@ -35,9 +37,79 @@ type Config struct {
 
 // FileEntry is a single target file listed in the config. Version is optional
 // and is populated by the discover command.
+//
+// A semver token is stored in three pieces rather than as one string: Version
+// holds the numeric core (with any "v" prefix), and Prerelease and Build hold
+// the sections that follow "-" and "+", without that punctuation:
+//
+//	[[files]]
+//	  path = "install.sh"
+//	  version = "1.2.4"
+//	  prerelease = "rc.1"
+//
+// Keeping them apart is what makes a prerelease trackable inside a release
+// filename. A hyphen is a legal prerelease character, so nothing in the grammar
+// separates "1.2.4-rc.1" from the version inside
+// "incrmit-1.2.4-linux-amd64.tar.gz"; recording the prerelease on its own says
+// which suffix is real, so a bump rewrites exactly that and nothing else. A
+// bump that drops the prerelease (any of --major/--minor/--patch) drops the key
+// with it, so the config reads as the project's actual state.
+//
+// Older configs wrote the whole token in Version ("1.2.4-rc.1"); Load splits
+// those into the three fields, and the next rewrite emits the split form.
 type FileEntry struct {
-	Path    string `toml:"path"`
-	Version string `toml:"version,omitempty"`
+	Path       string `toml:"path"`
+	Version    string `toml:"version,omitempty"`
+	Prerelease string `toml:"prerelease,omitempty"`
+	Build      string `toml:"build,omitempty"`
+}
+
+// Token returns the full version token the entry pins, reassembled from its
+// three fields ("1.2.4" + "rc.1" -> "1.2.4-rc.1"). It is empty when the entry
+// records no version at all.
+func (f FileEntry) Token() string {
+	if f.Version == "" {
+		return ""
+	}
+	tok := f.Version
+	if f.Prerelease != "" {
+		tok += "-" + f.Prerelease
+	}
+	if f.Build != "" {
+		tok += "+" + f.Build
+	}
+	return tok
+}
+
+// SetVersion records v across the entry's three fields, clearing the prerelease
+// and build keys when v carries no such section — which is how a plain bump
+// takes them out of the config.
+func (f *FileEntry) SetVersion(v version.Version) {
+	f.Version = v.Release().String()
+	f.Prerelease = v.Prerelease
+	f.Build = v.Build
+}
+
+// SetToken records a version written as one token, splitting it across the
+// three fields. A token that does not parse is stored verbatim in Version, so a
+// malformed value is reported later by the command that needs it rather than
+// being silently dropped here.
+func (f *FileEntry) SetToken(token string) {
+	v, err := version.Parse(token)
+	if err != nil {
+		f.Version = token
+		f.Prerelease = ""
+		f.Build = ""
+		return
+	}
+	f.SetVersion(v)
+}
+
+// EntryFor builds a config entry for a target at path holding version v.
+func EntryFor(path string, v version.Version) FileEntry {
+	f := FileEntry{Path: path}
+	f.SetVersion(v)
+	return f
 }
 
 // Marshal renders the config as TOML bytes, with a header noting that the file
@@ -105,12 +177,48 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parsing %q: %w", path, err)
 	}
 	cfg.normalizeIgnore()
+	if err := cfg.normalizeVersions(); err != nil {
+		return nil, err
+	}
 
 	if err := cfg.Validate(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// normalizeVersions moves any prerelease or build section written inline in an
+// entry's `version` into its own key, so configs written before the keys existed
+// (and hand-edited ones) behave identically to the split form. An entry that
+// spells a section both ways is rejected rather than guessed at.
+//
+// A `version` that does not parse is left exactly as written: the command that
+// needs it reports the problem with the file named, which keeps an unparseable
+// version an exit-3 "no version" failure rather than a config-loading error.
+func (c *Config) normalizeVersions() error {
+	for i := range c.Files {
+		f := &c.Files[i]
+		if f.Version == "" {
+			if f.Prerelease != "" || f.Build != "" {
+				return fmt.Errorf("config: files[%d] sets prerelease/build without a version", i)
+			}
+			continue
+		}
+		v, err := version.Parse(f.Version)
+		if err != nil {
+			continue
+		}
+		if v.Prerelease == "" && v.Build == "" {
+			continue
+		}
+		if f.Prerelease != "" || f.Build != "" {
+			return fmt.Errorf("config: files[%d] (%s) writes the prerelease or build metadata both inside `version` (%q) and in its own key; keep one",
+				i, f.Path, f.Version)
+		}
+		f.SetVersion(v)
+	}
+	return nil
 }
 
 // LoadIgnore reads only the ignore list from the config at path, without
@@ -180,16 +288,17 @@ func (c *Config) Validate(baseDir string) error {
 		if f.Path == "" {
 			return fmt.Errorf("config: files[%d] has an empty path", i)
 		}
-		key := f.Path + "\x00" + f.Version
+		token := f.Token()
+		key := f.Path + "\x00" + token
 		if _, dup := seen[key]; dup {
-			if f.Version == "" {
+			if token == "" {
 				return fmt.Errorf("config: duplicate path %q", f.Path)
 			}
-			return fmt.Errorf("config: duplicate path %q with version %q", f.Path, f.Version)
+			return fmt.Errorf("config: duplicate path %q with version %q", f.Path, token)
 		}
 		// A repeated path is only allowed when every entry for it pins a
 		// distinct version; a bare (version-less) repeat is ambiguous.
-		if _, repeat := pathsSeen[f.Path]; repeat && f.Version == "" {
+		if _, repeat := pathsSeen[f.Path]; repeat && token == "" {
 			return fmt.Errorf("config: duplicate path %q", f.Path)
 		}
 		if _, repeat := pathsSeen[f.Path]; repeat {

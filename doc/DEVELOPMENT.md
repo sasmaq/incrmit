@@ -121,15 +121,32 @@ ignore = ["testdata/", "*.lock", "docs/**"]   # optional; folders/files discover
 
 [[files]]
 path = "VERSION"
-version = "1.2.3"   # optional; populated by `discover`
+version = "1.2.3"     # optional; populated by `discover`
+prerelease = "rc.1"   # optional; the section after "-" in the file's token
+build = "exp.sha.5"   # optional; the section after "+"
 ```
+
+A semver token is stored in three keys rather than one string: `version` holds
+the numeric core (with any `v` prefix) and `prerelease`/`build` hold the sections
+that follow, without their punctuation. `FileEntry.Token()` reassembles them.
+See [section 9.2](#92-prerelease-and-build-metadata) for why the split matters —
+in short, it is what tells the rewriter which hyphenated suffix is a prerelease
+and which is part of a filename. A bump that drops the prerelease drops the key
+with it, so the config reads as the project's actual state.
+
+`Load` migrates a token written inline (`version = "1.2.3-rc.1"`, the shape
+written before these keys existed) into the split form, and rejects an entry
+that spells a section both ways. A `version` that does not parse is left
+verbatim, so an unparseable version stays an exit-3 failure from the command
+that needs it rather than becoming an exit-1 config-loading error.
 
 A `path` may appear in more than one `[[files]]` entry when a file contains
 several *differing* versions, as long as each entry pins a distinct, non-empty
-`version` (one entry per distinct version). Validation rejects exact
-`(path, version)` duplicates and any repeated path where an entry omits the
-version (which would be ambiguous). Identical repeats of the same version within
-a file collapse to a single entry.
+version (one entry per distinct version). Distinctness is judged on the whole
+token, so `1.2.3` and `1.2.3` + `prerelease = "rc.1"` are two entries, not a
+duplicate. Validation rejects exact `(path, token)` duplicates and any repeated
+path where an entry omits the version (which would be ambiguous). Identical
+repeats of the same version within a file collapse to a single entry.
 
 The optional top-level `ignore` list holds folder/file patterns that `discover`
 skips (see [section 8.3](#83-ignore-matching)). Empty patterns are rejected;
@@ -146,8 +163,10 @@ type Config struct {
 }
 
 type FileEntry struct {
-    Path    string `toml:"path"`
-    Version string `toml:"version,omitempty"`
+    Path       string `toml:"path"`
+    Version    string `toml:"version,omitempty"`
+    Prerelease string `toml:"prerelease,omitempty"`
+    Build      string `toml:"build,omitempty"`
 }
 ```
 
@@ -428,18 +447,20 @@ configured pattern matches.
 
 ## 9. Version Detection Strategy
 
-- Match candidate tokens with a regular expression:
+- `version.FindTokens` is the single definition of where a version begins and
+  ends. Both `discovery` (scanning) and `files` (rewriting) call it, so the two
+  cannot disagree about what counts as a token — they used to hold identical
+  copies of the pattern, which is exactly the kind of duplication that drifts.
+  It matches candidates with:
 
   ```text
   \b[vV]?\d+(?:\.\d+)+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b
   ```
 
   a run of two or more dot-separated integer groups, plus the optional
-  `-prerelease` and `+build` sections. The same pattern is used by both
-  `discovery` (scanning) and `files` (rewriting) so the two never disagree about
-  what counts as a token. The pattern intentionally matches more than a valid
-  version; `version.Parse` is the authority on validity and accepts only exactly
-  three numeric components.
+  `-prerelease` and `+build` sections. The pattern intentionally matches more
+  than a valid version; `version.Parse` is the authority on validity and accepts
+  only exactly three numeric components.
 - The suffixes are part of the token, not trailing text beside it. Stopping at
   the numeric core would rewrite the `1.2.3` inside `1.2.3-rc.1` and leave the
   `-rc.1` dangling on a version it no longer names — the bug Milestone 28 fixed.
@@ -447,42 +468,26 @@ configured pattern matches.
   running into an adjacent word: `1.2.3-rc_1` matches only `1.2.3`, since `_` is
   a word character and no boundary falls before it, and a token at the end of a
   sentence (`... 1.2.3-rc.1.`) keeps its identifiers but not the full stop.
-- The cost of matching whole tokens is that a hyphenated suffix which is not
-  really a prerelease is still read as one: `1.2.3-linux` parses as `1.2.3` with
-  prerelease `linux`, so a patch bump writes `1.2.4`. Semver offers no way to
-  tell the two apart. The recorded `version` in `incrmit.toml` (and `--dry-run`)
-  makes what will be rewritten visible before it happens.
-- IPv4 addresses are not versions. Because the pattern matches the whole dotted
-  run greedily, an address such as `192.168.1.1` is captured as a single
-  four-component token and rejected by `Parse` — rather than having `192.168.1`
-  (or `168.1.1`) sliced out of it. The same rule rejects two-component numbers
-  (`3.9`) and any other `A.B.C.D...` token whose component count is not three,
-  even when every component is a valid integer. Callers iterate matches and keep
-  every token that `Parse` accepts (`detect`, which records all occurrences) or
-  collect the distinct valid tokens (`FindVersion`).
-- An optional single leading `v` or `V` is recognized (e.g. `v1.2.3`). Because
-  the leading `\b` sits before the optional `[vV]`, the prefix is only consumed
-  at a word boundary: look-alikes where the letter is part of a longer word
-  (`rev1.2.3`, `dev1.2.3`) match neither the prefix nor the trailing digits, so
-  they are rejected entirely. RE2 (Go's `regexp`) has no look-behind, so this
-  boundary placement is what distinguishes a real prefix from an embedded one.
-- The prefix is carried on the `version.Version` value (a `Prefix` field, the
-  last struct field so existing keyed/zero literals are unaffected). `Parse`
-  records it, `String` re-emits it, and the bump methods preserve it. This makes
-  the whole pipeline prefix-aware for free: the prefix round-trips through the
-  config `version` string and is re-detected from the file on each bump, so no
-  separate config field is needed. A `v`-prefixed token and its bare form are
-  therefore distinct tokens (a file containing both `v1.2.3` and `1.2.3` is
-  ambiguous), and a bump rewrites only the exact written token.
-- Discovery is content-based and format-agnostic: it scans the bytes of every
-  text file, regardless of name or extension, and records every
-  `[v]MAJOR.MINOR.PATCH` token found in each (with its line number and context).
-  Distinct versions in one file become one config entry each; identical repeats
-  collapse to a single entry and are all rewritten together on bump.
-- Binary files (those containing a NUL byte) are skipped so version-like byte
-  sequences in compiled artifacts are not matched.
-- Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
-- On write, replace only the matched token to preserve surrounding formatting.
+- **The filename guard.** A hyphen is a legal prerelease identifier character,
+  so semver alone cannot tell `1.2.3-rc.1` from the version inside
+  `incrmit-1.2.3-linux-amd64.tar.gz` — the latter parses perfectly well as
+  `1.2.3` with the prerelease `linux-amd64.tar.gz` (the dotted-identifier run
+  swallows `.tar` and `.gz` as further identifiers). Taking that as the version
+  makes a bump rewrite the whole token, silently reducing the line to
+  `incrmit-1.2.4`. That is data loss on exit `0`, and it hits precisely the
+  install instructions and release scripts a version-bumping tool is aimed at.
+- The distinguishing signal is not the suffix but what *precedes* the version: a
+  real prerelease token stands on its own (after a quote, an `=`, whitespace, or
+  the start of a line), while the filename case has the version welded into a
+  longer hyphen-joined word. So `FindTokens` disowns the suffix — keeping only
+  the numeric core, exactly what the matcher found before prerelease support
+  existed — when the token is preceded by `-` and that hyphen is itself preceded
+  by a word character. RE2 has no look-behind, so this is a check on the
+  surrounding bytes after matching rather than part of the pattern.
+- The guard alone cannot promote a prerelease that lives inside a filename: it
+  cuts `app-1.2.3-rc.1.zip` back to `1.2.3`, so the bump writes
+  `app-1.2.4-rc.1.zip` rather than the semver-correct `app-1.2.4.zip`. The
+  config closes that gap — see below.
 
 ### 9.1 Scan boundaries
 
@@ -598,6 +603,74 @@ Nothing in the bump, discover, or undo paths needs ordering — they match token
 never compare them — so `Compare` exists for the out-of-sync/preview reporting
 of Milestone 27 and for any future check that has to say which of two versions
 is newer.
+
+### 9.3 What the config knows that the grammar cannot
+
+The guard is a heuristic about *where* a version sits, and a heuristic is all
+that is available when scanning free text. A config entry is not a heuristic: it
+states outright that this file's version is `1.2.3` with the prerelease `rc.1`.
+
+That is why the prerelease and build sections are separate keys
+([section 6.1](#61-config-schema-toml)) rather than one token string.
+`files.SetKnownVersions` takes `[]files.Replacement` (parsed versions, not text)
+and matches in two ways:
+
+1. an exact token match, as before; or
+2. a token the guard cut back to its core, where the bytes that follow continue
+   with *exactly* the pinned suffix — in which case the match extends over it.
+
+So a pin of `1.2.3-rc.1` rewrites the whole `1.2.3-rc.1` inside
+`app-1.2.3-rc.1.zip` (promoting it to `app-1.2.3.zip`), while a pin of plain
+`1.2.3` rewrites only the numbers inside
+`incrmit-1.2.3-linux-amd64.tar.gz`. The byte after a consumed suffix must not be
+alphanumeric, which stops a pinned `-rc.1` from matching the front of `-rc.10`;
+when several pins could match one occurrence, the one with the longest suffix
+wins, since it is the pin that claims the suffix.
+
+This also keeps a prerelease cycle in step across a whole file: `--pre` writes
+`1.2.4-rc.1` into a download URL, and `--release` finds it there again and
+promotes it, instead of leaving the filename stranded at `-rc.1`.
+
+Two consequences worth knowing:
+
+- `--file` mode has no config, so it keeps the guard's behavior:
+  `app-1.2.3-rc.1.zip` bumps to `app-1.2.4-rc.1.zip`. Pinning versions with
+  `incrmit discover` is what buys the semver-correct result.
+- A file holding the same version both standalone with a prerelease
+  (`1.2.3-rc.1`) and inside a filename (`app-1.2.3-rc.1.zip`) presents two
+  distinct tokens to an unpinned scan, so `--file` reports it as ambiguous
+  rather than guessing. In config mode a single pinned entry covers both.
+- IPv4 addresses are not versions. Because the pattern matches the whole dotted
+  run greedily, an address such as `192.168.1.1` is captured as a single
+  four-component token and rejected by `Parse` — rather than having `192.168.1`
+  (or `168.1.1`) sliced out of it. The same rule rejects two-component numbers
+  (`3.9`) and any other `A.B.C.D...` token whose component count is not three,
+  even when every component is a valid integer. Callers iterate matches and keep
+  every token that `Parse` accepts (`detect`, which records all occurrences) or
+  collect the distinct valid tokens (`FindVersion`).
+- An optional single leading `v` or `V` is recognized (e.g. `v1.2.3`). Because
+  the leading `\b` sits before the optional `[vV]`, the prefix is only consumed
+  at a word boundary: look-alikes where the letter is part of a longer word
+  (`rev1.2.3`, `dev1.2.3`) match neither the prefix nor the trailing digits, so
+  they are rejected entirely. RE2 (Go's `regexp`) has no look-behind, so this
+  boundary placement is what distinguishes a real prefix from an embedded one.
+- The prefix is carried on the `version.Version` value (a `Prefix` field, the
+  last struct field so existing keyed/zero literals are unaffected). `Parse`
+  records it, `String` re-emits it, and the bump methods preserve it. This makes
+  the whole pipeline prefix-aware for free: the prefix round-trips through the
+  config `version` string and is re-detected from the file on each bump, so no
+  separate config field is needed. A `v`-prefixed token and its bare form are
+  therefore distinct tokens (a file containing both `v1.2.3` and `1.2.3` is
+  ambiguous), and a bump rewrites only the exact written token.
+- Discovery is content-based and format-agnostic: it scans the bytes of every
+  text file, regardless of name or extension, and records every
+  `[v]MAJOR.MINOR.PATCH` token found in each (with its line number and context).
+  Distinct versions in one file become one config entry each; identical repeats
+  collapse to a single entry and are all rewritten together on bump.
+- Binary files (those containing a NUL byte) are skipped so version-like byte
+  sequences in compiled artifacts are not matched.
+- Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
+- On write, replace only the matched token to preserve surrounding formatting.
 
 ## 10. Error Handling
 

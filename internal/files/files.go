@@ -3,12 +3,12 @@
 package files
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -22,27 +22,13 @@ var ErrNoVersion = errors.New("files: no semantic version found")
 // version is not present in the file (e.g. the config is out of sync).
 var ErrVersionNotFound = errors.New("files: expected version not found")
 
-// versionRe matches a candidate version token: a run of two or more
-// dot-separated integer groups, optionally prefixed by a single leading "v" or
-// "V" and followed by the optional "-prerelease" and "+build" sections of
-// semver, bounded by non-word characters. It deliberately does not understand
-// any file format; structured detection for specific formats lives in the
-// discovery package.
-//
-// It matches more than just a valid version so that candidates are rejected
-// whole rather than sliced: an IPv4 address (192.168.1.1) is seen as one
-// four-component token and rejected by version.Parse instead of having a
-// three-component slice pulled out of it, and two-component numbers are likewise
-// rejected. Matching the suffixes is what keeps a prerelease intact — stopping
-// at the numeric core would rewrite the "1.2.3" inside "1.2.3-rc.1" and leave
-// the "-rc.1" dangling on a version it no longer belongs to.
-//
-// The leading \b keeps the optional prefix from being taken out of the middle of
-// a word (so "rev1.2.3" is not matched), and the trailing \b keeps a suffix from
-// running into an adjacent word: "1.2.3-rc_1" matches only "1.2.3", because "_"
-// is a word character and no boundary falls before it. A "v"-prefixed token is
-// treated as distinct from its bare form so the exact written token is rewritten.
-var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b`)
+// Candidate version tokens are located with version.FindTokens, which is the
+// single definition of where a version begins and ends (see its documentation
+// for the pattern and the filename guard). This package deliberately does not
+// understand any file format; structured detection for specific formats lives
+// in the discovery package. A candidate that version.Parse rejects — an IPv4
+// address, a two-component number — is skipped, and a "v"-prefixed token is
+// distinct from its bare form so the exact written token is rewritten.
 
 // AmbiguousError reports that a file contains more than one distinct version
 // token, so a generic replacement cannot pick one safely.
@@ -58,16 +44,17 @@ func (e *AmbiguousError) Error() string {
 // no token is present and an *AmbiguousError if multiple distinct versions are
 // found. Repeated occurrences of the same version are not ambiguous.
 //
-// versionRe also matches dotted-number runs that are not versions (two-component
-// numbers, four-octet IPv4 addresses, ...); those fail version.Parse and are
-// ignored, so neither ErrNoVersion nor ambiguity is affected by them.
+// The matcher also yields dotted-number runs that are not versions
+// (two-component numbers, four-octet IPv4 addresses, ...); those fail
+// version.Parse and are ignored, so neither ErrNoVersion nor ambiguity is
+// affected by them.
 func FindVersion(data []byte) (version.Version, error) {
-	matches := versionRe.FindAll(data, -1)
+	locs := version.FindTokens(data)
 
-	distinct := make(map[string]struct{}, len(matches))
+	distinct := make(map[string]struct{}, len(locs))
 	var sole string
-	for _, m := range matches {
-		s := string(m)
+	for _, loc := range locs {
+		s := string(data[loc[0]:loc[1]])
 		if _, err := version.Parse(s); err != nil {
 			continue
 		}
@@ -101,7 +88,7 @@ func SetVersion(data []byte, newVer version.Version) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, _ := replaceToken(data, cur.String(), newVer.String())
+	out, _ := SetKnownVersions(data, []Replacement{{Old: cur, New: newVer}})
 	return out, nil
 }
 
@@ -111,70 +98,125 @@ func SetVersion(data []byte, newVer version.Version) ([]byte, error) {
 // version, so it is used when the current version is known from configuration.
 // It returns ErrVersionNotFound if oldVer's token does not appear in data.
 func SetKnownVersion(data []byte, oldVer, newVer version.Version) ([]byte, error) {
-	out, n := replaceToken(data, oldVer.String(), newVer.String())
-	if n == 0 {
+	out, counts := SetKnownVersions(data, []Replacement{{Old: oldVer, New: newVer}})
+	if counts[oldVer.String()] == 0 {
 		return nil, fmt.Errorf("%w: %s", ErrVersionNotFound, oldVer)
 	}
 	return out, nil
 }
 
-// SetKnownVersions replaces several version tokens in a single pass over data.
-// repl maps each current version token to its replacement. Every whole-token
-// occurrence whose text is a key in repl is rewritten to the mapped value; all
-// other bytes (including version-like tokens not in repl) are left untouched.
+// Replacement is one pinned version and the version to write in its place. Old
+// is the version as recorded in the config (or found in the file), New the
+// bumped result.
+type Replacement struct {
+	Old version.Version
+	New version.Version
+}
+
+// SetKnownVersions applies several replacements in a single pass over data.
+// Every occurrence of a Replacement's Old version is rewritten to its New
+// version; all other bytes (including version-like tokens not listed) are left
+// untouched.
 //
 // Doing this in one pass over the original data is what makes overlapping bumps
 // safe: replacing 1.2.3 -> 1.2.4 alongside 1.2.4 -> 1.2.5 does not cascade,
 // because matches are taken from the original bytes and never re-scanned. The
 // returned map reports how many times each old token was replaced (0 for tokens
-// that never appeared), so callers can detect an out-of-sync config.
-func SetKnownVersions(data []byte, repl map[string]string) ([]byte, map[string]int) {
-	counts := make(map[string]int, len(repl))
-	for old := range repl {
-		counts[old] = 0
+// that never appeared), keyed by Old.String(), so callers can detect an
+// out-of-sync config.
+//
+// Matching is by version rather than by raw text, which is what lets a pinned
+// prerelease be found inside a release filename. version.FindTokens cuts
+// "incrmit-1.2.3-rc.1.zip" back to its numeric core, because it cannot tell a
+// prerelease from a hyphenated filename part on grammar alone; a Replacement
+// pinning 1.2.3-rc.1 says which suffix is real, so exactly that suffix is
+// consumed and the whole "1.2.3-rc.1" is rewritten, leaving ".zip" alone.
+func SetKnownVersions(data []byte, repls []Replacement) ([]byte, map[string]int) {
+	counts := make(map[string]int, len(repls))
+	for _, r := range repls {
+		counts[r.Old.String()] = 0
 	}
 
-	locs := versionRe.FindAllIndex(data, -1)
+	// Try the most specific pin first: at one location a bare 1.2.3 also matches
+	// an occurrence carrying the recorded prerelease, and the pin that consumes
+	// the suffix is the one that means it.
+	ordered := make([]Replacement, len(repls))
+	copy(ordered, repls)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return len(suffixOf(ordered[i].Old)) > len(suffixOf(ordered[j].Old))
+	})
+
 	var b strings.Builder
 	b.Grow(len(data))
 	prev := 0
-	for _, loc := range locs {
+	for _, loc := range version.FindTokens(data) {
 		start, end := loc[0], loc[1]
-		tok := string(data[start:end])
-		newTok, ok := repl[tok]
-		if !ok {
+		// A previous replacement may have consumed a recorded suffix that
+		// happens to contain a candidate token of its own; skip anything that
+		// falls inside what was already written.
+		if start < prev {
 			continue
 		}
-		b.Write(data[prev:start])
-		b.WriteString(newTok)
-		prev = end
-		counts[tok]++
+		for _, r := range ordered {
+			matchEnd, ok := matchAt(data, start, end, r.Old)
+			if !ok {
+				continue
+			}
+			b.Write(data[prev:start])
+			b.WriteString(r.New.String())
+			prev = matchEnd
+			counts[r.Old.String()]++
+			break
+		}
 	}
 	b.Write(data[prev:])
 	return []byte(b.String()), counts
 }
 
-// replaceToken rewrites every whole-token occurrence of oldToken (matched on
-// version-token boundaries) with newToken, returning the result and the number
-// of replacements made.
-func replaceToken(data []byte, oldToken, newToken string) ([]byte, int) {
-	locs := versionRe.FindAllIndex(data, -1)
-	var b strings.Builder
-	b.Grow(len(data))
-	prev := 0
-	count := 0
-	for _, loc := range locs {
-		start, end := loc[0], loc[1]
-		if string(data[start:end]) != oldToken {
-			continue
-		}
-		b.Write(data[prev:start])
-		b.WriteString(newToken)
-		prev = end
-		count++
+// matchAt reports where an occurrence of pin ends at the candidate token
+// [start, end), and whether it occurs there at all.
+//
+// The straightforward case is an exact token match. The second case is a token
+// the filename guard cut back to its numeric core: the pin names the suffix that
+// really belongs to the version, so if the bytes after the core continue with
+// exactly that suffix, the match extends over it. The byte after the suffix must
+// not be alphanumeric, which keeps a pinned "-rc.1" from matching the start of
+// "-rc.10".
+func matchAt(data []byte, start, end int, pin version.Version) (int, bool) {
+	tok := string(data[start:end])
+	if tok == pin.String() {
+		return end, true
 	}
-	b.Write(data[prev:])
-	return []byte(b.String()), count
+
+	suffix := suffixOf(pin)
+	if suffix == "" || tok != pin.Release().String() {
+		return 0, false
+	}
+	if !bytes.HasPrefix(data[end:], []byte(suffix)) {
+		return 0, false
+	}
+	after := end + len(suffix)
+	if after < len(data) && isAlnum(data[after]) {
+		return 0, false
+	}
+	return after, true
+}
+
+// suffixOf returns the "-prerelease+build" tail of v as written in a token, or
+// "" when v has neither section.
+func suffixOf(v version.Version) string {
+	s := ""
+	if v.Prerelease != "" {
+		s += "-" + v.Prerelease
+	}
+	if v.Build != "" {
+		s += "+" + v.Build
+	}
+	return s
+}
+
+func isAlnum(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // ErrNotRegular reports that a target is not an ordinary file. Callers can

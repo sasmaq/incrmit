@@ -216,8 +216,8 @@ func TestDiscoverRecordsWholePrereleaseToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfg), `version = "1.2.3-rc.1"`) {
-		t.Errorf("config = %q, want the full token recorded", cfg)
+	if !strings.Contains(string(cfg), "version = \"1.2.3\"\n  prerelease = \"rc.1\"") {
+		t.Errorf("config = %q, want the version and its prerelease recorded", cfg)
 	}
 }
 
@@ -279,14 +279,18 @@ func TestPrereleaseLifecycleThroughConfig(t *testing.T) {
   version = "1.2.3"
 `, map[string]string{"VERSION": "1.2.3\n"})
 
+	// wantCfg is the entry the config must hold after each step: starting or
+	// advancing a prerelease records it in its own key, and promoting or bumping
+	// takes that key back out.
 	steps := []struct {
-		args []string
-		want string
+		args    []string
+		want    string
+		wantCfg string
 	}{
-		{[]string{"--pre", "rc"}, "1.2.4-rc.1\n"},
-		{[]string{"--pre", "rc"}, "1.2.4-rc.2\n"},
-		{[]string{"--release"}, "1.2.4\n"},
-		{nil, "1.2.5\n"},
+		{[]string{"--pre", "rc"}, "1.2.4-rc.1\n", "version = \"1.2.4\"\n  prerelease = \"rc.1\"\n"},
+		{[]string{"--pre", "rc"}, "1.2.4-rc.2\n", "version = \"1.2.4\"\n  prerelease = \"rc.2\"\n"},
+		{[]string{"--release"}, "1.2.4\n", "version = \"1.2.4\"\n"},
+		{nil, "1.2.5\n", "version = \"1.2.5\"\n"},
 	}
 	for _, step := range steps {
 		code, _, stderr := runMain(t, dir, step.args...)
@@ -304,8 +308,8 @@ func TestPrereleaseLifecycleThroughConfig(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(cfg), `version = "`+strings.TrimSpace(step.want)+`"`) {
-			t.Fatalf("%v: config out of step with the file: %q", step.args, cfg)
+		if !strings.HasSuffix(string(cfg), step.wantCfg) {
+			t.Fatalf("%v: config out of step with the file: got %q, want it to end with %q", step.args, cfg, step.wantCfg)
 		}
 	}
 }
@@ -330,5 +334,154 @@ func TestUndoRestoresPrereleaseToken(t *testing.T) {
 	}
 	if want := "1.2.3-rc.1\n"; string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// A release filename or download URL is not a prerelease. A hyphen is a legal
+// prerelease character, so "incrmit-1.2.3-linux-amd64.tar.gz" would otherwise be
+// read as 1.2.3 with the prerelease "linux-amd64.tar.gz" — and bumping it would
+// rewrite the whole token, silently reducing the line to "incrmit-1.2.4".
+func TestBumpPreservesReleaseFilenames(t *testing.T) {
+	body := "" +
+		"curl -O https://x/releases/download/v1.2.3/incrmit-1.2.3-linux-amd64.tar.gz\n" +
+		"tar xzf incrmit-1.2.3-linux-amd64.tar.gz\n"
+	want := "" +
+		"curl -O https://x/releases/download/v1.2.4/incrmit-1.2.4-linux-amd64.tar.gz\n" +
+		"tar xzf incrmit-1.2.4-linux-amd64.tar.gz\n"
+
+	dir := project(t, `
+[[files]]
+  path = "install.sh"
+  version = "1.2.3"
+
+[[files]]
+  path = "install.sh"
+  version = "v1.2.3"
+`, map[string]string{"install.sh": body})
+
+	code, _, stderr := runMain(t, dir)
+	if code != ExitOK {
+		t.Fatalf("exit = %d (stderr %q)", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// The full prerelease cycle against a file where the version also lives inside a
+// download URL and a release filename. Because the config records the prerelease
+// in its own key, every occurrence stays in step: the filename carries the
+// prerelease while one is running and loses it on promotion, rather than being
+// left behind at -rc.1.
+func TestPrereleaseLifecycleInsideFilenames(t *testing.T) {
+	body := "" +
+		"VERSION=1.2.3\n" +
+		"curl -O https://x/releases/download/v1.2.3/incrmit-1.2.3-linux-amd64.tar.gz\n"
+
+	dir := project(t, `
+[[files]]
+  path = "install.sh"
+  version = "1.2.3"
+
+[[files]]
+  path = "install.sh"
+  version = "v1.2.3"
+`, map[string]string{"install.sh": body})
+
+	steps := []struct {
+		args []string
+		want string
+	}{
+		{
+			[]string{"--pre", "rc"},
+			"VERSION=1.2.4-rc.1\n" +
+				"curl -O https://x/releases/download/v1.2.4-rc.1/incrmit-1.2.4-rc.1-linux-amd64.tar.gz\n",
+		},
+		{
+			[]string{"--pre", "rc"},
+			"VERSION=1.2.4-rc.2\n" +
+				"curl -O https://x/releases/download/v1.2.4-rc.2/incrmit-1.2.4-rc.2-linux-amd64.tar.gz\n",
+		},
+		{
+			[]string{"--release"},
+			"VERSION=1.2.4\n" +
+				"curl -O https://x/releases/download/v1.2.4/incrmit-1.2.4-linux-amd64.tar.gz\n",
+		},
+		{
+			nil,
+			"VERSION=1.2.5\n" +
+				"curl -O https://x/releases/download/v1.2.5/incrmit-1.2.5-linux-amd64.tar.gz\n",
+		},
+	}
+	for _, step := range steps {
+		code, _, stderr := runMain(t, dir, step.args...)
+		if code != ExitOK {
+			t.Fatalf("%v: exit = %d (stderr %q)", step.args, code, stderr)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "install.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != step.want {
+			t.Fatalf("%v: got %q, want %q", step.args, got, step.want)
+		}
+	}
+}
+
+// A prerelease recorded in the config makes the bump semver-correct even where
+// the version sits inside a filename: promoting drops the suffix there too,
+// which the token matcher alone cannot do (it cannot tell "-rc.1" from
+// "-linux-amd64").
+func TestReleasePromotesInsideFilename(t *testing.T) {
+	dir := project(t, `
+[[files]]
+  path = "assets.txt"
+  version = "1.2.3"
+  prerelease = "rc.1"
+`, map[string]string{"assets.txt": "app-1.2.3-rc.1.zip\n"})
+
+	code, _, stderr := runMain(t, dir, "--release")
+	if code != ExitOK {
+		t.Fatalf("exit = %d (stderr %q)", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "assets.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "app-1.2.3.zip\n"; string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// An older config that spells the whole token in `version` keeps working, and
+// the rewrite after the bump moves it to the split form.
+func TestInlineTokenConfigIsMigratedOnBump(t *testing.T) {
+	dir := project(t, `
+[[files]]
+  path = "VERSION"
+  version = "1.2.3-rc.1"
+`, map[string]string{"VERSION": "1.2.3-rc.1\n"})
+
+	code, _, stderr := runMain(t, dir, "--pre", "rc")
+	if code != ExitOK {
+		t.Fatalf("exit = %d (stderr %q)", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "1.2.3-rc.2\n"; string(got) != want {
+		t.Errorf("file = %q, want %q", got, want)
+	}
+	cfg, err := os.ReadFile(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), "version = \"1.2.3\"\n  prerelease = \"rc.2\"") {
+		t.Errorf("config = %q, want the split form after the rewrite", cfg)
 	}
 }

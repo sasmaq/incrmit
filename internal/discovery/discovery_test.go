@@ -700,14 +700,19 @@ func TestDiscoverRecordsPrereleaseAndBuild(t *testing.T) {
 		}
 	}
 
-	// The generated config carries the same tokens, one entry per file.
+	// The generated config carries the same tokens, one entry per file, with the
+	// prerelease and build sections recorded in their own keys.
 	data, err := Generate(results)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	for path, v := range want {
-		if !strings.Contains(string(data), `version = "`+v+`"`) {
-			t.Errorf("config missing %s -> %q:\n%s", path, v, data)
+	for _, want := range []string{
+		"version = \"1.2.3\"\n  prerelease = \"rc.1\"",
+		"version = \"1.2.3\"\n  build = \"build.7\"",
+		"version = \"v2.0.0\"\n  prerelease = \"beta.1\"\n  build = \"exp.sha.5114f85\"",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("config missing %q:\n%s", want, data)
 		}
 	}
 }
@@ -730,5 +735,36 @@ func TestDiscoverPrereleaseAndReleaseAreDistinct(t *testing.T) {
 	got := distinct(results[0])
 	if len(got) != 2 || got[0].String() != "1.2.4-rc.1" || got[1].String() != "1.2.3" {
 		t.Errorf("distinct versions = %v, want [1.2.4-rc.1 1.2.3]", got)
+	}
+}
+
+// Discovery records the numeric core of a version welded into a release
+// filename, so the config pins what a bump can safely rewrite rather than the
+// whole filename tail.
+func TestDiscoverRecordsCoreInsideFilenames(t *testing.T) {
+	root := t.TempDir()
+	body := "curl -O https://x/releases/download/v1.2.3/incrmit-1.2.3-linux-amd64.tar.gz\n"
+	if err := os.WriteFile(filepath.Join(root, "install.sh"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	got := distinct(results[0])
+	if len(got) != 2 || got[0].String() != "v1.2.3" || got[1].String() != "1.2.3" {
+		t.Fatalf("distinct versions = %v, want [v1.2.3 1.2.3]", got)
+	}
+
+	data, err := Generate(results)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if strings.Contains(string(data), "tar.gz") {
+		t.Errorf("config recorded part of the filename as the version:\n%s", data)
 	}
 }

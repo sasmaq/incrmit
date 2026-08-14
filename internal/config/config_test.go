@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sasmaq/incrmit/internal/testutil"
+	"github.com/sasmaq/incrmit/internal/version"
 )
 
 // writeConfig writes a config file plus any named target files into a fresh
@@ -449,5 +450,170 @@ func TestMarshalOmitsEmptyVersion(t *testing.T) {
 	}
 	if strings.Contains(string(data), "version") {
 		t.Errorf("Marshal() included an empty version field:\n%s", data)
+	}
+}
+
+// A version's prerelease and build sections live in their own keys, and Token
+// reassembles the whole thing.
+func TestFileEntryToken(t *testing.T) {
+	tests := []struct {
+		entry FileEntry
+		want  string
+	}{
+		{FileEntry{Path: "p"}, ""},
+		{FileEntry{Path: "p", Version: "1.2.3"}, "1.2.3"},
+		{FileEntry{Path: "p", Version: "v1.2.3"}, "v1.2.3"},
+		{FileEntry{Path: "p", Version: "1.2.3", Prerelease: "rc.1"}, "1.2.3-rc.1"},
+		{FileEntry{Path: "p", Version: "1.2.3", Build: "build.7"}, "1.2.3+build.7"},
+		{FileEntry{Path: "p", Version: "1.2.3", Prerelease: "rc.1", Build: "b.7"}, "1.2.3-rc.1+b.7"},
+		// A prerelease with no version pins nothing at all.
+		{FileEntry{Path: "p", Prerelease: "rc.1"}, ""},
+	}
+	for _, tt := range tests {
+		if got := tt.entry.Token(); got != tt.want {
+			t.Errorf("%+v.Token() = %q, want %q", tt.entry, got, tt.want)
+		}
+	}
+}
+
+// EntryFor splits a version across the keys, and a version with no prerelease
+// leaves the key out entirely rather than writing an empty one.
+func TestEntryForSplitsVersion(t *testing.T) {
+	v, err := version.Parse("v1.2.3-rc.1+build.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := EntryFor("VERSION", v)
+	want := FileEntry{Path: "VERSION", Version: "v1.2.3", Prerelease: "rc.1", Build: "build.7"}
+	if got != want {
+		t.Errorf("EntryFor = %+v, want %+v", got, want)
+	}
+
+	// Bumping past a prerelease clears both keys.
+	got.SetVersion(v.BumpPatch())
+	want = FileEntry{Path: "VERSION", Version: "v1.2.4"}
+	if got != want {
+		t.Errorf("after a patch bump = %+v, want %+v", got, want)
+	}
+}
+
+// Configs written before the keys existed spelled the whole token in `version`.
+// Load splits them, so an old config behaves exactly like a new one.
+func TestLoadSplitsInlineToken(t *testing.T) {
+	path := writeConfig(t, `
+[[files]]
+  path = "VERSION"
+  version = "v1.2.3-rc.1+build.7"
+`, "VERSION")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Files[0]
+	want := FileEntry{Path: "VERSION", Version: "v1.2.3", Prerelease: "rc.1", Build: "build.7"}
+	if got != want {
+		t.Errorf("entry = %+v, want %+v", got, want)
+	}
+	if tok := got.Token(); tok != "v1.2.3-rc.1+build.7" {
+		t.Errorf("Token() = %q, want the original token back", tok)
+	}
+}
+
+// Spelling a section both ways is ambiguous, so it is rejected rather than
+// guessed at.
+func TestLoadRejectsDuplicateSuffixSpelling(t *testing.T) {
+	path := writeConfig(t, `
+[[files]]
+  path = "VERSION"
+  version = "1.2.3-rc.1"
+  prerelease = "rc.2"
+`, "VERSION")
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "keep one") {
+		t.Errorf("error = %v, want it to explain the conflict", err)
+	}
+}
+
+// A prerelease key with no version pins nothing; say so rather than silently
+// ignoring it.
+func TestLoadRejectsPrereleaseWithoutVersion(t *testing.T) {
+	path := writeConfig(t, `
+[[files]]
+  path = "VERSION"
+  prerelease = "rc.1"
+`, "VERSION")
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "without a version") {
+		t.Errorf("error = %v, want it to name the missing version", err)
+	}
+}
+
+// A version that does not parse is left exactly as written, so the command that
+// needs it reports the problem (exit 3) instead of Load failing as a config
+// error (exit 1).
+func TestLoadKeepsUnparseableVersion(t *testing.T) {
+	path := writeConfig(t, `
+[[files]]
+  path = "VERSION"
+  version = "not-a-version"
+`, "VERSION")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Files[0].Version; got != "not-a-version" {
+		t.Errorf("Version = %q, want it left as written", got)
+	}
+}
+
+// A path may repeat once per distinct version, and the prerelease is part of
+// what makes two entries distinct.
+func TestValidateDistinguishesEntriesByPrerelease(t *testing.T) {
+	path := writeConfig(t, `
+[[files]]
+  path = "VERSION"
+  version = "1.2.3"
+
+[[files]]
+  path = "VERSION"
+  version = "1.2.3"
+  prerelease = "rc.1"
+`, "VERSION")
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// Two entries that pin the very same token are still duplicates.
+func TestValidateRejectsDuplicateSplitEntries(t *testing.T) {
+	path := writeConfig(t, `
+[[files]]
+  path = "VERSION"
+  version = "1.2.3"
+  prerelease = "rc.1"
+
+[[files]]
+  path = "VERSION"
+  version = "1.2.3"
+  prerelease = "rc.1"
+`, "VERSION")
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded, want a duplicate error")
+	}
+	if !strings.Contains(err.Error(), "1.2.3-rc.1") {
+		t.Errorf("error = %v, want the full token named", err)
 	}
 }

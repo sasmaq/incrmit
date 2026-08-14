@@ -697,12 +697,19 @@ before v1.0.0 freezes the behavior.
       `+build` suffix, rather than stopping at the numeric core. Keep the IPv4
       and two-component rejections from Milestone 18 working.
       The pattern gained
-      `(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`
-      in both `internal/files` and `internal/discovery` (kept identical so
-      scanning and rewriting agree). The greedy numeric core still swallows an
+      `(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`,
+      and both packages now call one `version.FindTokens` instead of keeping
+      identical copies of the regex. The greedy numeric core still swallows an
       IPv4 address whole, and the trailing `\b` keeps a suffix from running into
       an adjacent word — RE2 has no look-ahead, so that boundary is what makes
       `1.2.3-rc_1` match only `1.2.3`.
+      `FindTokens` also carries a filename guard, added after the first cut of
+      this milestone destroyed data: a hyphen is a legal prerelease character, so
+      `incrmit-1.2.3-linux-amd64.tar.gz` parsed as `1.2.3` with the prerelease
+      `linux-amd64.tar.gz`, and a bump rewrote the line to `incrmit-1.2.4` and
+      exited `0`. A token preceded by `-` that is itself preceded by a word
+      character now keeps only its numeric core, so filenames and download URLs
+      bump the way they did before this milestone.
 - [x] Extend `version.Version` with `Prerelease` and `Build` fields and teach
       `Parse` the semver 2.0.0 grammar for both (dot-separated alphanumeric
       identifiers; numeric prerelease identifiers must not have leading zeros).
@@ -740,6 +747,17 @@ before v1.0.0 freezes the behavior.
       `1.2.3` elsewhere in the same file).
       Both directions are covered by tests: a pinned prerelease leaves the bare
       release alone, and a pinned release leaves the prerelease alone.
+      The token is recorded in three keys rather than one string —
+      `version = "1.2.3"` plus `prerelease = "rc.1"` (and `build`) — which is
+      what lets the rewriter tell a real prerelease from a hyphenated filename
+      part instead of guessing: with `rc.1` pinned, `--release` promotes
+      `app-1.2.3-rc.1.zip` to `app-1.2.3.zip`, and a prerelease written into a
+      download URL is still found on the following step. `SetKnownVersions`
+      therefore takes parsed `files.Replacement` values rather than a text map,
+      matching an exact token or a guard-trimmed core whose following bytes
+      continue with exactly the pinned suffix. Old configs holding an inline
+      token are migrated by `config.Load`; a bump that drops the prerelease
+      drops the key too.
 - [x] Verify precedence ordering is not needed anywhere, or implement
       `Compare` if the preview/out-of-sync check in Milestone 27 relies on it.
       Nothing in bump, discover, or undo compares versions — they match tokens —
@@ -752,9 +770,9 @@ before v1.0.0 freezes the behavior.
       `CHANGELOG.md` entry under `Fixed` (mangling) and `Added` (flags).
       README gained a "Prereleases and build metadata" section, the man page a
       VERSION GRAMMAR section plus the two options, and DEVELOPMENT.md section
-      9.2. All three record the one real cost of matching whole tokens: a
-      hyphenated suffix that is not really a prerelease (`1.2.3-linux`) is now
-      read as one, which semver gives no way to tell apart.
+      9.2. All three record the filename guard and its one real cost: a genuine
+      prerelease inside a filename (`app-1.2.3-rc.1.zip`) is matched as its core
+      alone, so it bumps to `app-1.2.4-rc.1.zip` rather than `app-1.2.4.zip`.
 
 ## Milestone 29 — Git Integration (the "commit" in incrmit)
 

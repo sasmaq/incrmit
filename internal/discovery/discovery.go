@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 
 	"github.com/BurntSushi/toml"
@@ -57,28 +56,17 @@ var ignoredDirs = map[string]struct{}{
 // scan bounded when a tree contains very large files.
 const DefaultMaxScanBytes = 32 << 20 // 32 MiB
 
-// versionRe matches a candidate version token: a run of two or more
-// dot-separated integer groups, optionally prefixed by a single leading "v" or
-// "V" and followed by the optional "-prerelease" and "+build" sections of
-// semver, bounded by non-word characters. It deliberately matches more than just
-// a valid version: a candidate is validated with version.Parse, which accepts
-// only exactly three numeric components. Matching the whole dotted run
-// (greedily) is what lets an IPv4 address such as 192.168.1.1 be seen as a
-// single four-component token and rejected, rather than having 192.168.1 (or
-// 168.1.1) pulled out of it, and matching the suffixes is what records
-// "1.2.3-rc.1" as one token rather than the bare "1.2.3" inside it.
-//
-// The leading \b before the optional [vV] keeps the prefix from being taken out
-// of the middle of a word (so "rev1.2.3"/"dev1.2.3" are not treated as
-// versions); the trailing \b keeps a suffix from running into an adjacent word.
-// It is kept identical to the pattern in package files, so what discovery
-// records is exactly what a bump later rewrites.
-var versionRe = regexp.MustCompile(`\b[vV]?\d+(?:\.\d+)+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\b`)
+// Candidate version tokens are located with version.FindTokens — the same
+// function package files rewrites with, so what discovery records is exactly
+// what a bump later replaces. Each candidate is validated with version.Parse,
+// which accepts only exactly three numeric components, so an IPv4 address such
+// as 192.168.1.1 (matched whole, never sliced) and two-component numbers are
+// skipped. See version.FindTokens for the pattern and the filename guard.
 
 // Discover walks the tree rooted at root and returns every file that contains a
 // semantic version token, sorted by path for deterministic output. It scans the
-// contents of any text file rather than relying on file names: the first
-// MAJOR.MINOR.PATCH token found in a file is recorded as that file's version.
+// contents of any text file rather than relying on file names: every version
+// token found in a file is recorded as an occurrence of that file's version.
 //
 // The optional ignore patterns come from the config's `ignore` list and are
 // applied in addition to the built-in ignoredDirs: any file or directory whose
@@ -178,10 +166,7 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 				continue
 			}
 			seen[v] = struct{}{}
-			cfg.Files = append(cfg.Files, config.FileEntry{
-				Path:    r.Path,
-				Version: v,
-			})
+			cfg.Files = append(cfg.Files, config.EntryFor(r.Path, o.Version))
 		}
 	}
 
@@ -203,7 +188,7 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 // contains, in the order they appear, each tagged with its 1-based line number
 // and the trimmed text of that line. Files larger than maxBytes are skipped
 // (maxBytes <= 0 means no cap). It is best-effort: unreadable, oversized,
-// non-regular, and binary files yield ok == false. versionRe also matches
+// non-regular, and binary files yield ok == false. The matcher also yields
 // dotted-number runs that are not versions (two-component numbers like 3.9,
 // four-octet IPv4 addresses like 192.168.1.1, ...); those fail version.Parse and
 // are skipped, so only real three-component versions are reported.
@@ -247,7 +232,7 @@ func detect(path string, maxBytes int64) ([]Occurrence, bool) {
 		return nil, false
 	}
 	var occ []Occurrence
-	for _, loc := range versionRe.FindAllIndex(data, -1) {
+	for _, loc := range version.FindTokens(data) {
 		start, end := loc[0], loc[1]
 		v, perr := version.Parse(string(data[start:end]))
 		if perr != nil {

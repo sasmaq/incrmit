@@ -190,11 +190,20 @@ parsed and bumped together so their versions stay in sync.
 An entry may also record a `version`, which pins the exact value to bump
 (useful for files that contain several version-like strings). When `version`
 is omitted, `incrmit` scans the file for the first version token. A pinned
-`version` is matched whole, prerelease and build sections included, so an entry
+version is matched whole, prerelease and build sections included, so an entry
 holding `1.2.3-rc.1` never matches a bare `1.2.3` elsewhere in the same file.
-After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry's
-`version` reflects the new value, keeping the config in step with the files
-it manages.
+After a successful bump, `incrmit` rewrites `incrmit.toml` so each entry
+reflects the new value, keeping the config in step with the files it manages.
+
+A prerelease or build section is recorded in its own key rather than inside
+`version` (see [Prereleases and build metadata](#prereleases-and-build-metadata)):
+
+```toml
+[[files]]
+  path = "VERSION"
+  version = "0.2.0"
+  prerelease = "rc.1"   # the file holds 0.2.0-rc.1
+```
 
 That rewrite regenerates the file from its parsed contents in a fixed layout, so
 your `[[files]]` entries and `ignore` list are preserved but hand-written
@@ -606,11 +615,48 @@ Combinations that cannot mean anything exit with code `2` and write nothing:
 `--release` on a version that has no prerelease, and a `--pre` value that is not
 a valid identifier list.
 
-Because the whole token is matched, a hyphenated suffix that is *not* a
-prerelease is still read as one: `1.2.3-linux` is a version with the prerelease
-`linux`, and bumping it yields `1.2.4`. Semver cannot distinguish the two cases;
-pin the exact token in `incrmit.toml` (`incrmit discover` records it) so you can
-see what will be rewritten, or use `--dry-run` to check.
+#### The prerelease in `incrmit.toml`
+
+A running prerelease is recorded in its own key, next to the version it
+previews:
+
+```toml
+[[files]]
+path = "install.sh"
+version = "1.2.4"
+prerelease = "rc.1"
+```
+
+`--pre` writes that key, `--release` and any component bump remove it again, so
+the config always reads as the project's actual state. (Build metadata gets a
+`build` key the same way.) Configs that spell the whole token in `version`
+(`version = "1.2.4-rc.1"`) still work and are moved to this form on the next
+write.
+
+Keeping the prerelease separate is not cosmetic — it is what lets `incrmit`
+find a prerelease inside a filename. A hyphen is a legal prerelease character,
+so `incrmit-1.2.3-linux-amd64.tar.gz` is, to semver, the version `1.2.3` with
+the prerelease `linux-amd64.tar.gz`, and rewriting that as one token would
+reduce the whole line to `incrmit-1.2.4`. The config says which suffix is real,
+so exactly that much is rewritten:
+
+```bash
+# with prerelease = "rc.1" recorded:
+incrmit --release
+# app-1.2.3-rc.1.zip -> app-1.2.3.zip
+
+# with no prerelease recorded:
+incrmit
+# incrmit-1.2.3-linux-amd64.tar.gz -> incrmit-1.2.4-linux-amd64.tar.gz
+```
+
+Without a config to consult — `--file` mode, or an unpinned entry — `incrmit`
+falls back to context: a version welded into a longer hyphen-joined word keeps
+only its numbers, while a version that stands on its own (after a quote, an `=`,
+whitespace, or at the start of a line) keeps its full token. That is always
+safe, but it cannot promote a prerelease inside a filename, so
+`app-1.2.3-rc.1.zip` bumps to `app-1.2.4-rc.1.zip` there. Run `incrmit
+discover` to pin the versions, and use `--dry-run` when in doubt.
 
 ## Help
 

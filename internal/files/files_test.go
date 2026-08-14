@@ -255,14 +255,30 @@ func TestSetKnownVersionNotFound(t *testing.T) {
 	}
 }
 
+// repls builds a Replacement list from alternating old/new token strings, so a
+// test can name the tokens it means and let version.Parse split them.
+func repls(t *testing.T, pairs ...string) []Replacement {
+	t.Helper()
+	out := make([]Replacement, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		oldVer, err := version.Parse(pairs[i])
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", pairs[i], err)
+		}
+		newVer, err := version.Parse(pairs[i+1])
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", pairs[i+1], err)
+		}
+		out = append(out, Replacement{Old: oldVer, New: newVer})
+	}
+	return out
+}
+
 // SetKnownVersions rewrites several distinct versions in one file, replacing
 // every occurrence of each and leaving unrelated version-like tokens alone.
 func TestSetKnownVersions(t *testing.T) {
 	in := []byte("app 1.2.3\nlib 2.0.0\napp 1.2.3 again\nkeep 4.5.6\n")
-	out, counts := SetKnownVersions(in, map[string]string{
-		"1.2.3": "1.2.4",
-		"2.0.0": "2.0.1",
-	})
+	out, counts := SetKnownVersions(in, repls(t, "1.2.3", "1.2.4", "2.0.0", "2.0.1"))
 	want := "app 1.2.4\nlib 2.0.1\napp 1.2.4 again\nkeep 4.5.6\n"
 	if string(out) != want {
 		t.Errorf("SetKnownVersions = %q, want %q", out, want)
@@ -280,10 +296,7 @@ func TestSetKnownVersions(t *testing.T) {
 // exactly once rather than turning the first token into the second's input.
 func TestSetKnownVersionsNoCascade(t *testing.T) {
 	in := []byte("first 1.2.3 then 1.2.4\n")
-	out, counts := SetKnownVersions(in, map[string]string{
-		"1.2.3": "1.2.4",
-		"1.2.4": "1.2.5",
-	})
+	out, counts := SetKnownVersions(in, repls(t, "1.2.3", "1.2.4", "1.2.4", "1.2.5"))
 	want := "first 1.2.4 then 1.2.5\n"
 	if string(out) != want {
 		t.Errorf("SetKnownVersions = %q, want %q", out, want)
@@ -297,10 +310,7 @@ func TestSetKnownVersionsNoCascade(t *testing.T) {
 // out-of-sync config.
 func TestSetKnownVersionsMissingToken(t *testing.T) {
 	in := []byte("only 1.2.3 here\n")
-	out, counts := SetKnownVersions(in, map[string]string{
-		"1.2.3": "1.2.4",
-		"9.9.9": "9.9.10",
-	})
+	out, counts := SetKnownVersions(in, repls(t, "1.2.3", "1.2.4", "9.9.9", "9.9.10"))
 	if want := "only 1.2.4 here\n"; string(out) != want {
 		t.Errorf("SetKnownVersions = %q, want %q", out, want)
 	}
@@ -652,10 +662,7 @@ func TestSetKnownVersionDistinguishesPrerelease(t *testing.T) {
 // can be rewritten in the same pass without either matching the other.
 func TestSetKnownVersionsDistinguishesPrerelease(t *testing.T) {
 	in := []byte("preview: 1.2.4-rc.1\nstable: 1.2.3\n")
-	got, counts := SetKnownVersions(in, map[string]string{
-		"1.2.4-rc.1": "1.2.4-rc.2",
-		"1.2.3":      "1.2.4",
-	})
+	got, counts := SetKnownVersions(in, repls(t, "1.2.4-rc.1", "1.2.4-rc.2", "1.2.3", "1.2.4"))
 	if want := "preview: 1.2.4-rc.2\nstable: 1.2.4\n"; string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -672,5 +679,179 @@ func TestFindVersionPrereleaseAndBareAreAmbiguous(t *testing.T) {
 	var ambiguous *AmbiguousError
 	if _, err := FindVersion([]byte("1.2.3-rc.1 and 1.2.3\n")); !errors.As(err, &ambiguous) {
 		t.Fatalf("err = %v, want *AmbiguousError", err)
+	}
+}
+
+// A version welded into a release filename keeps only its numeric core, so a
+// bump rewrites the numbers and leaves the rest of the line intact. Without the
+// guard in version.FindTokens, "1.2.3-linux-amd64.tar.gz" parses as a perfectly
+// legal prerelease and rewriting that token eats the filename.
+func TestSetVersionPreservesReleaseFilenames(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"download url",
+			"curl -O https://x/download/incrmit-1.2.3-linux-amd64.tar.gz\n",
+			"curl -O https://x/download/incrmit-1.2.4-linux-amd64.tar.gz\n",
+		},
+		{
+			"zip",
+			"asset: incrmit-1.2.3-windows-amd64.zip\n",
+			"asset: incrmit-1.2.4-windows-amd64.zip\n",
+		},
+		{
+			"v-prefixed",
+			"asset: incrmit-v1.2.3-darwin-arm64.tar.gz\n",
+			"asset: incrmit-v1.2.4-darwin-arm64.tar.gz\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cur, err := FindVersion([]byte(tt.in))
+			if err != nil {
+				t.Fatalf("FindVersion: %v", err)
+			}
+			got, err := SetVersion([]byte(tt.in), cur.BumpPatch())
+			if err != nil {
+				t.Fatalf("SetVersion: %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The guard is about where the version sits, not about the file: a standalone
+// prerelease on one line and a release filename on the next are handled
+// differently in the same pass.
+func TestSetKnownVersionsMixedFilenameAndPrerelease(t *testing.T) {
+	in := []byte("version = \"1.2.3-rc.1\"\nasset: incrmit-1.2.3-linux-amd64.tar.gz\n")
+	got, counts := SetKnownVersions(in, repls(t, "1.2.3-rc.1", "1.2.3-rc.2", "1.2.3", "1.2.4"))
+	want := "version = \"1.2.3-rc.2\"\nasset: incrmit-1.2.4-linux-amd64.tar.gz\n"
+	if string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	for tok, n := range counts {
+		if n != 1 {
+			t.Errorf("token %q replaced %d times, want 1", tok, n)
+		}
+	}
+}
+
+// A pinned prerelease says which suffix is real, so it is consumed even inside a
+// release filename that the token matcher cut back to its numeric core. This is
+// what makes the bump semver-correct there: "app-1.2.3-rc.1.zip" becomes
+// "app-1.2.4.zip", not "app-1.2.4-rc.1.zip".
+func TestSetKnownVersionsConsumesPinnedSuffixInFilenames(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		pairs []string
+		want  string
+	}{
+		{
+			"promote inside a filename",
+			"asset: app-1.2.3-rc.1.zip\n",
+			[]string{"1.2.3-rc.1", "1.2.4"},
+			"asset: app-1.2.4.zip\n",
+		},
+		{
+			"advance inside a filename",
+			"asset: app-1.2.3-rc.1.zip\n",
+			[]string{"1.2.3-rc.1", "1.2.3-rc.2"},
+			"asset: app-1.2.3-rc.2.zip\n",
+		},
+		{
+			"suffix followed by more hyphenated parts",
+			"url: incrmit-1.2.4-rc.1-linux-amd64.tar.gz\n",
+			[]string{"1.2.4-rc.1", "1.2.4"},
+			"url: incrmit-1.2.4-linux-amd64.tar.gz\n",
+		},
+		{
+			"build metadata too",
+			"asset: app-1.2.3-rc.1+build.7.zip\n",
+			[]string{"1.2.3-rc.1+build.7", "1.2.4"},
+			"asset: app-1.2.4.zip\n",
+		},
+		{
+			"standalone and filename in one pass",
+			"version = \"1.2.3-rc.1\"\nasset: app-1.2.3-rc.1.zip\n",
+			[]string{"1.2.3-rc.1", "1.2.4"},
+			"version = \"1.2.4\"\nasset: app-1.2.4.zip\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := SetKnownVersions([]byte(tt.in), repls(t, tt.pairs...))
+			if string(got) != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Consuming a pinned suffix must not run into a longer one: "-rc.1" is not the
+// start of "-rc.10", and a pin whose suffix is simply absent leaves the
+// occurrence to be matched on its numeric core alone.
+func TestSetKnownVersionsPinnedSuffixBoundaries(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		pairs []string
+		want  string
+	}{
+		{
+			"rc.1 does not match rc.10",
+			"asset: app-1.2.3-rc.10.zip\n",
+			[]string{"1.2.3-rc.1", "1.2.4"},
+			"asset: app-1.2.3-rc.10.zip\n",
+		},
+		{
+			"different suffix left alone",
+			"asset: app-1.2.3-linux-amd64.tar.gz\n",
+			[]string{"1.2.3-rc.1", "1.2.4"},
+			"asset: app-1.2.3-linux-amd64.tar.gz\n",
+		},
+		{
+			"bare pin still matches the core in a filename",
+			"asset: app-1.2.3-linux-amd64.tar.gz\n",
+			[]string{"1.2.3", "1.2.4"},
+			"asset: app-1.2.4-linux-amd64.tar.gz\n",
+		},
+		{
+			"bare pin does not reach into a standalone prerelease",
+			"version = \"1.2.3-rc.1\"\n",
+			[]string{"1.2.3", "1.2.4"},
+			"version = \"1.2.3-rc.1\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := SetKnownVersions([]byte(tt.in), repls(t, tt.pairs...))
+			if string(got) != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// When a bare pin and a suffixed pin could both match an occurrence, the
+// suffixed one wins: it is the pin that says the suffix belongs to the version.
+func TestSetKnownVersionsPrefersTheSuffixedPin(t *testing.T) {
+	in := []byte("asset: app-1.2.3-rc.1.zip\nplain: 1.2.3\n")
+	got, counts := SetKnownVersions(in, repls(t,
+		"1.2.3", "1.2.4",
+		"1.2.3-rc.1", "1.2.4",
+	))
+	want := "asset: app-1.2.4.zip\nplain: 1.2.4\n"
+	if string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if counts["1.2.3-rc.1"] != 1 || counts["1.2.3"] != 1 {
+		t.Errorf("counts = %v, want one match each", counts)
 	}
 }
