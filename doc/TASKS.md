@@ -393,7 +393,7 @@ completed.
       correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
       verified working (`-ldflags` override honored, and an unstamped `go build`
       falls back to the same source default); the value is `0.1.13` until the
-      version is bumped to `1.0.0` in Milestone 27.
+      version is bumped to `1.0.0` in Milestone 33.
 - [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
       missing dependencies); confirm the Go version pin is intentional. Tidy is
       a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
@@ -676,7 +676,185 @@ produce — so the user can see all three outcomes at once without running a
       `incrmit(1)` man page, and `doc/DEVELOPMENT.md`, and add a `CHANGELOG.md`
       entry under `Added`.
 
-## Milestone 28 — v1.0.0 Release: Publish
+## Milestone 28 — Prerelease and Build Metadata
+
+`version.Parse` accepts only a bare `MAJOR.MINOR.PATCH`, but `versionRe`
+(`\b[vV]?\d+(?:\.\d+)+\b`) matches the numeric core inside a larger token, so a
+prerelease is silently mangled rather than rejected: `1.2.3-rc.1` bumps to
+`1.2.4-rc.1` and `1.2.3+build.7` to `1.2.4+build.7`. Both are wrong under
+semver — a patch bump off `1.2.3-rc.1` is `1.2.3` (promote) or `1.2.3-rc.2`
+(iterate), never `1.2.4-rc.1`. This is a correctness bug and should be closed
+before v1.0.0 freezes the behavior.
+
+- [ ] Add a regression test that pins the current wrong behavior first, so the
+      fix is demonstrably a change: `1.2.3-rc.1`, `1.2.3+build.7`, and
+      `v2.0.0-beta.1+exp.sha.5114f85` through a real `--file` bump.
+- [ ] Extend `versionRe` (or add a wider "candidate token" pattern) so the
+      matcher sees the *whole* semver token including any `-prerelease` and
+      `+build` suffix, rather than stopping at the numeric core. Keep the IPv4
+      and two-component rejections from Milestone 18 working.
+- [ ] Extend `version.Version` with `Prerelease` and `Build` fields and teach
+      `Parse` the semver 2.0.0 grammar for both (dot-separated alphanumeric
+      identifiers; numeric prerelease identifiers must not have leading zeros).
+      Keep `Prefix` behavior from Milestone 17 intact.
+- [ ] Update `String()` to round-trip the full token
+      (`v1.2.3-rc.1+build.7` in, same out), and confirm the golden-file tests in
+      `internal/files/testdata` still show only the version token changing.
+- [ ] Decide and document the bump semantics for a prerelease input, then
+      implement them: `BumpMajor`/`BumpMinor`/`BumpPatch` on `1.2.3-rc.1` should
+      drop the prerelease and build metadata (`1.2.4`), matching how every other
+      bump tool behaves. Build metadata is never carried forward.
+- [ ] Add explicit promote/iterate flags rather than overloading the existing
+      ones: `--release` (drop the prerelease: `1.2.3-rc.1` -> `1.2.3`) and
+      `--pre <id>` (start or advance a prerelease: `1.2.3` -> `1.2.4-rc.1`,
+      `1.2.4-rc.1` -> `1.2.4-rc.2`). Reject combinations that are meaningless
+      (e.g. `--release` on a version with no prerelease) with exit code `2`.
+- [ ] Make `discover` record the full token in `incrmit.toml` so a prerelease
+      target survives a regeneration, and confirm `SetKnownVersions` matches on
+      the full token (a config holding `1.2.3-rc.1` must not match a bare
+      `1.2.3` elsewhere in the same file).
+- [ ] Verify precedence ordering is not needed anywhere, or implement
+      `Compare` if the preview/out-of-sync check in Milestone 27 relies on it.
+- [ ] Update `README.md`, the `incrmit(1)` man page, and `doc/DEVELOPMENT.md`
+      with the supported grammar and the promote/iterate flags; add a
+      `CHANGELOG.md` entry under `Fixed` (mangling) and `Added` (flags).
+
+## Milestone 29 — Git Integration (the "commit" in incrmit)
+
+The name reads as "increment + commit", but there is no git integration at all:
+no commit, no tag, no push. This is both the largest gap between the pitch and
+the product and the clearest differentiator against `bump2version`,
+`standard-version`, and `release-please`. Everything here is opt-in — the
+default bump must keep working in a non-git directory exactly as it does today.
+
+- [ ] Add an `internal/git` package that shells out to the `git` binary (no new
+      dependency; a Go git library would dwarf the current one-dependency tree).
+      Detect availability and repository membership up front, and return typed
+      errors for "git not installed", "not a repository", and "dirty tree".
+- [ ] Add `--commit`/`-C` to the bump command: after a successful bump, stage
+      exactly the files incrmit wrote (including `incrmit.toml` and never the
+      state file) and create one commit. Never use `git add -A`.
+- [ ] Add `--message`/`-M2` (pick a short name that does not collide with the
+      existing `-M` for major) with a default template such as
+      `chore: bump version to {{.New}}`, supporting `{{.Old}}`, `{{.New}}`, and
+      `{{.Count}}` placeholders. Allow the default to be set in `incrmit.toml`.
+- [ ] Add `--tag`/`-t` to create an annotated tag on the new commit, with a
+      configurable prefix (default `v`, so `v1.2.4`) and a `--tag-message`
+      default. Refuse to overwrite an existing tag; exit `1` with the tag named.
+- [ ] Add `--push` to push the branch and, when tagging, the tag. Require an
+      explicit `--push` — never push implicitly from `--commit` or `--tag`.
+- [ ] Add `--sign` to pass `-S` to commit and `-s` to tag for users with signing
+      configured, and document that signing failures abort rather than fall back
+      to an unsigned commit.
+- [ ] Refuse to commit when the working tree has staged-but-unrelated changes,
+      unless `--allow-dirty` is passed, so a bump commit never sweeps up
+      unrelated work. Document the check and its escape hatch.
+- [ ] Extend `undo` to cover the git side: when the last bump created a commit
+      and/or tag that is still `HEAD` and unpushed, offer to remove them
+      (`--git` flag, off by default). Record the commit SHA and tag name in the
+      history entry so undo can verify it is reverting the right commit, and
+      refuse when `HEAD` has moved since.
+- [ ] Support all of the above in `--dry-run`: print the exact commit message,
+      the file list that would be staged, and the tag that would be created,
+      without touching the repository.
+- [ ] Add tests using a real temporary git repo (`git init` in `t.TempDir()`
+      with a fixed author/committer identity and `-c commit.gpgsign=false` so
+      the suite is hermetic), covering commit, tag, tag collision, dirty tree,
+      dry run, undo, and the not-a-repository path. Skip cleanly when `git` is
+      not on `PATH` so CI on a minimal image still passes.
+- [ ] Document the flags in `README.md`, the `incrmit(1)` man page, and
+      `doc/DEVELOPMENT.md`, including a CI recipe (bump, commit, tag, push) and
+      a note that the tool never pushes unless asked; add a `CHANGELOG.md` entry
+      under `Added`.
+
+## Milestone 30 — Conventional-Commit Bump Inference (`--auto`)
+
+Depends on Milestone 29. Reading the commits since the last tag and inferring
+the bump component turns `discover` + language-agnostic + single-binary from a
+narrow story into a real one: no other tool does automatic inference *and*
+arbitrary-file rewriting without a per-ecosystem plugin.
+
+- [ ] Add `--auto` to the bump command: resolve the most recent tag reachable
+      from `HEAD` (respecting the Milestone 29 tag prefix), read the commit
+      subjects and bodies since it, and infer the component.
+- [ ] Implement the inference rules and document them: a `feat:` commit implies
+      minor, a `fix:`/`perf:` commit implies patch, and `BREAKING CHANGE:` in a
+      trailer or a `!` before the colon implies major. The highest match wins.
+      Non-conforming commits are ignored, not errors.
+- [ ] Decide and document what happens when nothing is inferable (no tags yet,
+      or no conforming commits since the last tag): recommend exiting `0` with
+      "no version-relevant commits; nothing to bump" and writing nothing, with
+      `--auto --fallback patch` available for CI that wants a bump regardless.
+- [ ] Reject `--auto` combined with an explicit `--major`/`--minor`/`--patch`
+      with exit code `2` rather than silently letting one win.
+- [ ] Make `--auto --dry-run` explain the decision: print the inferred component
+      and the specific commits that drove it, so the inference is auditable.
+- [ ] Add tests over a scripted temporary repo covering each rule, the highest-
+      wins precedence, the `!` and trailer forms of a breaking change, no-tags,
+      no-conforming-commits, and the `--fallback` path.
+- [ ] Document the rules and a full CI recipe in `README.md`, the man page, and
+      `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Added`.
+
+## Milestone 31 — Crash-Safe Multi-File Writes
+
+Planning is already fail-fast (Milestone 22's phase 1/2 split), but phase 2 is
+not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
+1–2 bumped and 3–5 untouched. Worse, `recordHistory` runs *after* every write
+succeeds, so exactly the case where `undo` is needed is the case where no
+journal entry exists. Close this before v1.0.0.
+
+- [ ] Write the journal entry *before* phase 2 rather than after, marked
+      `pending`, and flip it to `complete` once every write lands. Bump
+      `history` file format handling so an older state file still loads.
+- [ ] On a phase-2 write failure, roll back the files already written in this
+      run (the pre-bump bytes are still in memory from planning) before
+      returning, and report both the original failure and whether the rollback
+      itself succeeded.
+- [ ] When rollback is impossible or partially fails, leave the `pending` entry
+      in place and print an explicit recovery instruction naming `incrmit undo`
+      and the affected files, rather than exiting with a bare error.
+- [ ] Teach `undo` to recognize a `pending` entry and treat it as the thing to
+      revert, tolerating files that were never written (the recorded `new` token
+      is absent because the write never happened, which is not the "file was
+      edited since" case that currently aborts the whole undo).
+- [ ] Order the config rewrite and the target writes so a crash between them is
+      recoverable in one direction only, and document which one is written first
+      and why in `doc/DEVELOPMENT.md`.
+- [ ] Add tests that inject a write failure mid-run (e.g. a read-only directory
+      or an unwritable target as the Nth of M files) and assert: files are
+      restored, the journal reflects the interrupted run, and a following `undo`
+      leaves the tree exactly as it started.
+- [ ] Document the crash-safety guarantee — and its limits — in
+      `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
+
+## Milestone 32 — Code and Repository Hygiene
+
+Small cleanups worth doing before v1.0.0 freezes the surface.
+
+- [ ] Fix the decorative `--patch`/`-p` flag: it defaults to `true`, so
+      `resolveBump` cannot distinguish "explicitly requested" from "not given" —
+      hence the `_ = patch` discard in `internal/cli/cli.go`. Default it to
+      `false` and let the `default:` branch handle the none-given case, then
+      drop the discard. Confirm `--patch`, no flag, and `--patch=false` all
+      still behave as documented.
+- [ ] Remove the dead exported surface in `internal/files`: `ApplyBump`,
+      `ReadVersion`, `SetVersion`, and `SetKnownVersion` are unreferenced
+      outside tests, and the package is `internal/` so nothing external can ever
+      call them. Delete them with their tests (`SetVersion` is only reachable
+      through `ApplyBump`), or document why one is deliberately kept.
+- [ ] Narrow the blanket `*.toml` entry in `.gitignore`. It forced this repo's
+      own `incrmit.toml` to be force-added, and anyone who copies the pattern
+      will silently fail to commit their config for a TOML-configured tool.
+      Ignore only what actually needs ignoring (e.g. `.incrmit.state.toml`) and
+      confirm `git check-ignore -v incrmit.toml` reports nothing afterward.
+- [ ] Remove the stray `incrmit copy.toml` from the working tree, and confirm
+      the untracked build artifacts sitting in the repo root (the `incrmit`
+      binary, `coverage.out`, `.DS_Store`) are all covered by `.gitignore`.
+- [ ] Add a `make tidy` or equivalent check — or a CI step — that fails when a
+      build artifact or stray file appears at the repo root, so the tree stays
+      clean without relying on remembering.
+
+## Milestone 33 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -691,7 +869,7 @@ produce — so the user can see all three outcomes at once without running a
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
 
-## Milestone 29 — apt / dnf Repo via GitHub Pages
+## Milestone 34 — apt / dnf Repo via GitHub Pages
 
 Host signed apt and dnf repositories on GitHub Pages so users can
 `apt install incrmit` / `dnf install incrmit` after adding the repo once.
