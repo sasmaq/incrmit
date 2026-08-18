@@ -817,53 +817,115 @@ before v1.0.0 freezes the behavior.
       prerelease inside a filename (`app-1.2.3-rc.1.zip`) is matched as its core
       alone, so it bumps to `app-1.2.4-rc.1.zip` rather than `app-1.2.4.zip`.
 
-## Milestone 29 — Git Integration (the "commit" in incrmit)
+## Milestone 29 — Git Integration (the `push` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
-no commit, no tag, no push. This is both the largest gap between the pitch and
-the product and the clearest differentiator against `bump2version`,
-`standard-version`, and `release-please`. Everything here is opt-in — the
-default bump must keep working in a non-git directory exactly as it does today.
+no tag, no push. The gap is closed by one interactive command rather than a set
+of bump flags: `incrmit push` lists the versions recorded in `incrmit.toml`,
+the user picks one with the arrow keys and Enter (or quits without touching
+anything), and the tool tags that version and pushes the tag. Bump itself stays
+git-free — no `--commit`, no implicit tagging — so the default bump keeps
+working in a non-git directory exactly as it does today, and committing the
+bump is left to the user (or to a later milestone). Git access goes
+through `go-git` as a library, not through the `git` binary, so the tool keeps
+working where `git` is absent and the behavior is the same on every platform.
 
-- [ ] Add an `internal/git` package that shells out to the `git` binary (no new
-      dependency; a Go git library would dwarf the current one-dependency tree).
-      Detect availability and repository membership up front, and return typed
-      errors for "git not installed", "not a repository", and "dirty tree".
-- [ ] Add `--commit`/`-C` to the bump command: after a successful bump, stage
-      exactly the files incrmit wrote (including `incrmit.toml` and never the
-      state file) and create one commit. Never use `git add -A`.
-- [ ] Add `--message`/`-M2` (pick a short name that does not collide with the
-      existing `-M` for major) with a default template such as
-      `chore: bump version to {{.New}}`, supporting `{{.Old}}`, `{{.New}}`, and
-      `{{.Count}}` placeholders. Allow the default to be set in `incrmit.toml`.
-- [ ] Add `--tag`/`-t` to create an annotated tag on the new commit, with a
-      configurable prefix (default `v`, so `v1.2.4`) and a `--tag-message`
-      default. Refuse to overwrite an existing tag; exit `1` with the tag named.
-- [ ] Add `--push` to push the branch and, when tagging, the tag. Require an
-      explicit `--push` — never push implicitly from `--commit` or `--tag`.
-- [ ] Add `--sign` to pass `-S` to commit and `-s` to tag for users with signing
-      configured, and document that signing failures abort rather than fall back
-      to an unsigned commit.
-- [ ] Refuse to commit when the working tree has staged-but-unrelated changes,
-      unless `--allow-dirty` is passed, so a bump commit never sweeps up
-      unrelated work. Document the check and its escape hatch.
-- [ ] Extend `undo` to cover the git side: when the last bump created a commit
-      and/or tag that is still `HEAD` and unpushed, offer to remove them
-      (`--git` flag, off by default). Record the commit SHA and tag name in the
-      history entry so undo can verify it is reverting the right commit, and
-      refuse when `HEAD` has moved since.
-- [ ] Support all of the above in `--dry-run`: print the exact commit message,
-      the file list that would be staged, and the tag that would be created,
-      without touching the repository.
-- [ ] Add tests using a real temporary git repo (`git init` in `t.TempDir()`
-      with a fixed author/committer identity and `-c commit.gpgsign=false` so
-      the suite is hermetic), covering commit, tag, tag collision, dirty tree,
-      dry run, undo, and the not-a-repository path. Skip cleanly when `git` is
-      not on `PATH` so CI on a minimal image still passes.
-- [ ] Document the flags in `README.md`, the `incrmit(1)` man page, and
-      `doc/DEVELOPMENT.md`, including a CI recipe (bump, commit, tag, push) and
-      a note that the tool never pushes unless asked; add a `CHANGELOG.md` entry
-      under `Added`.
+- [ ] Add an `internal/git` package built on `github.com/go-git/go-git/v5`
+      (v5 is the current stable line; v6 is still alpha). This is the first
+      dependency the project has taken since `BurntSushi/toml` and by far the
+      largest — record the decision and its cost in `doc/DEVELOPMENT.md`
+      alongside the smaller `x/term` one the selector needs, and keep every
+      go-git import inside this one package so the rest of the tree stays
+      unaware of it. Expose a narrow surface (open repo, HEAD hash, tree status,
+      list tags, create annotated tag, push a ref) behind an interface the CLI
+      tests can fake, and return typed errors for "not a repository", "tag
+      already exists", "dirty tree", "no such remote", and "authentication
+      failed".
+- [ ] Add the `push` subcommand: dispatch it in `cli.Main` alongside `discover`,
+      `preview`, and `undo`, add it to the top-level overview and to
+      `incrmit help push` via the centralized text in `internal/cli/help.go`,
+      and reject unknown arguments with exit `2` the way the other commands do.
+- [ ] Build the candidate list from `incrmit.toml`: collect the distinct tokens
+      the `[[files]]` entries pin (`FileEntry.Token()`, so a prerelease is
+      offered as `1.2.4-rc.1`, not `1.2.4`), order them by `version.Compare`
+      with the newest first, and show each one with the files that hold it.
+      When entries disagree, mark the minority rows the way `preview` marks
+      drift so a half-finished bump is visible before anything is tagged. A
+      missing or empty config reuses the existing "run discover" error path and
+      its exit code.
+- [ ] Implement the selection as an arrow-key list, not a typed answer: the
+      candidates are drawn with one row highlighted, the user moves the
+      highlight with the up and down arrows and confirms with Enter, and nothing
+      is typed or echoed. This needs the terminal in raw mode — use
+      `golang.org/x/term` (`IsTerminal`, `MakeRaw`, `Restore`), which is small
+      and stdlib-adjacent; a full TUI framework would dwarf the tool and
+      hand-rolled termios syscalls would mean per-platform code. Restore the
+      terminal on every exit path, including a `SIGINT` handler, so a cancelled
+      prompt never leaves the shell without echo.
+- [ ] Define the key map and the redraw, and keep both testable: arrows arrive
+      as `ESC [ A` / `ESC [ B`, so decode key events from a byte stream in a
+      pure function that tests feed fixed sequences; accept `k`/`j` as aliases,
+      wrap at the ends of the list, confirm on Enter, and cancel on `q`, Esc, or
+      Ctrl-C — a cancel exits `0` having written nothing and says so. Redraw by
+      moving up the N rows just written and clearing each line
+      (`ESC [ A`, `ESC [ 2 K`) rather than clearing the screen, so scrollback
+      survives, and render frames to an `io.Writer` so they can be golden-tested
+      the way `preview` output is in `internal/cli/testdata`.
+- [ ] Make the command usable from CI: `--version <token>` selects a candidate
+      without prompting (unknown token → exit `2`, listing what is available),
+      and `--yes`/`-y` accepts the sole candidate when there is exactly one.
+      When stdin is not a terminal — a pipe, a CI runner, `< /dev/null` — the
+      arrow-key prompt cannot run at all, so never attempt raw mode there: fail
+      with exit `2` and the usage hint naming `--version` instead of blocking on
+      a prompt that no one can answer.
+- [ ] Create the tag: an annotated tag on the current `HEAD`, named with a
+      configurable prefix (default `v`, so `v1.2.4`) settable as `--prefix` or
+      `[git] tag_prefix` in `incrmit.toml`, with a `--tag-message` whose default
+      template is `Release {{.Version}}`. Refuse to overwrite an existing local
+      or remote tag — exit `1` naming the tag; no `--force` is offered.
+- [ ] Guard against tagging something that does not exist: refuse when the
+      worktree is dirty (unless `--allow-dirty`), and refuse when the files at
+      `HEAD` do not actually hold the selected token, so a version that was
+      bumped but never committed cannot be tagged. Both messages name the
+      offending files; document the check and its escape hatch.
+- [ ] Push the tag: `--remote` (default `origin`), pushing exactly the one tag
+      refspec — never a branch, never a bulk `--tags`. Report the remote and ref
+      that were pushed, and map a rejected push (remote tag exists, no such
+      remote) onto the typed errors above rather than surfacing go-git's raw
+      text. `--no-push` creates the tag locally and stops.
+- [ ] Resolve credentials explicitly, since go-git does not read git's
+      credential helper: SSH agent then `~/.ssh/id_*` for `git@`/`ssh://`
+      remotes, and a token from `GIT_TOKEN`/`GITHUB_TOKEN` (or `--token-env`)
+      for HTTPS remotes. Never prompt for a passphrase or password; on failure
+      say which mechanism was tried and what would fix it. Document that a
+      passphrase-protected key must be loaded into the agent.
+- [ ] Decide and document tag signing: `--sign` needs an OpenPGP entity because
+      go-git takes a key rather than delegating to `gpg`, so either load the key
+      named by `user.signingkey` and sign the tag object, or leave the flag out
+      of the first cut and say so explicitly in the docs. Whichever is chosen, a
+      signing failure aborts instead of falling back to an unsigned tag.
+- [ ] Support `--dry-run`/`-d`: print the selected version, the tag name and
+      message, the target commit (short SHA and subject), the remote, and the
+      refspec that would be pushed — touching neither the repository nor the
+      network.
+- [ ] Add hermetic tests: build a repository with go-git in `t.TempDir()` (fixed
+      author/committer identity, no signing), commit fixture files and an
+      `incrmit.toml`, and init a bare repository on disk as `origin` so a real
+      push is exercised over a `file://` remote with no network. Drive the
+      selector through the decoder rather than a real terminal — fixed byte
+      sequences for down-down-Enter, wrap-around at both ends, `q`, Esc, and
+      Ctrl-C — with golden frames for the rendered list. Cover the
+      single-candidate and `--version` paths, an unknown token, tag collision,
+      dirty tree, a version not present at `HEAD`, not-a-repository, a missing
+      remote, a non-TTY stdin refusing to prompt, and `--dry-run` writing
+      nothing.
+- [ ] Document the command in `README.md`, the `incrmit(1)` man page, and
+      `doc/DEVELOPMENT.md` — including a release recipe (bump, commit by hand,
+      `incrmit push`), the selector's keys, the credential rules, the
+      `--version` flag CI needs because the prompt requires a TTY, and a note
+      that nothing is ever pushed without running `push` — and add a
+      `CHANGELOG.md` entry under `Added`. Confirm the `govulncheck` gate from
+      Milestone 26 still passes with the go-git and `x/term` trees in `go.sum`.
 
 ## Milestone 30 — Conventional-Commit Bump Inference (`--auto`)
 
