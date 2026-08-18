@@ -75,6 +75,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		switch args[0] {
 		case "discover":
 			return runDiscover(args[1:], stdout, stderr)
+		case "preview":
+			return runPreview(args[1:], stdout, stderr)
 		case "undo":
 			return runUndo(args[1:], stdout, stderr)
 		case "version":
@@ -155,7 +157,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
-	targets, cfgPath, ignore, err := resolveTargets(opts)
+	targets, cfgPath, ignore, err := resolveTargets(opts.configPath, opts.file)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -265,6 +267,30 @@ type fileGroup struct {
 // failure it reports the problem to stderr and returns the appropriate exit
 // code; ExitOK indicates success.
 func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
+	groups, code := readGroups(targets, maxBytes, stderr)
+	if code != ExitOK {
+		return nil, code
+	}
+	for i := range groups {
+		for j := range groups[i].entries {
+			e := &groups[i].entries[j]
+			newVer, err := bump(e.oldVer)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: %v\n", groups[i].display, err)
+				return nil, classify(err)
+			}
+			e.newVer = newVer
+		}
+	}
+	return groups, ExitOK
+}
+
+// readGroups reads every target file once and records the version each entry
+// starts from, grouping entries that refer to the same file. It is the half of
+// the planning work that does not depend on which bump was asked for, so the
+// read-only `preview` command shares it with the bump path; entries come back
+// with oldVer set and newVer left zero for the caller to fill in.
+func readGroups(targets []target, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	var groups []fileGroup
 	index := make(map[string]int, len(targets))
 	for _, tgt := range targets {
@@ -298,12 +324,7 @@ func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Write
 				return nil, classify(err)
 			}
 		}
-		newVer, err := bump(oldVer)
-		if err != nil {
-			fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
-			return nil, classify(err)
-		}
-		groups[gi].entries = append(groups[gi].entries, entryPlan{oldVer: oldVer, newVer: newVer})
+		groups[gi].entries = append(groups[gi].entries, entryPlan{oldVer: oldVer})
 	}
 	return groups, ExitOK
 }
@@ -458,19 +479,21 @@ type target struct {
 	knownVer string // current version recorded in the config ("" if none)
 }
 
-// resolveTargets returns the files to bump, the config path they came from
-// (empty in --file mode), and the config's ignore list (nil in --file mode, and
-// carried through so a config rewrite preserves it). It uses either the single
-// --file target or every entry in the config. Config-relative paths are resolved
-// against the directory containing the config file. When a config entry records
-// a version, it is carried through so the bump can target that exact version and
-// avoid re-scanning files that contain several version-like strings.
-func resolveTargets(opts bumpOptions) ([]target, string, []string, error) {
-	if opts.file != "" {
-		return []target{{display: opts.file, fsPath: opts.file}}, "", nil, nil
+// resolveTargets returns the files a command should act on, the config path they
+// came from (empty in --file mode), and the config's ignore list (nil in --file
+// mode, and carried through so a config rewrite preserves it). It uses either
+// the single file target or every entry in the config at configPath.
+// Config-relative paths are resolved against the directory containing the config
+// file. When a config entry records a version, it is carried through so the
+// caller can target that exact version and avoid re-scanning files that contain
+// several version-like strings. It is shared by `bump` and `preview` so both
+// resolve targets identically.
+func resolveTargets(configPath, file string) ([]target, string, []string, error) {
+	if file != "" {
+		return []target{{display: file, fsPath: file}}, "", nil, nil
 	}
 
-	cfgPath := config.ResolvePath(opts.configPath)
+	cfgPath := config.ResolvePath(configPath)
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, "", nil, err

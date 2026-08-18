@@ -1,7 +1,7 @@
 BINARY := incrmit
 # Static version, kept in sync by incrmit itself (see incrmit.toml). Override on
 # the command line for one-off builds, e.g. `make build VERSION=1.2.3`.
-VERSION ?= 0.2.0
+VERSION ?= 0.2.1
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 # -trimpath keeps the builder's absolute source paths out of the binary, so an
 # artifact neither discloses the directory it was built in nor depends on it:

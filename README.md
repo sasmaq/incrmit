@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.2.0
+## Version: 0.2.1
 
 ## Overview
 
@@ -26,6 +26,8 @@ workflows.
   advance one with `--pre rc`.
 - Writes the updated version back to the source files in place (atomic,
   only the version token changes).
+- Shows every file's current version next to its next patch, minor, and major
+  with `incrmit preview`, without writing anything.
 - Reverts the most recent bump with `incrmit undo`, restoring the previous
   version in every file (and in `incrmit.toml`).
 - Ships as a single self-contained binary with predictable exit codes
@@ -62,7 +64,7 @@ checksum file from the same release and comparing hashes (replace `X.Y.Z` with
 the release version):
 
 ```bash
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -87,7 +89,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums-macos.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -96,7 +98,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -106,7 +108,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
@@ -117,7 +119,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.2.0
+VERSION=0.2.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -143,7 +145,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.26 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.2.0
+go install github.com/sasmaq/incrmit@v0.2.1
 ```
 
 ### Build from source
@@ -201,8 +203,8 @@ A prerelease or build section is recorded in its own key rather than inside
 ```toml
 [[files]]
   path = "VERSION"
-  version = "0.2.0"
-  prerelease = "rc.1"   # the file holds 0.2.0-rc.1
+  version = "0.2.1"
+  prerelease = "rc.1"   # the file holds 0.2.1-rc.1
 ```
 
 That rewrite regenerates the file from its parsed contents in a fixed layout, so
@@ -416,6 +418,73 @@ incrmit discover -s 0
 incrmit --max-file-size 1MiB
 ```
 
+## Preview
+
+`incrmit preview` answers "what would the next version be?" for every file at
+once. It prints each configured file's current version next to what a
+`--patch`, `--minor`, and `--major` bump would write, so all three outcomes are
+visible without running a `--dry-run` per component:
+
+```bash
+incrmit preview
+```
+
+```text
+PATH                             CURRENT  PATCH    MINOR   MAJOR
+Makefile                         0.1.15   0.1.16   0.2.1   1.0.0
+README.md                        0.1.15   0.1.16   0.2.1   1.0.0
+README.md                        v0.1.15  v0.1.16  v0.2.1  v1.0.0
+internal/buildinfo/buildinfo.go  0.1.15   0.1.16   0.2.1   1.0.0
+```
+
+`preview` is **read-only**: it writes no target file, no config, and no bump
+history. A few details:
+
+- **The `v` prefix is preserved** in every projection, so a `v1.2.3` entry
+  previews as `v1.2.4` / `v1.3.0` / `v2.0.0` — exactly what a bump would write.
+- **A prerelease or build section is dropped** by all three component bumps, so
+  `1.2.3-rc.1` previews as `1.2.4` / `1.3.0` / `2.0.0`. Use `--release` and
+  `--pre` on a real bump to work within a prerelease.
+- **A file listed once per version it contains** (see
+  [Discovery](#discovery)) gets one row per version; an identical `path` and
+  `version` is never printed twice.
+- **`--file` previews a single target** without a config, with the same
+  semantics as a `--file` bump.
+- **`--max-file-size` applies**, exactly as it does to a bump: no cap by
+  default, and an oversized target is reported rather than read.
+
+### Out-of-sync entries
+
+When the config holds versions that disagree, the rows that differ from the
+version most entries hold are marked `*` and explained under the table, so a
+file left behind by a partial bump is visible at a glance:
+
+```text
+PATH       CURRENT  PATCH   MINOR   MAJOR
+VERSION    1.2.3    1.2.4   1.3.0   2.0.0
+README.md  v1.2.3   v1.2.4  v1.3.0  v2.0.0
+stale.txt  1.0.0    1.0.1   1.1.0   2.0.0   *
+
+* differs from 1.2.3, the version most entries hold
+```
+
+Only semver precedence counts as a difference: `v1.2.3`, `1.2.3`, and
+`1.2.3+build.7` name the same release and are never marked. A file that holds a
+deliberately different version — a vendored dependency, say — is marked too,
+since the tool cannot tell it apart from drift.
+
+### Preview flags
+
+| Flag | Short | Description | Default |
+| ---- | ----- | ----------- | ------- |
+| `--config` | `-c` | Path to the TOML config file | `incrmit.toml` |
+| `--file` | `-f` | Preview one file (skips config) | *none* |
+| `--max-file-size` | `-s` | [Refuse to read a target larger than this](#limiting-how-much-is-read) | *no limit* |
+
+Exit codes follow the rest of the tool: a missing config exits `1` with a hint
+to run `incrmit discover`, bad flags exit `2`, and a version that cannot be
+parsed (or a `--file` target with no version in it) exits `3` naming the file.
+
 ## Undo
 
 Made a bump by mistake? `incrmit undo` reverts the most recent bump, restoring
@@ -469,7 +538,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.2.0
+# incrmit 0.2.1
 ```
 
 The version is baked into the binary and can be overridden at build time
@@ -550,7 +619,8 @@ incrmit -M
 # 1.2.3 -> 2.0.0
 ```
 
-Preview the change without writing it:
+Dry-run the change without writing it (see [Preview](#preview) to see all three
+component bumps at once):
 
 ```bash
 incrmit --dry-run
@@ -669,6 +739,7 @@ text:
 ```bash
 incrmit help              # overview of all commands
 incrmit help discover     # help for the discover command
+incrmit help preview      # help for the preview command
 incrmit help undo         # help for the undo command
 incrmit help version      # help for the version command
 incrmit help bump         # the default bump command's flags
@@ -688,6 +759,7 @@ incrmit — increment semantic versions across one or more files
 usage:
   incrmit [flags]            bump the version in the configured files (default)
   incrmit discover [flags]   scan the tree for version-bearing files and write a config
+  incrmit preview [flags]    show each file's version and its next patch/minor/major
   incrmit undo [flags]       revert the most recent bump
   incrmit version            print the incrmit tool version
   incrmit help [command]     show this overview, or help for a specific command

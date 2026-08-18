@@ -22,6 +22,12 @@
 .Op Fl d
 .Pp
 .Nm incrmit
+.Cm preview
+.Op Fl c Ar config
+.Op Fl f Ar file
+.Op Fl s Ar size
+.Pp
+.Nm incrmit
 .Cm undo
 .Op Fl c Ar config
 .Op Fl d
@@ -117,6 +123,29 @@ only regular files are read
 .Pq never pipes, devices, or sockets ,
 and files larger than 32 MiB are skipped
 .Pq see Fl -max-file-size .
+.It Cm preview
+Show, for every file in the config, the version it holds today alongside what a
+.Fl -patch ,
+.Fl -minor ,
+and
+.Fl -major
+bump would write, as an aligned table with the columns
+.Sy PATH , CURRENT , PATCH , MINOR ,
+and
+.Sy MAJOR .
+It is read-only: no target file, config, or bump history is written.
+A
+.Sq v
+prefix is carried into every projected version, and a prerelease or build
+section is dropped by all three bumps, exactly as a real bump would.
+A file listed once per version it contains gets one row per version.
+Rows whose version differs from the one most entries hold are marked
+.Sq *
+and explained under the table; only semver precedence counts as a difference, so
+.Sy v1.2.3
+and
+.Sy 1.2.3
+are not marked.
 .It Cm undo
 Revert the most recent bump, restoring the previous version in every file it
 changed and in
@@ -139,6 +168,7 @@ flags are aliases.
 Show an overview, or detailed help for
 .Cm bump ,
 .Cm discover ,
+.Cm preview ,
 .Cm undo ,
 .Cm version ,
 or
@@ -154,6 +184,10 @@ Default:
 .Pa incrmit.toml .
 .It Fl f , Fl -file Ar path
 Bump the version in a single file, skipping the config.
+Accepted by
+.Cm preview
+with the same meaning
+.Pq preview that one file .
 .It Fl M , Fl -major
 Bump the major version (resets minor and patch).
 .It Fl m , Fl -minor
@@ -216,6 +250,10 @@ nothing is written; the default is no limit.
 For
 .Cm discover ,
 a file over the limit is skipped; the default is 32MiB.
+For
+.Cm preview ,
+a target over the limit is reported as an error, as it is for a bump; the
+default is no limit.
 .It Fl d , Fl -dry-run
 Print the new version without writing files.
 .It Fl P , Fl -path Ar dir
@@ -278,7 +316,8 @@ Bump the patch version in all configured files:
 .Pp
 .Dl incrmit
 .Pp
-Preview a minor bump without writing:
+Dry-run a minor bump
+.Pq writes nothing :
 .Pp
 .Dl incrmit -m -d
 .Pp
@@ -294,6 +333,10 @@ Start a release candidate, then iterate on it, then ship it:
 Generate a config from the current tree:
 .Pp
 .Dl incrmit discover
+.Pp
+See every file's current version and its next patch, minor, and major:
+.Pp
+.Dl incrmit preview
 .Pp
 Revert the most recent bump:
 .Pp

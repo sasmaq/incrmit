@@ -28,6 +28,11 @@ const discoverFlags = `  -P, --path string         root directory to scan (defau
   -d, --dry-run             print discovered files without writing the config
 `
 
+const previewFlags = `  -c, --config string       path to the TOML config file (default "incrmit.toml")
+  -f, --file string         preview one file (skips config)
+  -s, --max-file-size size  refuse to read a larger target (default no limit)
+`
+
 const undoFlags = `  -c, --config string  path to the TOML config file (default "incrmit.toml")
   -d, --dry-run        preview the revert (new -> old) without writing
 `
@@ -78,6 +83,7 @@ const overviewHelp = `incrmit — increment semantic versions across one or more
 usage:
   incrmit [flags]            bump the version in the configured files (default)
   incrmit discover [flags]   scan the tree for version-bearing files and write a config
+  incrmit preview [flags]    show each file's version and its next patch/minor/major
   incrmit undo [flags]       revert the most recent bump
   incrmit version            print the incrmit tool version
   incrmit help [command]     show this overview, or help for a specific command
@@ -86,6 +92,8 @@ Bump flags (default command):
 ` + bumpFlags + `
 Discover flags (incrmit discover):
 ` + discoverFlags + `
+Preview flags (incrmit preview):
+` + previewFlags + `
 Undo flags (incrmit undo):
 ` + undoFlags + `
 Help flags (incrmit help, incrmit -h):
@@ -121,6 +129,31 @@ Scan a directory tree for version-bearing files and generate a config.
 Flags:
 ` + discoverFlags + sizeNote
 
+// previewHelp documents the preview command. It is shown by
+// `incrmit preview -h`, `incrmit help preview`, and on a preview usage error.
+const previewHelp = `usage: incrmit preview [flags]
+
+Show, for every file in the config, the version it holds today alongside what a
+--patch, --minor, and --major bump would write, as an aligned table:
+
+  PATH        CURRENT  PATCH   MINOR   MAJOR
+  README.md   0.1.15   0.1.16  0.2.0   1.0.0
+
+preview is read-only: it writes no file, no config, and no bump history.
+
+A "v" prefix is carried into every projected version (v1.2.3 previews as
+v1.2.4 / v1.3.0 / v2.0.0), and a prerelease or build section is dropped by all
+three bumps, exactly as a real bump would. A file listed once per version it
+contains gets one row per version.
+
+Rows whose version differs from the one most entries hold are marked "*" and
+explained under the table, so a file left behind by a partial bump is visible
+at a glance. Only semver precedence counts as a difference: v1.2.3 and 1.2.3
+name the same release and are not marked.
+
+Flags:
+` + previewFlags + sizeNote
+
 // undoHelp documents the undo command. It is shown by `incrmit undo -h`,
 // `incrmit help undo`, and on an undo usage error.
 const undoHelp = `usage: incrmit undo [flags]
@@ -146,8 +179,8 @@ aliases for this command.
 const helpHelp = `usage: incrmit help [command] [--no-banner]
 
 Show the incrmit overview, or detailed help for a specific command
-(bump, discover, undo, version, or help). The overview is printed under an
-ASCII banner; --no-banner leaves it out.
+(bump, discover, preview, undo, version, or help). The overview is printed
+under an ASCII banner; --no-banner leaves it out.
 
 Flags:
 ` + helpFlags
@@ -195,6 +228,8 @@ func runHelp(args []string, stdout, stderr io.Writer) int {
 		fprint(stdout, bumpHelp)
 	case "discover":
 		fprint(stdout, discoverHelp)
+	case "preview":
+		fprint(stdout, previewHelp)
 	case "undo":
 		fprint(stdout, undoHelp)
 	case "version":

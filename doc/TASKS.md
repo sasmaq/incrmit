@@ -637,44 +637,87 @@ current version alongside what a `--patch`, `--minor`, and `--major` bump would
 produce — so the user can see all three outcomes at once without running a
 `--dry-run` per component.
 
-- [ ] Decide the command name and document it (`preview` is the working name;
+- [x] Decide the command name and document it (`preview` is the working name;
       alternatives considered: `show`, `plan`, `list`). Pick one, and keep it a
       read-only command that never writes files, config, or state.
-- [ ] Implement the subcommand in `internal/cli`: load the config (same
+      Kept `preview`: it names what the output is (a projection) without
+      implying a staged change the way `plan` does, and `show`/`list` read as
+      "print the current state", which is only one of the four columns.
+- [x] Implement the subcommand in `internal/cli`: load the config (same
       resolution as bump, honoring `--config`/`-c`), parse each entry's version,
       and compute the patch, minor, and major results for it.
-- [ ] Render an aligned table with one row per config entry and the columns
+      `internal/cli/preview.go`. Rather than reimplement the load-and-parse
+      pass, `planGroups` was split in two: `readGroups` does the part that does
+      not depend on which bump was asked for (read each distinct file once,
+      resolve the config-pinned token or scan for one), and `planGroups` applies
+      the bump on top. Preview calls `readGroups`, so the "current" column is by
+      construction the version a bump would start from.
+- [x] Render an aligned table with one row per config entry and the columns
       `path`, `current`, `patch`, `minor`, `major` (e.g.
       `README.md  0.1.15  0.1.16  0.2.0  1.0.0`), padding columns to the widest
       value so the output stays readable in a plain terminal.
-- [ ] Preserve the `v`/`V` prefix in every projected version so a `v1.2.3` entry
+      Uppercase headers, a two-space gutter, and every column padded to its
+      widest cell. Lines are right-trimmed so no row carries trailing
+      whitespace (the last column, and an empty drift marker, would otherwise
+      leave some).
+- [x] Preserve the `v`/`V` prefix in every projected version so a `v1.2.3` entry
       previews as `v1.2.4` / `v1.3.0` / `v2.0.0`, matching what a real bump
       would write.
-- [ ] Group or de-duplicate repeated paths sensibly: a file with several
+      Free, because the projections come from `version.BumpPatch/Minor/Major`
+      themselves rather than from reformatted numbers — which also means a
+      prerelease or build section is dropped in the preview exactly as a real
+      component bump drops it.
+- [x] Group or de-duplicate repeated paths sensibly: a file with several
       occurrences (Milestone 20) appears once per distinct version token, and
       identical `path` + `version` rows are not printed twice.
-- [ ] Add `--file`/`-f` to preview a single target (bypassing the config, same
+      `previewRows` flattens the file groups into one row per
+      `(path, version)`, keeping config order.
+- [x] Add `--file`/`-f` to preview a single target (bypassing the config, same
       semantics as bump) and reuse the shared target-resolution code rather than
       duplicating it.
-- [ ] Support a machine-readable mode (e.g. `--json`, or a plain
-      tab-separated `--plain` for `awk`/`cut`) so the preview can be scripted;
-      decide and document which one ships.
-- [ ] Highlight entries that are out of sync — when the config holds versions
+      `resolveTargets` now takes the config path and file directly instead of a
+      `bumpOptions`, so bump and preview share it unchanged.
+- [x] Highlight entries that are out of sync — when the config holds versions
       that differ from each other, mark the rows (or print a short note) so a
       drifting file is visible in the preview.
-- [ ] Handle the error paths with the documented exit codes: missing config
+      Both: the drifting rows get a `*` and a footnote names the version most
+      entries hold. Drift is judged by semver precedence, so entries differing
+      only in the `v` prefix or in build metadata are not marked — they name the
+      same release, and marking them would bury the rows that really are behind
+      (this repo's own config, which lists `README.md` at both `0.2.0` and
+      `v0.2.0`, would otherwise be permanently flagged). Ties go to the higher
+      version, which is deterministic and reads the stragglers as stale. A file
+      that holds a deliberately different version, such as a vendored
+      dependency, is marked too; the tool cannot tell it from drift, and the
+      README says so.
+- [x] Handle the error paths with the documented exit codes: missing config
       suggests `discover` (exit `1`), bad flags exit `2`, and an unparseable or
       missing version token exits `3` with the offending path named.
-- [ ] Wire the command into the help system: add it to `overviewHelp`, add a
+      All four reuse the existing `classify` mapping and `config.NotExistError`,
+      so preview cannot drift from the codes the other commands return.
+- [x] Wire the command into the help system: add it to `overviewHelp`, add a
       `previewHelp` block with its flags, and support `incrmit help preview`,
       keeping all text centralized in `internal/cli/help.go`.
-- [ ] Add tests: table rendering against a golden file (multi-entry config,
+      Done, with `previewFlags` factored out and composed into both the overview
+      and `previewHelp` the way the other commands' blocks are.
+- [x] Add tests: table rendering against a golden file (multi-entry config,
       mixed `v`-prefixed and bare versions, differing column widths), the
       `--file` path, the machine-readable output, and each error/exit-code case;
       assert the command writes nothing to disk.
-- [ ] Document the command in `README.md` (with sample output), the
+      `internal/cli/preview_test.go` with two goldens under
+      `internal/cli/testdata` (in-sync table, drift table), regenerated
+      with `go test ./internal/cli/ -update`. No machine-readable output is
+      covered because none ships. The read-only claim is tested by
+      snapshotting every file in the tree before and after and comparing both
+      the contents and the file count, so a stray write or a new state file
+      fails. `internal/cli` coverage is 94.9%.
+- [x] Document the command in `README.md` (with sample output), the
       `incrmit(1)` man page, and `doc/DEVELOPMENT.md`, and add a `CHANGELOG.md`
       entry under `Added`.
+      README gained a `Preview` section (table, drift, flags), the man page a
+      `preview` command entry plus an example, and `DEVELOPMENT.md` sections 7
+      and 8.5 covering the design decisions.
+      The CHANGELOG entry is under a new `[Unreleased]` heading.
 
 ## Milestone 28 — Prerelease and Build Metadata
 

@@ -135,6 +135,30 @@ func TestE2EDiscover(t *testing.T) {
 	}
 }
 
+func TestE2EPreview(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n")
+	writeFile(t, dir, "VERSION", "1.2.3\n")
+
+	code, stdout, stderr := runBin(t, dir, "preview")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"CURRENT", "1.2.3", "1.2.4", "1.3.0", "2.0.0"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout missing %q: %q", want, stdout)
+		}
+	}
+	// Preview is read-only: the target keeps its version and no bump history
+	// (which only a real bump writes) appears next to the config.
+	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.2.3\n" {
+		t.Errorf("preview modified the file: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".incrmit.state.toml")); err == nil {
+		t.Errorf("preview wrote a state file")
+	}
+}
+
 func TestE2EUndo(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n")
@@ -188,6 +212,7 @@ func TestE2EHelp(t *testing.T) {
 		{"top-level-h", []string{"-h"}, "usage:"},
 		{"top-level-help", []string{"--help"}, "usage:"},
 		{"help-discover", []string{"help", "discover"}, "Scan a directory tree"},
+		{"help-preview", []string{"help", "preview"}, "usage: incrmit preview"},
 		{"help-undo", []string{"help", "undo"}, "Revert the most recent bump"},
 		{"help-version", []string{"help", "version"}, "Print the incrmit tool version"},
 	}

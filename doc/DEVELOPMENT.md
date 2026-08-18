@@ -279,6 +279,52 @@ A `--max-file-size` value is parsed by `cli.parseSize`: a plain byte count
 `G` are binary, `KB`/`MB`/`GB` decimal), case-insensitive. A size of `0` means
 no limit; a negative or unparseable value is a usage error (exit `2`).
 
+### Preview command
+
+```text
+incrmit preview [flags]
+```
+
+| Flag              | Short | Description                                   | Default        |
+| ----------------- | ----- | --------------------------------------------- | -------------- |
+| `--config`        | `-c`  | Path to the TOML config file                  | `incrmit.toml` |
+| `--file`          | `-f`  | Preview one file (skips config)               | *none*         |
+| `--max-file-size` | `-s`  | Refuse to read a target larger than this size | `0` (no limit) |
+
+A read-only view of what the three component bumps would produce for every
+configured file, so all of them are visible at once without a `--dry-run` per
+component. It writes nothing: no target, no config, no history. The name
+`preview` was chosen over `show`, `plan`, and `list` because it says what the
+output is (a projection, not the current state) without implying a staged
+change the way `plan` does.
+
+Target resolution and the read/parse pass are shared with the bump command
+(`resolveTargets` and `readGroups`), so the current version a preview reports is
+by construction the one a bump would start from — including the config-pinned
+token for a file that holds several versions.
+
+Output is an aligned table with one row per `(path, version)`; columns are
+padded to their widest value, and no line carries trailing whitespace. The
+projected versions come from `version.BumpPatch/BumpMinor/BumpMajor`, so the
+`v` prefix is carried through and a prerelease or build section is dropped
+exactly as a real bump would. An exact `(path, version)` repeat is printed once.
+
+Rows whose version differs from the one most entries hold are marked `*`, with a
+footnote naming that version. Drift is judged by semver precedence
+(`precedenceKey`), so entries differing only in the `v` prefix or in build
+metadata are *not* marked — they name the same release, and marking them would
+bury the rows that really are behind. The most common version wins; ties go to
+the higher one, which is deterministic and reads the stragglers as stale.
+
+There is deliberately no machine-readable mode: the table is for people, and a
+`--json` (or tab-separated `--plain`) output would be a second, separately
+stable contract for data the config already holds. Scripts that need the next
+version should read `incrmit.toml` or run a `--dry-run` bump.
+
+Error paths use the shared exit codes: a missing config is exit `1` with the
+`incrmit discover` hint from `config.NotExistError`, bad flags exit `2`, and an
+unparseable or absent version token exits `3` naming the file.
+
 ### Undo command
 
 ```text
@@ -317,6 +363,7 @@ incrmit help [command] [--no-banner]
 | `incrmit help`            | Overview listing every command and its flags.       |
 | `incrmit help bump`       | The default bump command's flags.                   |
 | `incrmit help discover`   | The discover command's flags.                       |
+| `incrmit help preview`    | The preview command's flags.                        |
 | `incrmit help undo`       | The undo command's flags.                           |
 | `incrmit help version`    | The version command's help.                         |
 | `incrmit help help`       | The help command's own usage.                       |
@@ -339,7 +386,8 @@ All usage and help text lives in one place (`internal/cli/help.go`) so the
 `-h` / `--help` output and the `help` command stay in sync; the commands'
 `flag.FlagSet` usage handlers and the `help` dispatch both reference those
 shared strings rather than duplicating them. Each command's flag block is
-factored into a shared constant (`bumpFlags`, `discoverFlags`) that is composed
+factored into a shared constant (`bumpFlags`, `discoverFlags`, `previewFlags`,
+`undoFlags`, `helpFlags`) that is composed
 into both the per-command help and the top-level overview, so the overview can
 list every flag without duplicating the flag text.
 
@@ -444,6 +492,21 @@ configured pattern matches.
 7. Pop the entry and save the journal so a repeated `undo` does not re-apply the
    same revert (and instead reverts the previous bump, if any).
 8. Report the reverted files (each `new -> old`).
+
+### 8.5 Preview
+
+1. Parse the preview flags. Resolve the targets exactly as a bump does
+   (`resolveTargets`): the single `--file` target, or every entry in the config.
+2. Read each distinct target once and determine the version it holds
+   (`readGroups`) — the config-pinned token when there is one, otherwise the
+   version found by scanning. This is steps 2–3 of the bump flow, shared rather
+   than reimplemented, so a preview cannot disagree with the bump it previews.
+3. Project each version through all three component bumps and flatten the groups
+   into rows, dropping an exact `(path, version)` repeat (`previewRows`).
+4. Compare the rows by semver precedence and mark those that differ from the
+   most common version (`markDrift`).
+5. Render the aligned table, plus the drift footnote when anything is marked.
+   Nothing is written to disk on any path.
 
 ## 9. Version Detection Strategy
 
@@ -732,6 +795,10 @@ incrmit/
 - Discovery tests over a fixture tree covering each supported file type.
 - CLI integration tests covering default bump, `--file`, `discover`, and
   `--dry-run`, asserting output and exit codes.
+- Golden-file tests for the `preview` table, in sync and drifting
+  (`internal/cli/testdata/preview_*.golden`, regenerated with
+  `go test ./internal/cli/ -update`), alongside a test that asserts a preview
+  leaves every file in the tree byte-identical.
 
 ## 13. Build and Release
 

@@ -5,6 +5,24 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-18
+
+### Added
+
+- An `incrmit preview` command shows, for every file in the config, the version
+  it holds today alongside what a `--patch`, `--minor`, and `--major` bump
+  would write — all three outcomes in one aligned table, without a `--dry-run`
+  per component. It is read-only: no target file, config, or bump history is
+  written. The `v` prefix is carried into every projection, a prerelease or
+  build section is dropped exactly as a real bump would drop it, and a file
+  listed once per version it contains gets one row per version.
+  - Rows whose version differs from the one most entries hold are marked `*`
+    and explained under the table, so a file left behind by a partial bump is
+    visible at a glance. Only semver precedence counts as a difference, so
+    `v1.2.3`, `1.2.3`, and `1.2.3+build.7` are never marked against each other.
+  - `--file` / `-f` previews a single target without a config, and
+    `--max-file-size` / `-s` applies as it does to a bump.
+
 ## [0.2.0] - 2026-08-14
 
 ### Added

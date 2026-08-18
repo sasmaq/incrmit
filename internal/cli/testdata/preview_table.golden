@@ -1,0 +1,4 @@
+PATH                         CURRENT  PATCH   MINOR   MAJOR
+VERSION                      1.2.3    1.2.4   1.3.0   2.0.0
+docs/deeply/nested/notes.md  v1.2.3   v1.2.4  v1.3.0  v2.0.0
+app.py                       1.2.3    1.2.4   1.3.0   2.0.0
