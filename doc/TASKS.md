@@ -826,21 +826,32 @@ the user picks one with the arrow keys and Enter (or quits without touching
 anything), and the tool tags that version and pushes the tag. Bump itself stays
 git-free — no `--commit`, no implicit tagging — so the default bump keeps
 working in a non-git directory exactly as it does today, and committing the
-bump is left to the user (or to a later milestone). Git access goes
-through `go-git` as a library, not through the `git` binary, so the tool keeps
-working where `git` is absent and the behavior is the same on every platform.
+bump is left to the user (or to a later milestone). Git access goes through the
+`git` binary rather than a Go git library: `push` does not reimplement git, it
+tags `HEAD` and pushes one ref through the user's own remotes, credential
+helpers, SSH config, and signing setup — exactly the parts an in-process
+library does not inherit. Shelling out also keeps the dependency list at one
+module, and makes `incrmit push` succeed wherever `git push` already does.
 
-- [ ] Add an `internal/git` package built on `github.com/go-git/go-git/v5`
-      (v5 is the current stable line; v6 is still alpha). This is the first
-      dependency the project has taken since `BurntSushi/toml` and by far the
-      largest — record the decision and its cost in `doc/DEVELOPMENT.md`
-      alongside the smaller `x/term` one the selector needs, and keep every
-      go-git import inside this one package so the rest of the tree stays
-      unaware of it. Expose a narrow surface (open repo, HEAD hash, tree status,
-      list tags, create annotated tag, push a ref) behind an interface the CLI
-      tests can fake, and return typed errors for "not a repository", "tag
-      already exists", "dirty tree", "no such remote", and "authentication
-      failed".
+- [ ] Add an `internal/git` package that wraps the `git` binary with
+      `os/exec` (never a shell), and record the decision in
+      `doc/DEVELOPMENT.md`: a library such as `go-git` was rejected because it
+      ignores credential helpers, `~/.ssh/config`, `insteadOf`, and `gpg`
+      signing, and would add a large dependency tree to a project that has had
+      one module since `BurntSushi/toml`. Expose a narrow surface (locate repo,
+      HEAD hash and subject, tree status, list tags, create annotated tag, push
+      one ref) behind an interface the CLI tests can fake, and return typed
+      errors for "git not installed", "not a repository", "tag already exists",
+      "dirty tree", "no such remote", and "authentication failed".
+- [ ] Make the subprocess calls predictable: resolve the binary once with
+      `exec.LookPath("git")` and fail with a clear "git is required by
+      `incrmit push`" message (exit `1`) when it is absent; run every command
+      with `-C <repo root>` from `git rev-parse --show-toplevel`; pass
+      arguments as a slice with `--` before user-supplied values so a tag name
+      can never be read as a flag; and set `GIT_TERMINAL_PROMPT=0` so a missing
+      credential fails instead of blocking on an invisible prompt. Capture
+      stdout and stderr separately, and give every call a timeout so a hung
+      remote cannot wedge the command.
 - [ ] Add the `push` subcommand: dispatch it in `cli.Main` alongside `discover`,
       `preview`, and `undo`, add it to the top-level overview and to
       `incrmit help push` via the centralized text in `internal/cli/help.go`,
@@ -889,43 +900,64 @@ working where `git` is absent and the behavior is the same on every platform.
       bumped but never committed cannot be tagged. Both messages name the
       offending files; document the check and its escape hatch.
 - [ ] Push the tag: `--remote` (default `origin`), pushing exactly the one tag
-      refspec — never a branch, never a bulk `--tags`. Report the remote and ref
-      that were pushed, and map a rejected push (remote tag exists, no such
-      remote) onto the typed errors above rather than surfacing go-git's raw
-      text. `--no-push` creates the tag locally and stops.
-- [ ] Resolve credentials explicitly, since go-git does not read git's
-      credential helper: SSH agent then `~/.ssh/id_*` for `git@`/`ssh://`
-      remotes, and a token from `GIT_TOKEN`/`GITHUB_TOKEN` (or `--token-env`)
-      for HTTPS remotes. Never prompt for a passphrase or password; on failure
-      say which mechanism was tried and what would fix it. Document that a
-      passphrase-protected key must be loaded into the agent.
-- [ ] Decide and document tag signing: `--sign` needs an OpenPGP entity because
-      go-git takes a key rather than delegating to `gpg`, so either load the key
-      named by `user.signingkey` and sign the tag object, or leave the flag out
-      of the first cut and say so explicitly in the docs. Whichever is chosen, a
-      signing failure aborts instead of falling back to an unsigned tag.
+      refspec (`refs/tags/<name>`) — never a branch, never a bulk `--tags`.
+      Report the remote and ref that were pushed, and map a rejected push
+      (remote tag exists, no such remote, authentication refused) onto the typed
+      errors above by matching git's exit status and stderr, rather than dumping
+      git's raw output as the user-facing message. Keep the underlying stderr
+      available for a `--verbose`-style path so a genuinely unusual failure is
+      still diagnosable. `--no-push` creates the tag locally and stops.
+- [ ] Let credentials stay the user's: because the push runs through `git`, the
+      credential helper, `~/.ssh/config` (including `IdentityFile`, `Host`
+      aliases, and `ProxyJump`), `insteadOf` rewrites, and the SSH agent all
+      apply unchanged, so `incrmit push` authenticates wherever `git push`
+      already does — no token flags or key-loading logic of our own. Document
+      that, and that `GIT_TERMINAL_PROMPT=0` turns a missing credential into a
+      clear failure instead of a hidden prompt.
+- [ ] Support signed tags by delegating: `--sign` runs `git tag -s`, so
+      `user.signingkey` and `gpg.format` (OpenPGP or SSH signing) are honored
+      as configured, and `tag.gpgSign = true` in the user's config is respected
+      without a flag. A signing failure aborts rather than falling back to an
+      unsigned tag; document that the key must already be usable by `git tag -s`.
 - [ ] Support `--dry-run`/`-d`: print the selected version, the tag name and
       message, the target commit (short SHA and subject), the remote, and the
       refspec that would be pushed — touching neither the repository nor the
       network.
-- [ ] Add hermetic tests: build a repository with go-git in `t.TempDir()` (fixed
-      author/committer identity, no signing), commit fixture files and an
-      `incrmit.toml`, and init a bare repository on disk as `origin` so a real
-      push is exercised over a `file://` remote with no network. Drive the
-      selector through the decoder rather than a real terminal — fixed byte
-      sequences for down-down-Enter, wrap-around at both ends, `q`, Esc, and
-      Ctrl-C — with golden frames for the rendered list. Cover the
+- [ ] Add hermetic tests: build a repository with `git init` in `t.TempDir()`
+      (fixed author/committer identity, signing off, `HOME` and `GIT_CONFIG_*`
+      pointed at the temp dir so the developer's own git config cannot leak in),
+      commit fixture files and an `incrmit.toml`, and `git init --bare` a
+      repository on disk as `origin` so a real push is exercised over a
+      `file://` remote with no network. Skip these tests with a clear message
+      when `git` is not on `PATH` rather than failing, and keep the CLI-level
+      tests on the fake interface so only `internal/git` needs a real binary.
+      Drive the selector through the decoder rather than a real terminal —
+      fixed byte sequences for down-down-Enter, wrap-around at both ends, `q`,
+      Esc, and Ctrl-C — with golden frames for the rendered list. Cover the
       single-candidate and `--version` paths, an unknown token, tag collision,
-      dirty tree, a version not present at `HEAD`, not-a-repository, a missing
-      remote, a non-TTY stdin refusing to prompt, and `--dry-run` writing
-      nothing.
+      dirty tree, a version not present at `HEAD`, not-a-repository, git missing
+      from `PATH`, a missing remote, a non-TTY stdin refusing to prompt, and
+      `--dry-run` writing nothing.
+- [ ] Declare the new runtime dependency where users meet it: note that `push`
+      (and only `push`) needs `git` on `PATH` in `README.md` and the man page,
+      and add `recommends: [git]` to `packaging/nfpm.yaml` so both the `.deb`
+      and the `.rpm` carry a weak dependency. `Recommends` is the right strength
+      here: it is installed by default by `apt` and `dnf`, so `push` works out
+      of the box, but it stays removable and never blocks installing `incrmit`
+      on a machine without git — which a hard `Depends` would, for a tool whose
+      every other command needs no git at all. (`Suggests` is too weak: it
+      installs nothing, so the common case silently lacks git.) Verify the
+      field lands in both formats — `dpkg -I` shows the `Recommends:` line and
+      `rpm -qp --recommends` reports `git` — and that `dpkg -i` on a
+      git-less system still succeeds.
 - [ ] Document the command in `README.md`, the `incrmit(1)` man page, and
       `doc/DEVELOPMENT.md` — including a release recipe (bump, commit by hand,
-      `incrmit push`), the selector's keys, the credential rules, the
-      `--version` flag CI needs because the prompt requires a TTY, and a note
-      that nothing is ever pushed without running `push` — and add a
-      `CHANGELOG.md` entry under `Added`. Confirm the `govulncheck` gate from
-      Milestone 26 still passes with the go-git and `x/term` trees in `go.sum`.
+      `incrmit push`), the selector's keys, the fact that authentication and
+      signing are the user's existing git setup, the `--version` flag CI needs
+      because the prompt requires a TTY, and a note that nothing is ever pushed
+      without running `push` — and add a `CHANGELOG.md` entry under `Added`.
+      Confirm the `govulncheck` gate from Milestone 26 still passes with the
+      `x/term` tree in `go.sum`.
 
 ## Milestone 30 — Conventional-Commit Bump Inference (`--auto`)
 

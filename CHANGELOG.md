@@ -5,6 +5,15 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The build and release pipeline runs on current GitHub Actions: `checkout`
+  v7.0.1, `setup-go` v7.0.0, and `action-gh-release` v3.0.3, each still pinned
+  to a commit SHA. The previous pins ran on the deprecated Node 20 runtime,
+  which GitHub had begun forcing onto Node 24 anyway.
+
 ## [0.2.1] - 2026-08-18
 
 ### Added
