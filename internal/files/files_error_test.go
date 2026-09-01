@@ -85,6 +85,178 @@ func TestReadTargetWithLimitUnreadableFile(t *testing.T) {
 	}
 }
 
+// ReadVersion is the read-only half of ApplyBump: preview and the config
+// self-check reach a file through it, so it has to report exactly what the file
+// holds, prefix and suffix sections included.
+func TestReadVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want version.Version
+	}{
+		{"bare", "1.2.3\n", version.Version{Major: 1, Minor: 2, Patch: 3}},
+		{"prefixed", "v1.2.3\n", version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
+		{
+			"prerelease and build",
+			"version = \"1.2.3-rc.1+build.7\"\n",
+			version.Version{Major: 1, Minor: 2, Patch: 3, Prerelease: "rc.1", Build: "build.7"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "VERSION")
+			if err := os.WriteFile(path, []byte(tt.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadVersion(path)
+			if err != nil {
+				t.Fatalf("ReadVersion: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ReadVersion(%q) = %+v, want %+v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+// Every failure names the file, since a caller reading several targets can only
+// act on the message if it says which one was at fault.
+func TestReadVersionErrors(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("missing file", func(t *testing.T) {
+		path := filepath.Join(dir, "absent")
+		_, err := ReadVersion(path)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("err = %v, want a not-exist error", err)
+		}
+		if !strings.Contains(err.Error(), "absent") {
+			t.Errorf("err = %v, want it to name the file", err)
+		}
+	})
+
+	t.Run("no version", func(t *testing.T) {
+		path := filepath.Join(dir, "plain.txt")
+		if err := os.WriteFile(path, []byte("nothing here\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ReadVersion(path)
+		if !errors.Is(err, ErrNoVersion) {
+			t.Fatalf("err = %v, want ErrNoVersion", err)
+		}
+		if !strings.Contains(err.Error(), "plain.txt") {
+			t.Errorf("err = %v, want it to name the file", err)
+		}
+	})
+
+	t.Run("ambiguous", func(t *testing.T) {
+		path := filepath.Join(dir, "two.txt")
+		if err := os.WriteFile(path, []byte("1.2.3 and 4.5.6\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var ambiguous *AmbiguousError
+		if _, err := ReadVersion(path); !errors.As(err, &ambiguous) {
+			t.Fatalf("err = %v, want *AmbiguousError", err)
+		}
+	})
+
+	t.Run("not a regular file", func(t *testing.T) {
+		if _, err := ReadVersion(dir); !errors.Is(err, ErrNotRegular) {
+			t.Errorf("err = %v, want ErrNotRegular", err)
+		}
+	})
+}
+
+// ApplyBump reads before it writes, so a target it cannot read or parse must
+// fail before any temp file is created — nothing in the directory changes.
+func TestApplyBumpErrors(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "absent")
+		_, _, err := ApplyBump(path, version.Version.BumpPatch, false)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("err = %v, want a not-exist error", err)
+		}
+		if !strings.Contains(err.Error(), "reading") {
+			t.Errorf("err = %v, want it to name the read step", err)
+		}
+	})
+
+	t.Run("no version leaves the file alone", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "plain.txt")
+		if err := os.WriteFile(path, []byte("nothing here\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, _, err := ApplyBump(path, version.Version.BumpPatch, false); !errors.Is(err, ErrNoVersion) {
+			t.Fatalf("err = %v, want ErrNoVersion", err)
+		}
+
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "nothing here\n" {
+			t.Errorf("file changed despite the failure: %q", got)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Errorf("directory holds %d entries, want only the target", len(entries))
+		}
+	})
+
+	t.Run("ambiguous", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "two.txt")
+		if err := os.WriteFile(path, []byte("1.2.3 and 4.5.6\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var ambiguous *AmbiguousError
+		if _, _, err := ApplyBump(path, version.Version.BumpPatch, false); !errors.As(err, &ambiguous) {
+			t.Errorf("err = %v, want *AmbiguousError", err)
+		}
+	})
+}
+
+// A readable file in a directory that cannot be written to gets as far as the
+// write and fails there. The failure has to surface from ApplyBump with the
+// file's old version still in place, since the caller reports the bump as
+// having happened otherwise.
+func TestApplyBumpReportsWriteFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions are not enforced")
+	}
+	dir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "VERSION")
+	if err := os.WriteFile(path, []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	_, _, err := ApplyBump(path, version.Version.BumpPatch, false)
+	if err == nil {
+		t.Fatal("ApplyBump succeeded in a read-only directory")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("err = %v, want a permission error", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "1.2.3\n" {
+		t.Errorf("file = %q, want the old version left in place", got)
+	}
+}
+
 // A file created by WriteAtomic (rather than replaced) has no previous mode to
 // preserve, so it must land on the documented 0644 default and never inherit
 // the 0600 the temp file holds while it is being written.

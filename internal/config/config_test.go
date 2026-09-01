@@ -194,6 +194,45 @@ func TestValidateRejectsDuplicatePathWithBareEntry(t *testing.T) {
 	}
 }
 
+// The same clash in the other order: a versioned entry after a bare one for the
+// same path. Order must not decide whether an ambiguous config is accepted.
+func TestValidateRejectsVersionedEntryAfterBare(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Files: []FileEntry{
+		{Path: "notes.md"},
+		{Path: "notes.md", Version: "1.2.3"},
+	}}
+	err := cfg.Validate(dir)
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for a bare entry followed by a versioned one")
+	}
+	if !strings.Contains(err.Error(), "notes.md") {
+		t.Errorf("err = %v, want it to name the path", err)
+	}
+}
+
+// A target whose path runs through a regular file cannot be stat-ed at all.
+// That is neither "missing" nor "a directory", so it takes the general branch
+// and must still report the path rather than a bare OS error.
+func TestValidateStatErrorOtherThanMissing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notafolder"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Files: []FileEntry{{Path: "notafolder/VERSION", Version: "1.2.3"}}}
+
+	err := cfg.Validate(dir)
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for a path under a regular file")
+	}
+	if !strings.Contains(err.Error(), "notafolder/VERSION") {
+		t.Errorf("err = %v, want it to name the target", err)
+	}
+}
+
 // Validation errors should name the specific problem so users can fix the
 // config without guessing.
 func TestValidateErrorMessages(t *testing.T) {
@@ -387,6 +426,34 @@ func TestLoadIgnoreLenient(t *testing.T) {
 	}
 }
 
+// Being lenient about a missing or non-config file must not extend to a config
+// that exists and cannot be read: silently ignoring it would drop the user's
+// ignore list and scan the directories they asked to skip.
+func TestLoadIgnoreReportsReadErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: file permissions are not enforced")
+	}
+	path := filepath.Join(t.TempDir(), "incrmit.toml")
+	if err := os.WriteFile(path, []byte("ignore = [\"docs/\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	got, err := LoadIgnore(path)
+	if err == nil {
+		t.Fatal("LoadIgnore() = nil error for an unreadable config")
+	}
+	if got != nil {
+		t.Errorf("patterns = %v, want nil alongside the error", got)
+	}
+	if !strings.Contains(err.Error(), "incrmit.toml") {
+		t.Errorf("err = %v, want it to name the config", err)
+	}
+}
+
 // The ignore list round-trips through Marshal, and must be encoded before the
 // [[files]] table to stay valid TOML.
 func TestMarshalIgnoreRoundTrip(t *testing.T) {
@@ -473,6 +540,52 @@ func TestFileEntryToken(t *testing.T) {
 		if got := tt.entry.Token(); got != tt.want {
 			t.Errorf("%+v.Token() = %q, want %q", tt.entry, got, tt.want)
 		}
+	}
+}
+
+// SetToken is Token's inverse: whatever Token assembles has to split back into
+// the same three keys, so a config round-trips through either direction.
+func TestFileEntrySetToken(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  FileEntry
+	}{
+		{"bare", "1.2.3", FileEntry{Path: "p", Version: "1.2.3"}},
+		{"prefixed", "v1.2.3", FileEntry{Path: "p", Version: "v1.2.3"}},
+		{"prerelease", "1.2.3-rc.1", FileEntry{Path: "p", Version: "1.2.3", Prerelease: "rc.1"}},
+		{"build", "1.2.3+build.7", FileEntry{Path: "p", Version: "1.2.3", Build: "build.7"}},
+		{
+			"both sections",
+			"v1.2.3-rc.1+build.7",
+			FileEntry{Path: "p", Version: "v1.2.3", Prerelease: "rc.1", Build: "build.7"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := FileEntry{Path: "p"}
+			entry.SetToken(tt.token)
+			if entry != tt.want {
+				t.Errorf("SetToken(%q) = %+v, want %+v", tt.token, entry, tt.want)
+			}
+			if got := entry.Token(); got != tt.token {
+				t.Errorf("Token() = %q, want the token it was set from (%q)", got, tt.token)
+			}
+		})
+	}
+}
+
+// A token that does not parse is kept verbatim rather than dropped, so the
+// command that needs it reports the bad value instead of an empty one. Any
+// sections left from a previous value are cleared, so no half-updated entry
+// survives.
+func TestFileEntrySetTokenKeepsUnparseableValue(t *testing.T) {
+	entry := FileEntry{Path: "p", Version: "1.2.3", Prerelease: "rc.1", Build: "build.7"}
+	entry.SetToken("not-a-version")
+
+	want := FileEntry{Path: "p", Version: "not-a-version"}
+	if entry != want {
+		t.Errorf("SetToken(bad) = %+v, want %+v", entry, want)
 	}
 }
 

@@ -388,6 +388,50 @@ func TestMarkDrift(t *testing.T) {
 	}
 }
 
+// The common version is the one most rows hold, not the one the first row
+// happens to hold, so a single stale entry listed first does not drag the
+// whole table into being marked.
+func TestMarkDriftFollowsTheMajority(t *testing.T) {
+	stale := version.Version{Major: 1}
+	current := version.Version{Major: 2}
+
+	rows := []previewRow{
+		{current: stale, inSync: true},
+		{current: current, inSync: true},
+		{current: current, inSync: true},
+	}
+	common, drifted := markDrift(rows)
+	if !drifted {
+		t.Fatal("differing rows were not reported as drifting")
+	}
+	if common.String() != "2.0.0" {
+		t.Errorf("common = %s, want 2.0.0 (held by two of three rows)", common)
+	}
+	if rows[0].inSync {
+		t.Error("the lone 1.0.0 row was not marked")
+	}
+	if !rows[1].inSync || !rows[2].inSync {
+		t.Error("a majority row was marked as drifting")
+	}
+}
+
+// A majority that is *lower* than the outlier still wins: the count decides,
+// and precedence only breaks a tie. Otherwise one file bumped ahead of the rest
+// would make every other file look stale.
+func TestMarkDriftMajorityBeatsHigherVersion(t *testing.T) {
+	common, drifted := markDrift([]previewRow{
+		{current: version.Version{Major: 1}},
+		{current: version.Version{Major: 1}},
+		{current: version.Version{Major: 9}},
+	})
+	if !drifted {
+		t.Fatal("differing rows were not reported as drifting")
+	}
+	if common.String() != "1.0.0" {
+		t.Errorf("common = %s, want 1.0.0 (held by two of three rows)", common)
+	}
+}
+
 // preview is reachable from the help system: the overview lists it, and both
 // `incrmit help preview` and `incrmit preview -h` print its centralized help.
 func TestPreviewHelp(t *testing.T) {

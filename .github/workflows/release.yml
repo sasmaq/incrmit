@@ -47,8 +47,9 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          # Pinned to the same version as the CI workflow and local runs.
-          version: v2.12.2
+          # Pinned to the same version as the CI workflow and local runs, and
+          # tied to the go-version above for the reason documented there.
+          version: v2.13.2
 
       # Set the proxy and checksum database explicitly rather than inheriting them
       # from the runner: they are what make a pinned module version immutable, so

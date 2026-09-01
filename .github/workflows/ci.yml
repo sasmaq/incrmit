@@ -63,7 +63,15 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           # Pinned so `golangci-lint run` locally reports exactly what CI does.
-          version: v2.12.2
+          #
+          # This version is tied to the go-version above: the released binary
+          # embeds go/types from the Go it was built with, and it cannot
+          # typecheck the standard library of a newer one. Go 1.27 moving to
+          # `stable` broke v2.12.2 (built with 1.26) with a typecheck error
+          # inside internal/poll. Bump this whenever a new Go release does the
+          # same, and pick a golangci-lint built with that Go or later
+          # (`golangci-lint --version` reports it).
+          version: v2.13.2
 
   vulncheck:
     name: Vulnerability scan

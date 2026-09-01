@@ -768,3 +768,32 @@ func TestDiscoverRecordsCoreInsideFilenames(t *testing.T) {
 		t.Errorf("config recorded part of the filename as the version:\n%s", data)
 	}
 }
+
+// A file the scan cannot open is skipped rather than failing the whole walk:
+// discovery runs over trees it does not own, and one unreadable file must not
+// stop the versions in every other file from being found.
+func TestDiscoverSkipsUnreadableFiles(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: file permissions are not enforced")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte("1.2.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(root, "locked.txt")
+	if err := os.WriteFile(locked, []byte("9.9.9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+
+	results, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if got := paths(results); len(got) != 1 || got[0] != "VERSION" {
+		t.Errorf("paths = %v, want only VERSION", got)
+	}
+}

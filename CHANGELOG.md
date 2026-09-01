@@ -7,12 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Broadened test coverage over paths that had none, so the behavior they
+  describe cannot regress unnoticed: reading a version from a file, splitting a
+  version token across the config's keys, semver precedence for prerelease
+  numbers too large for a 64-bit integer, drift detection following the version
+  most files hold rather than the first one listed, ignore patterns that trim to
+  nothing or outrun the path, an unreadable file being skipped by `discover`
+  instead of failing the scan, and `undo` refusing a journal whose recorded
+  version does not parse. Coverage rose from 92.9% to 95.8%.
+
 ### Changed
 
 - The build and release pipeline runs on current GitHub Actions: `checkout`
   v7.0.1, `setup-go` v7.0.0, and `action-gh-release` v3.0.3, each still pinned
   to a commit SHA. The previous pins ran on the deprecated Node 20 runtime,
   which GitHub had begun forcing onto Node 24 anyway.
+- CI lints with `golangci-lint` v2.13.2, up from v2.12.2. A released
+  `golangci-lint` can only typecheck the standard library of the Go it was built
+  with or older, so Go 1.27 becoming `stable` made the older pin fail on Go's
+  own `internal/poll` rather than on anything in this repository.
 
 ## [0.2.1] - 2026-08-18
 

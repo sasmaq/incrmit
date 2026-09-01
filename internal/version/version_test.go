@@ -346,6 +346,66 @@ func TestCompare(t *testing.T) {
 	}
 }
 
+// Semver puts no ceiling on a numeric prerelease identifier, so one can be too
+// large for an int. The fallback compares by digit count and then by text,
+// which orders zero-padding-free digits exactly as the numeric comparison
+// would — including against an identifier small enough to parse.
+func TestCompareOversizedNumericIdentifiers(t *testing.T) {
+	// Each entry precedes the next. The last two are past math.MaxInt64.
+	ordered := []string{
+		"1.0.0-1",
+		"1.0.0-9223372036854775807",
+		"1.0.0-9223372036854775808",
+		"1.0.0-99999999999999999999",
+	}
+	for i := range ordered {
+		for j := range ordered {
+			a, err := Parse(ordered[i])
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", ordered[i], err)
+			}
+			b, err := Parse(ordered[j])
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", ordered[j], err)
+			}
+			want := cmpInt(i, j)
+			if got := Compare(a, b); got != want {
+				t.Errorf("Compare(%q, %q) = %d, want %d", ordered[i], ordered[j], got, want)
+			}
+		}
+	}
+}
+
+// A numeric identifier always ranks below an alphanumeric one, whatever the
+// digits are, so an oversized number does not jump the type ordering.
+func TestCompareNumericRanksBelowAlphanumeric(t *testing.T) {
+	numeric, err := Parse("1.0.0-99999999999999999999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha, err := Parse("1.0.0-alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Compare(numeric, alpha); got != -1 {
+		t.Errorf("Compare(numeric, alpha) = %d, want -1", got)
+	}
+	if got := Compare(alpha, numeric); got != 1 {
+		t.Errorf("Compare(alpha, numeric) = %d, want 1", got)
+	}
+}
+
+// Compare takes a struct, so it can be handed a prerelease that Parse would
+// have rejected. An empty identifier counts as alphanumeric rather than
+// panicking or being read as the number zero.
+func TestCompareHandsUnparseablePrereleaseGracefully(t *testing.T) {
+	empty := Version{Major: 1, Prerelease: "1."}
+	numeric := Version{Major: 1, Prerelease: "1.0"}
+	if got := Compare(empty, numeric); got != 1 {
+		t.Errorf("Compare(%q, %q) = %d, want 1 (empty sorts as alphanumeric)", empty.Prerelease, numeric.Prerelease, got)
+	}
+}
+
 // Neither the "v" prefix nor build metadata affects precedence.
 func TestCompareIgnoresPrefixAndBuild(t *testing.T) {
 	equal := []string{"1.2.3", "v1.2.3", "V1.2.3", "1.2.3+build.7", "v1.2.3+exp.sha.5114f85"}

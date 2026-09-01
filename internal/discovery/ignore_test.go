@@ -80,6 +80,52 @@ func TestIgnoreMatcher(t *testing.T) {
 	}
 }
 
+// Patterns that reach the matcher after config loading has trimmed them, and
+// paths that run out before a pattern does. None of these may match, and none
+// may panic: the walk calls match on every entry it sees.
+func TestIgnoreMatcherEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		patterns []string
+		rel      string
+		isDir    bool
+		want     bool
+	}{
+		// A pattern of only slashes trims to nothing and is dropped, rather
+		// than becoming a rule that matches every path.
+		{"slash-only pattern is dropped", []string{"/"}, "anything", true, false},
+		{"whitespace-only pattern is dropped", []string{"  "}, "anything", false, false},
+		// The path ends before the pattern does.
+		{"pattern longer than path", []string{"a/b/c"}, "a/b", true, false},
+		{"glob segment past the end", []string{"a/*"}, "a", true, false},
+		// "**" matches zero or more segments, but the segments after it still
+		// have to match something.
+		{"double star tail unmatched", []string{"docs/**/api"}, "docs/x/y", false, false},
+		{"double star matches zero segments", []string{"docs/**/api"}, "docs/api", true, true},
+		{"leading double star any depth", []string{"**/vendor"}, "a/b/vendor", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newIgnoreMatcher(tt.patterns)
+			if got := m.match(tt.rel, tt.isDir); got != tt.want {
+				t.Errorf("match(%q, dir=%v) with %v = %v, want %v", tt.rel, tt.isDir, tt.patterns, got, tt.want)
+			}
+		})
+	}
+}
+
+// A config with no ignore list leaves the matcher nil, and the walk calls it
+// unconditionally, so nil has to behave as "matches nothing".
+func TestIgnoreMatcherNil(t *testing.T) {
+	var m *ignoreMatcher
+	if !m.empty() {
+		t.Error("empty() = false for a nil matcher, want true")
+	}
+	if m.match("anything", true) {
+		t.Error("match() = true for a nil matcher, want false")
+	}
+}
+
 // A directory named by an ignore pattern is pruned along with everything under
 // it, while files elsewhere are still discovered.
 func TestDiscoverIgnoresDirectory(t *testing.T) {

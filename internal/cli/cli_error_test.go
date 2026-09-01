@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sasmaq/incrmit/internal/config"
+	"github.com/sasmaq/incrmit/internal/files"
 	"github.com/sasmaq/incrmit/internal/history"
 )
 
@@ -106,6 +110,44 @@ func TestUndoCorruptStateFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "parsing") {
 		t.Errorf("stderr = %q, want it to name the parse failure", stderr)
+	}
+}
+
+// A journal that parses as TOML can still record a version token that does not.
+// Undo rewrites tokens by parsing them back, so a nonsense value must abort
+// before any file is touched rather than being written into the target.
+func TestUndoRejectsUnparseableRecordedVersion(t *testing.T) {
+	dir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir); code != ExitOK {
+		t.Fatalf("bump exit = %d (stderr %q)", code, stderr)
+	}
+
+	statePath := stateFile(dir)
+	h, err := history.Load(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Entries) != 1 || len(h.Entries[0].Changes) != 1 {
+		t.Fatalf("history = %+v, want one entry with one change", h)
+	}
+	h.Entries[0].Changes[0].Old = "not-a-version"
+	if err := history.Save(statePath, h); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runMain(t, dir, "undo")
+	if code != ExitNoVersion {
+		t.Errorf("exit = %d, want %d (stderr %q)", code, ExitNoVersion, stderr)
+	}
+	if !strings.Contains(stderr, "not-a-version") {
+		t.Errorf("stderr = %q, want it to quote the unusable recorded version", stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "VERSION"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "1.2.4\n" {
+		t.Errorf("VERSION = %q, want the bumped value left untouched", got)
 	}
 }
 
@@ -218,9 +260,45 @@ func TestDiscoverSummaryListsEachVersionOnce(t *testing.T) {
 	}
 }
 
-// fsErrorMessage has a catch-all branch for errors that are neither permission,
-// missing-file, non-regular, nor over the size cap. A directory named as a
-// --file target reaches it.
+// Every filesystem error a command reports goes through fsErrorMessage, so its
+// wording is the contract: the action and the path as the user wrote it, then a
+// plain explanation instead of the raw (often path-duplicating) OS text.
+func TestFSErrorMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"permission", fs.ErrPermission, "reading VERSION: permission denied"},
+		{"missing", fs.ErrNotExist, "reading VERSION: file does not exist"},
+		{"not regular", files.ErrNotRegular, "reading VERSION: not a regular file"},
+		{
+			"too large",
+			&files.TooLargeError{Size: 2048, Limit: 1024},
+			"reading VERSION: file is 2KiB, over the --max-file-size limit of 1KiB",
+		},
+		// Anything else falls through to the error's own text rather than being
+		// swallowed or reworded into one of the cases above.
+		{"anything else", errors.New("disk quota exceeded"), "reading VERSION: disk quota exceeded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fsErrorMessage("reading", "VERSION", tt.err); got != tt.want {
+				t.Errorf("fsErrorMessage = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// A wrapped error is classified by what it wraps, since that is how the
+	// error arrives from the files package.
+	wrapped := fmt.Errorf("files: reading %q: %w", "VERSION", fs.ErrPermission)
+	if got := fsErrorMessage("writing", "VERSION", wrapped); got != "writing VERSION: permission denied" {
+		t.Errorf("wrapped error = %q, want the permission wording", got)
+	}
+}
+
+// A directory named as a --file target is not a regular file, and the message
+// says so rather than reporting a bare OS error.
 func TestBumpDirectoryTargetReportsPlainError(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "adirectory")
