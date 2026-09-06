@@ -393,7 +393,7 @@ completed.
       correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
       verified working (`-ldflags` override honored, and an unstamped `go build`
       falls back to the same source default); the value is `0.1.13` until the
-      version is bumped to `1.0.0` in Milestone 33.
+      version is bumped to `1.0.0` in Milestone 36.
 - [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
       missing dependencies); confirm the Go version pin is intentional. Tidy is
       a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
@@ -817,7 +817,175 @@ before v1.0.0 freezes the behavior.
       prerelease inside a filename (`app-1.2.3-rc.1.zip`) is matched as its core
       alone, so it bumps to `app-1.2.4-rc.1.zip` rather than `app-1.2.4.zip`.
 
-## Milestone 29 — Git Integration (the `push` command)
+## Milestone 29 — Concurrent Runs
+
+`incrmit` starts no goroutines, so this is not about internal races — it is
+about two processes. Every mutating command is a read-modify-write over shared
+on-disk state and nothing coordinates them: `bump` loads the journal, pushes an
+entry, and saves it, and rewrites `incrmit.toml` in place; `undo` loads, pops,
+and saves. Run two bumps at once — `make -j`, a CI matrix, a file watcher, two
+terminals — and the second save silently erases the first: the tree gets bumped
+twice while the config records one version and the journal one entry, so the
+erased bump can never be undone. `WriteAtomic` is why this is easy to miss.
+Every individual write is all-or-nothing, so nothing is ever *corrupt*; it is
+only lost.
+
+- [ ] Reproduce the loss before fixing it, so the fix has something to prove.
+      Drive two runs against one project concurrently (goroutines calling the
+      CLI entry point is fair here, since all the contended state is on disk)
+      and assert the specific damage: a journal holding one entry after two
+      bumps, and a config whose recorded version disagrees with the files.
+- [ ] Add an `internal/lock` package taking one exclusive advisory file lock per
+      project, next to the config. Use `syscall.Flock` on Unix and
+      `LockFileEx` on Windows in build-tagged files, mirroring the existing
+      `internal/testutil/fifo_unix.go` / `fifo_windows.go` split, so this costs
+      no new module. Prefer an OS advisory lock over an `O_EXCL` PID file
+      specifically because of stale locks: the kernel releases a flock when the
+      process exits for any reason, `SIGKILL` and panics included, so there is
+      never a leftover lock to clear by hand — a PID file outlives the crash and
+      forces the tool to guess whether the owner is still alive.
+- [ ] Hold the lock across the whole read-modify-write of every mutating
+      command (`bump`, `undo`, and `init`/`discover` when it writes the config),
+      releasing it on every return path. Keep read-only commands (`status`,
+      `preview`, any `--dry-run`) lock-free so inspecting a project can neither
+      block nor be blocked; note in their docs that they may therefore observe a
+      bump in progress. Scope the lock to the config's directory so separate
+      projects never contend.
+- [ ] Decide, and state, what a contended lock does. Fail fast is the better
+      default: a bump takes milliseconds, so a second one arriving mid-run is
+      usually a mistake rather than a queue, and a tool that blocks silently
+      turns a CI misconfiguration into a hung job instead of a failed one. Exit
+      non-zero with a message that says another `incrmit` holds the project and
+      what to do about it, and offer opt-in waiting (`--wait`) for the callers
+      who really are serializing work.
+- [ ] Degrade rather than refuse where locking is unavailable. On filesystems
+      that do not implement it (some NFS mounts, a few CI overlay filesystems),
+      an error that is not contention must warn and continue, because a tool
+      that cannot bump at all is worse than one that cannot detect a second run.
+- [ ] Skip in-flight temp files while scanning. `WriteAtomic` writes
+      `.incrmit-*.tmp` beside its target, and the walk has no dotfile rule and
+      no such entry in `ignoredDirs`, so a concurrent — or previously
+      crashed — run's temp file can be scanned and written into the generated
+      config as a real target. Exclude the pattern in `discovery`, and sweep
+      stale ones the next time the project is locked, which is the one moment it
+      is provably safe to delete them.
+- [ ] Make `undo` verify before it reverts, since a lock only serializes runs
+      that use it. Refuse when a file no longer holds the version the journal
+      recorded — another run may have bumped past it — and say which file
+      diverged instead of writing an older version back over newer work.
+- [ ] Cover the new behavior with tests that a serialized implementation cannot
+      pass by accident: the reproduction cases above must now come out
+      consistent, a contended second run must fail cleanly without having
+      written anything, and the lock must be released after an error partway
+      through a bump. Document the model in `README.md` and
+      `doc/DEVELOPMENT.md`: one writer per project at a time, readers
+      unsynchronized.
+
+## Milestone 30 — Fuzz Testing
+
+The suite covers 95.8% of statements and still has a blind spot: every test
+feeds input someone thought to write down. `incrmit` rewrites other people's
+files in place, so the failure that matters most is a scanner or rewriter bug
+that eats bytes around the version token — and the "only the token changed"
+promise is currently checked against four handcrafted fixtures. Go's built-in
+fuzzing exercises the same invariants against input nobody imagined.
+
+- [ ] Add `FuzzSetKnownVersions` in `internal/files` asserting the invariant the
+      whole tool rests on: for arbitrary input bytes and a set of replacements,
+      every byte outside the replaced ranges is identical to the input. Compare
+      ranges rather than reusing `assertOnlyVersionChanged`, whose
+      `strings.ReplaceAll` round-trip can mask an error when the same token
+      appears more than once. Assert the returned counts match the replacements
+      actually made, and that a replacement never produces an output containing
+      a token the input did not have.
+- [ ] Add `FuzzFindTokens` in `internal/version` checking that the returned
+      ranges are in bounds, strictly ordered, non-overlapping, and that the
+      bytes each range spans parse with `version.Parse` — the property the
+      rewriter assumes when it walks the ranges in one pass.
+- [ ] Add `FuzzParse` in `internal/version`: `Parse` never panics on arbitrary
+      input, and anything it accepts round-trips through `String()` back to the
+      same token (prefix, prerelease, and build sections included). Feed the
+      corpus the near-miss forms already in the table tests (`rev1.2.3`,
+      IPv4 addresses, leading zeros, empty identifiers) so the fuzzer starts
+      from the known boundaries rather than rediscovering them.
+- [ ] Add fuzz targets for the two remaining parsers of untrusted text:
+      `cli.parseSize` (arbitrary strings must return an error, never panic or
+      overflow) and config loading (arbitrary bytes must be reported as a config
+      error, never panic — the config is trusted input, but a corrupt file is
+      not the same as a hostile one).
+- [ ] Seed each target with a corpus under `testdata/fuzz/` covering the shapes
+      the table tests already know matter, and commit any input the fuzzer finds
+      as a regression case so a fixed crash stays fixed.
+- [ ] Wire fuzzing into the workflow in two places: `go test ./...` already runs
+      every seed corpus entry as a unit test, so make sure the seeds alone catch
+      the known cases, and add a `make fuzz` target that runs each target for a
+      bounded `-fuzztime` (e.g. 30s) for local use. Decide and document whether
+      CI runs a short fuzz pass on every push or a longer one on a schedule —
+      a fixed `-fuzztime` in the existing test job is simplest, but note that
+      fuzzing is non-deterministic, so it belongs in its own job rather than
+      gating the build/test job on a random failure.
+- [ ] Fix whatever the fuzzers find before moving on, and record in
+      `doc/DEVELOPMENT.md` what each target proves — the invariants above are
+      the actual specification of the rewriter, and they are worth stating in
+      prose next to the code they constrain.
+
+## Milestone 31 — Pathological File Shapes
+
+Every fixture in the suite is a file a person would sit down and type: a handful
+of lines, LF endings, a trailing newline, ASCII. Real trees hold files that are
+none of those, and `incrmit` rewrites them in place. The shapes most likely to
+break the "only the version token changed" promise are the ones no test names —
+CRLF endings, a leading BOM, no trailing newline, a token at byte 0 or flush
+against EOF, one enormous minified line. Fuzzing (Milestone 30) generates
+*bytes*, but not file shapes: it never creates a hard link, a setuid bit, or a
+read-only file. Those need fixtures.
+
+- [ ] Cover line endings and encodings, asserting the file keeps its shape
+      rather than being normalized: CRLF throughout, mixed CRLF and LF, a lone
+      CR, and a UTF-8 BOM before the first key (the BOM must survive and must
+      not shift the token ranges). Add the two encodings that are not text as
+      far as the scanner is concerned — UTF-16, whose NUL bytes split every
+      token, and Latin-1 bytes with no NUL, which is not caught by `isBinary` —
+      and pin what each does today so a "no version found" on a UTF-16 file is a
+      documented answer rather than a surprise.
+- [ ] Cover the boundary positions the code special-cases: a file that is
+      exactly `1.2.3` with no trailing newline, which puts the token at byte 0
+      and flush against EOF and so takes the `start < 2` branch in
+      `suffixBelongs` and the `after < len(data)` check in `matchAt`; a token as
+      the final byte of a longer file; and an empty or whitespace-only file,
+      which must report `ErrNoVersion` rather than panic.
+- [ ] Cover files with no line structure at all: minified JSON on one very long
+      line, and a file holding thousands of occurrences of the same version.
+      Assert both the replacement counts and byte preservation. Keep the largest
+      case behind `testing.Short()` if it measurably slows `go test ./...`.
+- [ ] Cover the metadata shapes, which is where the atomic write's design shows
+      through. A read-only `0444` file bumps successfully, because the write is
+      a rename in the parent directory rather than a write through the file, and
+      the mode survives. A setuid, setgid, or sticky file loses those bits,
+      because `WriteAtomic` copies `Perm()` only. A hard-linked file has its
+      link broken by the rename, so the other name keeps the old contents. Each
+      is a deliberate consequence, not a bug — decide, test, and state them in
+      `WriteAtomic`'s doc comment the way the symlink behavior already is.
+- [ ] Cover awkward paths, since the target is whatever the user names: spaces,
+      a newline, non-ASCII characters, a leading dash, glob metacharacters
+      (`*`, `[`, `?`), and a name near the OS length limit. The metacharacter
+      case matters twice — a `--file` argument must be taken literally end to
+      end, while the same characters from `ignore` in the config are patterns.
+- [ ] Add golden fixtures for the readable shapes (CRLF, BOM, no trailing
+      newline, minified single line) in `internal/files/testdata`, alongside the
+      four format fixtures already there. A golden diff is the clearest
+      statement the rewriter can make about leaving everything else alone.
+- [ ] Cover the discovery side of the same shapes: a zero-length file, a deeply
+      nested tree, and a file whose only version sits past a NUL byte, so it is
+      skipped as binary. Confirm a file whose size cap falls mid-token is
+      refused whole rather than scanned truncated.
+- [ ] Fix what turns out to be wrong and document what turns out to be merely
+      lossy. Where a shape cannot round-trip (a dropped setuid bit, a broken
+      hard link, a UTF-16 file that reads as versionless), say so in `README.md`
+      and `doc/DEVELOPMENT.md` — a documented limit is a feature, an undocumented
+      one is a bug report waiting to be filed.
+
+## Milestone 32 — Git Integration (the `push` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
 no tag, no push. The gap is closed by one interactive command rather than a set
@@ -959,15 +1127,15 @@ module, and makes `incrmit push` succeed wherever `git push` already does.
       Confirm the `govulncheck` gate from Milestone 26 still passes with the
       `x/term` tree in `go.sum`.
 
-## Milestone 30 — Conventional-Commit Bump Inference (`--auto`)
+## Milestone 33 — Conventional-Commit Bump Inference (`--auto`)
 
-Depends on Milestone 29. Reading the commits since the last tag and inferring
+Depends on Milestone 32. Reading the commits since the last tag and inferring
 the bump component turns `discover` + language-agnostic + single-binary from a
 narrow story into a real one: no other tool does automatic inference *and*
 arbitrary-file rewriting without a per-ecosystem plugin.
 
 - [ ] Add `--auto` to the bump command: resolve the most recent tag reachable
-      from `HEAD` (respecting the Milestone 29 tag prefix), read the commit
+      from `HEAD` (respecting the Milestone 32 tag prefix), read the commit
       subjects and bodies since it, and infer the component.
 - [ ] Implement the inference rules and document them: a `feat:` commit implies
       minor, a `fix:`/`perf:` commit implies patch, and `BREAKING CHANGE:` in a
@@ -987,7 +1155,7 @@ arbitrary-file rewriting without a per-ecosystem plugin.
 - [ ] Document the rules and a full CI recipe in `README.md`, the man page, and
       `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Added`.
 
-## Milestone 31 — Crash-Safe Multi-File Writes
+## Milestone 34 — Crash-Safe Multi-File Writes
 
 Planning is already fail-fast (Milestone 22's phase 1/2 split), but phase 2 is
 not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
@@ -1019,7 +1187,7 @@ journal entry exists. Close this before v1.0.0.
 - [ ] Document the crash-safety guarantee — and its limits — in
       `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
 
-## Milestone 32 — Code and Repository Hygiene
+## Milestone 35 — Code and Repository Hygiene
 
 Small cleanups worth doing before v1.0.0 freezes the surface.
 
@@ -1046,7 +1214,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
       build artifact or stray file appears at the repo root, so the tree stays
       clean without relying on remembering.
 
-## Milestone 33 — v1.0.0 Release: Publish
+## Milestone 36 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -1061,7 +1229,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
 
-## Milestone 34 — apt / dnf Repo via GitHub Pages
+## Milestone 37 — apt / dnf Repo via GitHub Pages
 
 Host signed apt and dnf repositories on GitHub Pages so users can
 `apt install incrmit` / `dnf install incrmit` after adding the repo once.
