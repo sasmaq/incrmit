@@ -5,7 +5,7 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-18
 
 ### Fixed
 
@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v7.0.1, `setup-go` v7.0.0, and `action-gh-release` v3.0.3, each still pinned
   to a commit SHA. The previous pins ran on the deprecated Node 20 runtime,
   which GitHub had begun forcing onto Node 24 anyway.
+- Building `incrmit` now requires Go 1.27 or later, up from Go 1.26. The `go`
+  directive in `go.mod` and the requirement documented in `README.md` were
+  raised together; CI already built with whatever `stable` resolves to, which is
+  Go 1.27.
 - CI lints with `golangci-lint` v2.13.2, up from v2.12.2. A released
   `golangci-lint` can only typecheck the standard library of the Go it was built
   with or older, so Go 1.27 becoming `stable` made the older pin fail on Go's
