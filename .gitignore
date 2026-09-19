@@ -31,3 +31,7 @@ go.work.sum
 # Configuration files
 *.toml
 !incrmit.toml
+
+# Local, tool-maintained state (see internal/lock): the project lock file is
+# recreated on demand and belongs to one working copy, never to the repository.
+.incrmit.lock

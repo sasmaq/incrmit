@@ -14,6 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/sasmaq/incrmit/internal/config"
+	"github.com/sasmaq/incrmit/internal/files"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -117,9 +118,19 @@ func DiscoverWithLimit(root string, maxBytes int64, ignore ...string) ([]Result,
 			return nil
 		}
 
-		// Never treat the config file or the bump-history state file (both
-		// tool-maintained) as a discovered target.
-		if d.Name() == config.DefaultPath || d.Name() == config.StateFileName {
+		// Never treat incrmit's own files as discovered targets: the config,
+		// the bump-history state file, and the project lock are all
+		// tool-maintained.
+		if d.Name() == config.DefaultPath || d.Name() == config.StateFileName || d.Name() == config.LockFileName {
+			return nil
+		}
+
+		// Skip a WriteAtomic temp file. One is a copy of a target with a new
+		// version already written into it, so a scan that caught a concurrent
+		// run mid-write — or that found the residue of a crashed one — would
+		// otherwise record a `.incrmit-*.tmp` path as a real target, and the
+		// generated config would list a file that vanishes at the next rename.
+		if files.IsTempName(d.Name()) {
 			return nil
 		}
 

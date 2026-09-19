@@ -228,9 +228,9 @@ func TestCommandHelpListsFlags(t *testing.T) {
 		text  string
 		flags []string
 	}{
-		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--major", "--minor", "--patch", "--release", "--pre", "--max-file-size", "--dry-run"}},
-		{"discoverHelp", discoverHelp, []string{"--path", "--output", "--max-file-size", "--dry-run"}},
-		{"undoHelp", undoHelp, []string{"--config", "--dry-run"}},
+		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--major", "--minor", "--patch", "--release", "--pre", "--max-file-size", "--wait", "--dry-run"}},
+		{"discoverHelp", discoverHelp, []string{"--path", "--output", "--max-file-size", "--wait", "--dry-run"}},
+		{"undoHelp", undoHelp, []string{"--config", "--wait", "--dry-run"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

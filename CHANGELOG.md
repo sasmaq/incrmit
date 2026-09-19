@@ -5,7 +5,45 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-08-18
+## [0.3.1] - 2026-09-19
+
+### Fixed
+
+- Two `incrmit` runs against one project no longer erase each other. Every
+  mutating command is a read-modify-write over shared on-disk state, and nothing
+  coordinated them: run two bumps at once — `make -j`, a CI matrix, a file
+  watcher, two terminals — and the second save silently overwrote the first,
+  leaving the tree bumped twice while `incrmit.toml` recorded one version and
+  the journal one entry. The erased bump could never be undone, because nothing
+  recorded it. Atomic writes are what made this easy to miss: no file was ever
+  *corrupt*, only lost. `bump`, `undo`, and `discover` now take an exclusive
+  advisory lock on the project (`.incrmit.lock`, kept next to the config) before
+  reading anything and hold it until they are done. Because the lock belongs to
+  the operating system, a crash or `kill -9` releases it — there is no stale
+  lock to clear by hand.
+- `discover` no longer records an in-flight `.incrmit-*.tmp` write as a real
+  target. One is a copy of a target with a new version already in it, so a scan
+  that caught a concurrent run mid-write generated a config listing a path that
+  vanishes at the next rename. The walk now skips the pattern, and a run holding
+  the project lock clears the ones a crashed run left behind — the one moment
+  they are provably safe to delete.
+- `undo` now names the file that diverged when it refuses a revert, and refuses
+  in one more case: another run having bumped the file past the version the
+  journal recorded. A lock only serializes the runs that take it, so `undo`
+  verifies before it writes rather than putting an older version back over newer
+  work.
+
+### Added
+
+- `--wait` (`-w`) on `bump`, `discover`, and `undo` queues behind a run already
+  holding the project instead of failing. The default is still to fail fast,
+  exiting `1` without writing anything: a bump takes milliseconds, so a second
+  one arriving mid-run is usually a mistake rather than a queue, and a tool that
+  blocks silently turns a CI misconfiguration into a hung job instead of a
+  failed one. `preview` and every `--dry-run` stay lock-free, so inspecting a
+  project can neither block nor be blocked.
+
+## [0.3.0] - 2026-09-19
 
 ### Fixed
 

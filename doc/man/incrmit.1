@@ -12,6 +12,7 @@
 .Op Fl M | m | p
 .Op Fl r | e Ar id
 .Op Fl s Ar size
+.Op Fl w
 .Op Fl d
 .Pp
 .Nm incrmit
@@ -19,6 +20,7 @@
 .Op Fl P Ar path
 .Op Fl o Ar output
 .Op Fl s Ar size
+.Op Fl w
 .Op Fl d
 .Pp
 .Nm incrmit
@@ -30,6 +32,7 @@
 .Nm incrmit
 .Cm undo
 .Op Fl c Ar config
+.Op Fl w
 .Op Fl d
 .Pp
 .Nm incrmit
@@ -254,8 +257,21 @@ For
 .Cm preview ,
 a target over the limit is reported as an error, as it is for a bump; the
 default is no limit.
+.It Fl w , Fl -wait
+Wait for another
+.Nm
+run to finish instead of failing.
+Accepted by the default command,
+.Cm discover ,
+and
+.Cm undo :
+the commands that write.
+Without it, a run that finds the project already held exits 1 immediately
+without writing anything; see
+.Sx CONCURRENT RUNS .
 .It Fl d , Fl -dry-run
 Print the new version without writing files.
+A dry run takes no project lock.
 .It Fl P , Fl -path Ar dir
 .Dq discover only.
 Root directory to scan.
@@ -299,13 +315,73 @@ Bump-history state file written next to the config after a bump, used by
 .Cm undo .
 It is local, tool-maintained working state and is not meant to be committed
 .Pq add it to Pa .gitignore .
+.It Pa .incrmit.lock
+Project lock file kept next to the config, or next to the file being bumped
+under
+.Fl f .
+Its contents are only a note explaining what it is; what matters is the
+exclusive advisory lock held on it while a command writes.
+It is left in place between runs, is safe to delete, and is likewise local
+working state that is not meant to be committed.
+See
+.Sx CONCURRENT RUNS .
 .El
+.Sh CONCURRENT RUNS
+One
+.Nm
+writes to a project at a time.
+A bump is a read-modify-write over shared state: it reads the config and every
+target, then writes both back along with the undo journal.
+Two runs at once
+.Pq a Ic make Fl j No rule, a CI matrix, a file watcher, two terminals
+would interleave and erase each other, leaving the tree bumped twice while the
+config recorded one version and the journal one entry \(em and an unrecorded
+bump can never be undone.
+.Pp
+Every writing command
+.Pq the default bump , Cm discover , and Cm undo
+therefore takes an exclusive advisory lock on
+.Pa .incrmit.lock
+before it reads anything, and holds it until it is done.
+The lock is scoped to the directory holding the config, so separate projects
+never wait on each other; with
+.Fl f
+it is scoped to the directory holding that file.
+There is no stale lock to clear by hand: the operating system releases it when
+the process exits for any reason, a crash or
+.Ic kill Fl 9
+included.
+.Pp
+A second run fails fast, exiting 1 with a message naming
+.Fl -wait ,
+and writes nothing at all.
+This is deliberate: a bump takes milliseconds, so another arriving mid-run is
+usually a mistake rather than a queue, and a tool that blocked silently would
+turn a misconfiguration into a hung job instead of a failed one.
+Pass
+.Fl w
+.Pq Fl -wait
+to queue behind the first run instead.
+.Pp
+Read-only commands take no lock.
+.Cm preview ,
+and any command with
+.Fl -dry-run ,
+neither block nor are blocked, so they may observe a bump in progress and show
+a partly updated tree.
+Where locking is unavailable \(em some NFS mounts, a few CI overlay
+filesystems \(em
+.Nm
+warns and carries on unlocked rather than refusing to run.
 .Sh EXIT STATUS
 .Bl -tag -width Ds
 .It 0
 Success.
 .It 1
-Generic runtime error (for example missing config or filesystem error).
+Generic runtime error (for example missing config, filesystem error, or the
+project being held by another
+.Nm
+run).
 .It 2
 Invalid arguments or flags.
 .It 3

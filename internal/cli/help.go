@@ -19,12 +19,14 @@ const bumpFlags = `  -c, --config string       path to the TOML config file (def
   -r, --release             promote a prerelease (1.2.3-rc.1 -> 1.2.3)
   -e, --pre id              start or advance a prerelease (1.2.3 -> 1.2.4-id.1)
   -s, --max-file-size size  refuse to read a larger target (default no limit)
+  -w, --wait                wait for another incrmit run instead of failing
   -d, --dry-run             print the new version without writing
 `
 
 const discoverFlags = `  -P, --path string         root directory to scan (default ".")
   -o, --output string       path for the generated config (default "incrmit.toml")
   -s, --max-file-size size  skip files larger than this (default 32MiB)
+  -w, --wait                wait for another incrmit run instead of failing
   -d, --dry-run             print discovered files without writing the config
 `
 
@@ -34,6 +36,7 @@ const previewFlags = `  -c, --config string       path to the TOML config file (
 `
 
 const undoFlags = `  -c, --config string  path to the TOML config file (default "incrmit.toml")
+  -w, --wait           wait for another incrmit run instead of failing
   -d, --dry-run        preview the revert (new -> old) without writing
 `
 
@@ -50,6 +53,18 @@ it is an error (exit 2) on a version that has no prerelease. Use --pre to
 start or advance one: 1.2.3 -> 1.2.4-rc.1, then 1.2.4-rc.1 -> 1.2.4-rc.2.
 Naming a component alongside --pre opens a new line instead, so --minor --pre
 rc gives 1.3.0-rc.1. --release and --pre cannot be combined.
+`
+
+// concurrencyNote explains the one-writer-per-project rule once, and is
+// appended to the help of each command that writes.
+const concurrencyNote = `
+Only one incrmit may write to a project at a time. A writing command takes an
+exclusive lock on the directory holding the config (in --file mode, on the
+directory holding that file) and holds it until it is done, so two runs can
+never erase each other's bump. A second run exits 1 rather than waiting; pass
+--wait to queue behind the first instead. Read-only commands (preview and any
+--dry-run) take no lock, so they neither block nor are blocked, and may see a
+bump in progress.
 `
 
 // sizeNote explains the --max-file-size value format once, and is appended to
@@ -108,6 +123,10 @@ to 1.2.4 (both sections are dropped), --release promotes it to 1.2.3, and
 A --max-file-size value is a plain byte count (1048576) or a value with a unit
 suffix such as 512KB, 32MiB, or 2G. A size of 0 means no limit.
 
+Only one incrmit may write to a project at a time: bump, discover, and undo
+take an exclusive lock on the project directory, and a second run exits 1
+unless it passes --wait. preview and --dry-run take no lock.
+
 Run "incrmit help <command>" for details, for example "incrmit help discover".
 `
 
@@ -118,7 +137,7 @@ const bumpHelp = `usage: incrmit [flags]
 Bump the semantic version in the configured files.
 
 Flags:
-` + bumpFlags + prereleaseNote + sizeNote
+` + bumpFlags + prereleaseNote + sizeNote + concurrencyNote
 
 // discoverHelp documents the discover command. It is shown by
 // `incrmit discover -h`, `incrmit help discover`, and on a discover usage error.
@@ -127,7 +146,7 @@ const discoverHelp = `usage: incrmit discover [flags]
 Scan a directory tree for version-bearing files and generate a config.
 
 Flags:
-` + discoverFlags + sizeNote
+` + discoverFlags + sizeNote + concurrencyNote
 
 // previewHelp documents the preview command. It is shown by
 // `incrmit preview -h`, `incrmit help preview`, and on a preview usage error.
@@ -139,7 +158,9 @@ Show, for every file in the config, the version it holds today alongside what a
   PATH        CURRENT  PATCH   MINOR   MAJOR
   README.md   0.1.15   0.1.16  0.2.0   1.0.0
 
-preview is read-only: it writes no file, no config, and no bump history.
+preview is read-only: it writes no file, no config, and no bump history. It
+also takes no project lock, so it never blocks and is never blocked — which
+means a preview run while a bump is writing may show a half-applied tree.
 
 A "v" prefix is carried into every projected version (v1.2.3 previews as
 v1.2.4 / v1.3.0 / v2.0.0), and a prerelease or build section is dropped by all
@@ -165,7 +186,7 @@ bump is left untouched and the undo is refused, so your changes are never
 clobbered. Repeated undos walk back through successive bumps.
 
 Flags:
-` + undoFlags
+` + undoFlags + concurrencyNote
 
 // versionHelp documents the version command. It is shown by
 // `incrmit version -h` and `incrmit help version`.

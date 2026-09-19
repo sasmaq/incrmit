@@ -3,6 +3,7 @@ package discovery
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -795,5 +796,36 @@ func TestDiscoverSkipsUnreadableFiles(t *testing.T) {
 	}
 	if got := paths(results); len(got) != 1 || got[0] != "VERSION" {
 		t.Errorf("paths = %v, want only VERSION", got)
+	}
+}
+
+// A WriteAtomic temp file in the tree is a copy of a target with a new version
+// already written into it. A scan that caught a concurrent run mid-write — or
+// found the residue of a crashed one — must not record it as a real target: the
+// generated config would list a path that vanishes at the next rename.
+func TestDiscoverSkipsInFlightTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("VERSION", "1.2.3\n")
+	write(".incrmit-42.tmp", "1.2.4\n")      // a bump in flight
+	write(".incrmit.lock", "project lock\n") // the lock file itself
+	write("incrmit-42.tmp", "9.9.9\n")       // not ours: no leading dot
+
+	results, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	got := make([]string, 0, len(results))
+	for _, r := range results {
+		got = append(got, r.Path)
+	}
+	want := []string{"VERSION", "incrmit-42.tmp"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Discover found %v, want %v", got, want)
 	}
 }

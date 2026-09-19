@@ -332,6 +332,54 @@ func ApplyBump(path string, bump func(version.Version) version.Version, dryRun b
 	return oldVer, newVer, nil
 }
 
+// tempPrefix and tempSuffix bracket the name WriteAtomic gives its in-flight
+// temporary file. They are exported through IsTempName and SweepTemps so the
+// discovery walk can recognize one of incrmit's own temp files and skip it
+// rather than scanning it as a target, and so a run holding the project lock
+// can clear the ones a crashed run left behind.
+const (
+	tempPrefix = ".incrmit-"
+	tempSuffix = ".tmp"
+)
+
+// IsTempName reports whether name is the base name of an in-flight (or
+// leftover) WriteAtomic temporary file. The prefix ends in "-" and the suffix
+// begins with ".", so the two can never overlap into a false match on a short
+// name: anything carrying both is one of ours.
+func IsTempName(name string) bool {
+	return strings.HasPrefix(name, tempPrefix) && strings.HasSuffix(name, tempSuffix)
+}
+
+// SweepTemps removes the WriteAtomic temporary files directly inside dir and
+// returns how many it removed. Subdirectories are not descended into: a temp
+// file only ever appears beside the target being written, so the caller sweeps
+// exactly the directories it is about to write in.
+//
+// This is only safe while the project lock is held, which is the one moment no
+// other incrmit run can have a write in flight — every temp file present then
+// is the residue of a run that died before its rename. Removing one that is
+// still being written would cost another run its bump, so callers must not
+// sweep when the lock was unavailable.
+//
+// Individual removals that fail are skipped rather than reported: a leftover
+// temp file is clutter, not a reason to fail the command the user asked for.
+func SweepTemps(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("files: sweeping temp files in %q: %w", dir, err)
+	}
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !IsTempName(e.Name()) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
 // WriteAtomic writes data to path by writing to a temporary file in the same
 // directory and renaming it over the target. The rename is atomic on the same
 // filesystem, so a crash mid-write never leaves a partially written file. The
@@ -354,7 +402,7 @@ func WriteAtomic(path string, data []byte) error {
 		perm = info.Mode().Perm()
 	}
 
-	tmp, err := os.CreateTemp(dir, ".incrmit-*.tmp")
+	tmp, err := os.CreateTemp(dir, tempPrefix+"*"+tempSuffix)
 	if err != nil {
 		return fmt.Errorf("files: creating temp file in %q: %w", dir, err)
 	}

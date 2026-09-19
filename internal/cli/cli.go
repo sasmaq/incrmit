@@ -18,6 +18,7 @@ import (
 	"github.com/sasmaq/incrmit/internal/discovery"
 	"github.com/sasmaq/incrmit/internal/files"
 	"github.com/sasmaq/incrmit/internal/history"
+	"github.com/sasmaq/incrmit/internal/lock"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -130,6 +131,7 @@ type bumpOptions struct {
 	release     bool
 	pre         string
 	dryRun      bool
+	wait        bool  // queue behind another run instead of failing on a held lock
 	maxFileSize int64 // per-file read cap in bytes; 0 means no limit
 
 	// preSet and componentSet record whether the user named those flags
@@ -157,11 +159,35 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 
+	// Take the project lock before reading anything, because everything from
+	// here to the last write is one read-modify-write: the config names the
+	// targets, the targets give the versions to bump, and all of it plus the
+	// journal is written back at the end. A second run that read between our
+	// read and our write would compute from the same starting version and its
+	// save would erase ours (or ours its), leaving the tree bumped twice but
+	// recorded once. A dry run writes nothing, so it stays lock-free.
+	var lk *lock.Lock
+	if !opts.dryRun {
+		var code int
+		if lk, code = acquireProject(projectDir(opts.configPath, opts.file), opts.wait, stderr); code != ExitOK {
+			return code
+		}
+		defer func() { _ = lk.Release() }()
+	}
+
 	targets, cfgPath, ignore, err := resolveTargets(opts.configPath, opts.file)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
 	}
+
+	// Now that the project is locked and the targets are known, clear any temp
+	// file a crashed run left in a directory this bump writes to.
+	sweepPaths := []string{cfgPath}
+	for _, tgt := range targets {
+		sweepPaths = append(sweepPaths, tgt.fsPath)
+	}
+	sweepTemps(lk, dirsOf(sweepPaths...)...)
 
 	// Phase 1: read and plan every file before writing anything, so a failure
 	// on one file does not leave others half-updated (fail fast). Config entries
@@ -357,6 +383,8 @@ func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) 
 	fs.StringVar(&opts.pre, "e", "", "start or advance a prerelease with this identifier (shorthand)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print the new version without writing")
 	fs.BoolVar(&opts.dryRun, "d", false, "print the new version without writing (shorthand)")
+	fs.BoolVar(&opts.wait, "wait", false, "wait for another incrmit run to finish instead of failing")
+	fs.BoolVar(&opts.wait, "w", false, "wait for another incrmit run to finish (shorthand)")
 	maxFileSizeVar(fs, &opts.maxFileSize, 0, "refuse to read a target larger than this size")
 
 	if err := fs.Parse(args); err != nil {
@@ -519,6 +547,7 @@ type discoverOptions struct {
 	path        string
 	output      string
 	dryRun      bool
+	wait        bool  // queue behind another run instead of failing on a held lock
 	maxFileSize int64 // per-file scan cap in bytes; 0 means no limit
 }
 
@@ -529,6 +558,18 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 	}
 	if code != ExitOK {
 		return code
+	}
+
+	// discover rewrites the config it reads its ignore list from, so the same
+	// one-writer rule applies: lock before that read, and hold it until the
+	// config has been written. A --dry-run writes nothing and stays lock-free.
+	if !opts.dryRun {
+		lk, code := acquireProject(filepath.Dir(opts.output), opts.wait, stderr)
+		if code != ExitOK {
+			return code
+		}
+		defer func() { _ = lk.Release() }()
+		sweepTemps(lk, dirsOf(opts.output)...)
 	}
 
 	// Read any user-authored ignore patterns from an existing config at the
@@ -614,6 +655,8 @@ func parseDiscoverFlags(args []string, stdout, stderr io.Writer) (discoverOption
 	fs.StringVar(&opts.output, "o", config.DefaultPath, "path to write the generated config (shorthand)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "print discovered files without writing the config")
 	fs.BoolVar(&opts.dryRun, "d", false, "print discovered files without writing the config (shorthand)")
+	fs.BoolVar(&opts.wait, "wait", false, "wait for another incrmit run to finish instead of failing")
+	fs.BoolVar(&opts.wait, "w", false, "wait for another incrmit run to finish (shorthand)")
 	maxFileSizeVar(fs, &opts.maxFileSize, discovery.DefaultMaxScanBytes, "skip files larger than this size")
 
 	if err := fs.Parse(args); err != nil {
@@ -695,6 +738,7 @@ func recordHistory(cfgPath string, groups []fileGroup, stderr io.Writer) int {
 type undoOptions struct {
 	configPath string
 	dryRun     bool
+	wait       bool // queue behind another run instead of failing on a held lock
 }
 
 // runUndo reverts the most recent recorded bump: it restores the previous
@@ -711,6 +755,19 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cfgPath := config.ResolvePath(opts.configPath)
+
+	// undo is the same read-modify-write as bump, in reverse: it reads the
+	// journal, the config, and every recorded file, then writes all three back.
+	// It takes the same lock, so an undo and a bump can never interleave.
+	var lk *lock.Lock
+	if !opts.dryRun {
+		var code int
+		if lk, code = acquireProject(filepath.Dir(cfgPath), opts.wait, stderr); code != ExitOK {
+			return code
+		}
+		defer func() { _ = lk.Release() }()
+	}
+
 	statePath := history.ResolvePath(cfgPath)
 	h, err := history.Load(statePath)
 	if err != nil {
@@ -752,6 +809,14 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitOK
 	}
+
+	// Clear any temp file a crashed run left in a directory this undo writes
+	// to, now that the project is locked and the files are known.
+	sweepPaths := []string{cfgPath}
+	for _, g := range groups {
+		sweepPaths = append(sweepPaths, g.fsPath)
+	}
+	sweepTemps(lk, dirsOf(sweepPaths...)...)
 
 	// Phase 2: write each reverted file once.
 	for _, g := range groups {
@@ -876,6 +941,8 @@ func parseUndoFlags(args []string, stdout, stderr io.Writer) (undoOptions, int) 
 	fs.StringVar(&opts.configPath, "c", "", "path to the TOML config file (shorthand)")
 	fs.BoolVar(&opts.dryRun, "dry-run", false, "preview the revert without writing")
 	fs.BoolVar(&opts.dryRun, "d", false, "preview the revert without writing (shorthand)")
+	fs.BoolVar(&opts.wait, "wait", false, "wait for another incrmit run to finish instead of failing")
+	fs.BoolVar(&opts.wait, "w", false, "wait for another incrmit run to finish (shorthand)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

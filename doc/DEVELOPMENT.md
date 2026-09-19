@@ -109,6 +109,8 @@ packages:
   prerelease promotion, and prerelease iteration.
 - `discovery` — walks the filesystem, detects version strings, and emits config.
 - `files` — reads and writes target files, replacing only the version token.
+- `lock` — takes one exclusive advisory lock per project so only one `incrmit`
+  writes to it at a time (see [section 8.6](#86-concurrency-one-writer-per-project)).
 - `output` — formats human-readable results and dry-run previews.
 
 ## 6. Data Model
@@ -233,6 +235,21 @@ type Version struct {
     Patch int
 }
 ```
+
+### 6.4 Project lock file (`internal/lock`)
+
+`.incrmit.lock` (`config.LockFileName`) sits next to the config and carries no
+state: what matters is the exclusive advisory lock held on it while a command
+writes (see [section 8.6](#86-concurrency-one-writer-per-project)). Its contents
+are a two-line note explaining what the file is, written once the lock is held,
+so someone who finds it in a tree is not left guessing. The note deliberately
+contains no version-like token, and the walk skips the file by name, so incrmit
+can never discover its own lock as a target.
+
+Like the state file it is local working state and belongs in `.gitignore`. It is
+never unlinked on release: removing it would let a second run create and lock a
+fresh file at the same name while the first still held a lock on the old inode,
+which is the exact race the lock exists to prevent.
 
 ## 7. Command-Line Interface
 
@@ -396,49 +413,60 @@ list every flag without duplicating the flag text.
 ### 8.1 Bump
 
 1. Parse flags and resolve the bump component.
-2. Resolve targets:
+2. Unless `--dry-run`, take the project lock and hold it until the command
+   returns (see [section 8.6](#86-concurrency-one-writer-per-project)). It is
+   taken *before* the config is read, because everything from that read to the
+   last write is one read-modify-write. Once the targets are known, clear any
+   temp file a crashed run left in a directory this bump writes to.
+3. Resolve targets:
    - If `--file` is set, use that single file.
    - Otherwise load the config from `--config`.
-3. Group config entries by file (a file listed once per distinct version is a
+4. Group config entries by file (a file listed once per distinct version is a
    single group) and read each file once, refusing one larger than
    `--max-file-size` when a cap is set (see
    [section 9.1](#91-scan-boundaries)). For every entry, determine the old
    version (from the config `version`, or by scanning the file when none is
    recorded) and apply the bump to get the new version.
-4. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
-5. Otherwise rewrite each file once, replacing all of its known version tokens
+5. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
+6. Otherwise rewrite each file once, replacing all of its known version tokens
    in a single pass (`files.SetKnownVersions`). A single pass over the original
    bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4` alongside
    `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering another's when two
    versions live in the same file.
-6. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
+7. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
    `version` records the new value (one entry per distinct version per file),
    keeping the config in sync for the next run. The file is regenerated through
    `config.Marshal`, so the `[[files]]` entries and `ignore` list survive but
    user-authored comments and formatting do not. The output is deterministic:
    the same config bumped twice produces byte-identical layout.
-7. In config mode, append a history entry (each file's path, resolved path, and
+8. In config mode, append a history entry (each file's path, resolved path, and
    `old`/`new` tokens, plus a timestamp and the config path) to the state file
    beside the config so the bump can be undone (see
    [section 6.2](#62-bump-history--state-file-internalhistory)).
-8. Report results (files bumped, and each `old -> new`).
+9. Report results (files bumped, and each `old -> new`).
 
 ### 8.2 Discover
 
-1. Read the `ignore` list from any config already at `--output`
+1. Unless `--dry-run`, take the project lock for the directory holding
+   `--output` and hold it until the command returns
+   (see [section 8.6](#86-concurrency-one-writer-per-project)). `discover`
+   rewrites the config it reads its `ignore` list from, so that read and the
+   write are one read-modify-write like a bump's.
+2. Read the `ignore` list from any config already at `--output`
    (`config.LoadIgnore`); an absent/unparseable file just yields no patterns.
-2. Walk the tree from `--path`, skipping the built-in ignored directories
-   (e.g. `.git`, `node_modules`, `vendor`, build outputs), the config file
-   (`incrmit.toml` by name, plus the resolved `--output` path), symlinks of any
+3. Walk the tree from `--path`, skipping the built-in ignored directories
+   (e.g. `.git`, `node_modules`, `vendor`, build outputs), incrmit's own files
+   (`incrmit.toml` by name plus the resolved `--output` path, the state file,
+   the lock file, and any `.incrmit-*.tmp` write in flight), symlinks of any
    kind, and anything matched by the `ignore` patterns (see
    [section 8.3](#83-ignore-matching)).
-3. For each candidate file, extract *every* semantic version occurrence,
+4. For each candidate file, extract *every* semantic version occurrence,
    recording each one's line number and the trimmed text of its line
    (`discovery.Occurrence`). A file with at least one occurrence becomes a
    `Result`. Only regular files no larger than the scan cap
    (`--max-file-size`, default `discovery.DefaultMaxScanBytes` = 32 MiB) are
    read; see [section 9.1](#91-scan-boundaries).
-4. Turn results into config entries: one `[[files]]` entry per distinct version
+5. Turn results into config entries: one `[[files]]` entry per distinct version
    in each file (first-seen order), so identical repeats collapse and differing
    versions each get an entry sharing the path. The `ignore` list is written
    back verbatim so regeneration never drops it (a bump preserves it the same
@@ -448,9 +476,9 @@ list every flag without duplicating the flag text.
    discoverable from a freshly written config. The comment block
    (`config.IgnoreComment`) is shared by both the discover generation and the
    bump-time rewrite (`config.Marshal`) so both files carry identical guidance.
-5. If `--dry-run`, note the applied ignore rules and print each occurrence with
+6. If `--dry-run`, note the applied ignore rules and print each occurrence with
    its line number and context, then exit.
-6. Otherwise write the generated config to `--output`.
+7. Otherwise write the generated config to `--output`.
 
 ### 8.3 Ignore matching
 
@@ -473,9 +501,13 @@ configured pattern matches.
 
 ### 8.4 Undo
 
-1. Resolve the config path (default or `--config`) and derive the state file
-   path beside it (`history.ResolvePath`). Load the journal; a missing file is
-   an empty history.
+1. Resolve the config path (default or `--config`). Unless `--dry-run`, take the
+   project lock for its directory and hold it until the command returns, before
+   the journal is read (see
+   [section 8.6](#86-concurrency-one-writer-per-project)); an undo is the same
+   read-modify-write as a bump, in reverse, so the two can never interleave.
+   Derive the state file path beside the config (`history.ResolvePath`) and load
+   the journal; a missing file is an empty history.
 2. Take the most recent entry. If there is none, print a friendly
    "nothing to undo" message and exit `0`.
 3. In config mode load the config up front so a config problem aborts before any
@@ -483,8 +515,10 @@ configured pattern matches.
 4. Read every recorded file once, group its changes, and build the reverse
    (`new -> old`) replacement in a single pass (`files.SetKnownVersions`), so
    overlapping reverts do not cascade. If a file no longer contains the recorded
-   `new` token, it was edited since the bump: report the conflict and abort
-   without writing anything.
+   `new` token, it was edited since the bump — or another run bumped past it,
+   since a lock only serializes the runs that take it: report which file
+   diverged and abort without writing anything, rather than putting an older
+   version back over newer work.
 5. If `--dry-run`, print `new -> old` for each change and exit (no writes).
 6. Otherwise rewrite each reverted file once, then restore the config by setting
    each `(path, new)` entry back to its `old` version and rewriting
@@ -507,6 +541,65 @@ configured pattern matches.
    most common version (`markDrift`).
 5. Render the aligned table, plus the drift footnote when anything is marked.
    Nothing is written to disk on any path.
+
+### 8.6 Concurrency: one writer per project
+
+`incrmit` starts no goroutines, so this is not about internal races — it is
+about two processes. Every mutating command is a read-modify-write over shared
+on-disk state, and before Milestone 29 nothing coordinated them: run two bumps
+at once and the second save silently erased the first, leaving the tree bumped
+twice while the config recorded one version and the journal one entry. The
+erased bump could never be undone, because nothing recorded it.
+`files.WriteAtomic` is what made this easy to miss: every individual write is
+all-or-nothing, so nothing is ever *corrupt*; it is only lost.
+
+The rule is now **one writer per project at a time, readers unsynchronized**:
+
+- **What takes the lock.** `bump`, `undo`, and `discover` when it writes the
+  config. Each takes it *before* its first read and holds it until it returns,
+  on every path, so the whole read-modify-write is covered.
+- **What does not.** `preview` and every `--dry-run`. Inspecting a project can
+  neither block nor be blocked; the price is that a reader may observe a bump in
+  progress and see a partly updated tree.
+- **Scope.** The directory holding the config, so separate projects never
+  contend. In `--file` mode there is no config to anchor to, so the lock goes
+  beside the file being bumped — which is what two concurrent `--file` runs on
+  the same target have in common.
+- **Mechanism.** One exclusive advisory lock (`syscall.Flock` on Unix,
+  `LockFileEx` on Windows, in build-tagged files mirroring the
+  `internal/testutil/fifo_unix.go` / `fifo_windows.go` split, so it costs no new
+  module). An OS advisory lock is used rather than an `O_EXCL` PID file
+  specifically because of stale locks: the kernel releases the lock when the
+  process exits for any reason, `SIGKILL` and panics included, so there is never
+  a leftover lock to clear by hand. A PID file outlives the crash and forces the
+  tool to guess whether the owner is still alive.
+- **Contention fails fast**, exiting `1` with a message naming the project and
+  `--wait`. A bump takes milliseconds, so a second one arriving mid-run is
+  usually a mistake rather than a queue, and a tool that blocks silently turns a
+  CI misconfiguration into a hung job instead of a failed one. A refused run has
+  written nothing. `--wait` (`-w`) opts into queueing for callers who really are
+  serializing work.
+- **Unavailable locking degrades, it does not refuse.** On a filesystem that
+  does not implement locking (some NFS mounts, a few CI overlay filesystems) or
+  in a directory that cannot be written, `lock.Acquire` returns a *degraded*
+  lock rather than an error: the command warns and continues unlocked, because a
+  tool that cannot bump at all is worse than one that cannot detect a second
+  run. Contention is therefore the only error `Acquire` reports, which is what
+  keeps "someone else holds it" distinguishable from "locking is not available".
+
+Because flock (like a Windows byte-range lock) is held by the open file
+description rather than by the process, two runs inside one test binary contend
+exactly as two shells would. That is what lets the concurrency tests drive real
+contention with goroutines calling `cli.Main` instead of spawning children.
+
+**In-flight temp files.** `files.WriteAtomic` writes `.incrmit-*.tmp` beside its
+target, and such a file is a copy of a target with a new version already in it.
+The discovery walk skips the pattern (`files.IsTempName`), so a scan that catches
+a concurrent run mid-write — or finds the residue of a crashed one — never
+records one as a real target. A run that holds the lock also sweeps them
+(`files.SweepTemps`) from the directories it is about to write in, which is the
+one moment they are provably safe to delete: no other run can have a write in
+flight. A degraded lock buys no such guarantee, so nothing is swept then.
 
 ## 9. Version Detection Strategy
 
@@ -750,8 +843,16 @@ Two consequences worth knowing:
   would otherwise leave incrmit hanging with no output at all.
 - Undo with nothing to revert (no journal or an emptied one): print a friendly
   message and exit `0` — it is not an error.
-- Undo conflict (a file edited since the bump no longer holds the recorded `new`
-  token): report the conflict, write nothing, and exit `1` (generic error).
+- Undo conflict (a file edited since the bump — or bumped past by another run —
+  no longer holds the recorded `new` token): report which file diverged, write
+  nothing, and exit `1` (generic error).
+- A project already held by another `incrmit` run: report it, name `--wait`,
+  write nothing, and exit `1` (generic error). See
+  [section 8.6](#86-concurrency-one-writer-per-project) for why this fails fast
+  rather than blocking.
+- Locking unavailable rather than contended (a filesystem without lock support,
+  an unwritable directory): warn on stderr and carry on unlocked. This is not an
+  error and does not change the exit code.
 
 ### Exit Codes
 
@@ -773,6 +874,7 @@ incrmit/
 │   ├── version/            # semantic version parse and bump
 │   ├── discovery/          # filesystem scan and config generation
 │   ├── history/            # bump journal (state file) for undo
+│   ├── lock/               # per-project advisory lock (one writer at a time)
 │   ├── files/              # read/write helpers
 │   ├── buildinfo/          # tool version (stamped via -ldflags)
 │   └── testutil/           # helpers shared by tests in several packages
@@ -795,6 +897,13 @@ incrmit/
 - Discovery tests over a fixture tree covering each supported file type.
 - CLI integration tests covering default bump, `--file`, `discover`, and
   `--dry-run`, asserting output and exit codes.
+- Concurrency tests that start several `cli.Main` calls against one project at
+  once (`internal/cli/concurrent_test.go`), asserting the tree, the config, and
+  the journal agree afterwards. The `--wait` case is the one a serialized
+  implementation cannot pass by accident: eight queued bumps must land eight
+  patch increments and eight journal entries. Alongside them: a contended run
+  writes nothing, a failed bump still releases the lock, the read-only commands
+  run while it is held, and an unavailable lock degrades to a warning.
 - Golden-file tests for the `preview` table, in sync and drifting
   (`internal/cli/testdata/preview_*.golden`, regenerated with
   `go test ./internal/cli/ -update`), alongside a test that asserts a preview

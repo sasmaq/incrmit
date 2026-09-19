@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.3.0
+## Version: 0.3.1
 
 ## Overview
 
@@ -64,7 +64,7 @@ checksum file from the same release and comparing hashes (replace `X.Y.Z` with
 the release version):
 
 ```bash
-VERSION=0.3.0
+VERSION=0.3.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -89,7 +89,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums-macos.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.3.0
+VERSION=0.3.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -98,7 +98,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.3.0
+VERSION=0.3.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -108,7 +108,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.3.0
+VERSION=0.3.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
@@ -119,7 +119,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.3.0
+VERSION=0.3.1
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -145,7 +145,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.27 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.3.0
+go install github.com/sasmaq/incrmit@v0.3.1
 ```
 
 ### Build from source
@@ -203,8 +203,8 @@ A prerelease or build section is recorded in its own key rather than inside
 ```toml
 [[files]]
   path = "VERSION"
-  version = "0.3.0"
-  prerelease = "rc.1"   # the file holds 0.3.0-rc.1
+  version = "0.3.1"
+  prerelease = "rc.1"   # the file holds 0.3.1-rc.1
 ```
 
 That rewrite regenerates the file from its parsed contents in a fixed layout, so
@@ -380,6 +380,7 @@ finding.
 | `--path` | `-P` | Root directory to scan | `.` |
 | `--output` | `-o` | Path to write the generated config file | `incrmit.toml` |
 | `--max-file-size` | `-s` | Skip files larger than this size | `32MiB` |
+| `--wait` | `-w` | [Wait for another `incrmit` run](#concurrent-runs) instead of failing | `false` |
 | `--dry-run` | `-d` | Print discovered files without writing config | `false` |
 
 ```bash
@@ -431,10 +432,10 @@ incrmit preview
 
 ```text
 PATH                             CURRENT  PATCH    MINOR   MAJOR
-Makefile                         0.1.15   0.1.16   0.3.0   1.0.0
-README.md                        0.1.15   0.1.16   0.3.0   1.0.0
-README.md                        v0.1.15  v0.1.16  v0.3.0  v1.0.0
-internal/buildinfo/buildinfo.go  0.1.15   0.1.16   0.3.0   1.0.0
+Makefile                         0.1.15   0.1.16   0.3.1   1.0.0
+README.md                        0.1.15   0.1.16   0.3.1   1.0.0
+README.md                        v0.1.15  v0.1.16  v0.3.1  v1.0.0
+internal/buildinfo/buildinfo.go  0.1.15   0.1.16   0.3.1   1.0.0
 ```
 
 `preview` is **read-only**: it writes no target file, no config, and no bump
@@ -514,7 +515,10 @@ A few details worth knowing:
   journal retains the last several bumps (older ones are dropped).
 - **Your edits are never clobbered.** If a file was changed after the bump so it
   no longer contains the version the bump wrote, `undo` refuses that revert and
-  writes nothing, exiting with an error instead.
+  writes nothing, exiting with an error instead — naming the file that diverged.
+  This covers a second `incrmit` that bumped past the recorded version as well
+  as an edit of your own, so an older version is never written back over newer
+  work.
 - **Nothing to undo is not an error.** With no recorded history, `undo` prints a
   friendly message and exits `0`.
 - **`--dry-run` previews the revert** (`new -> old`) without writing anything.
@@ -527,6 +531,7 @@ A few details worth knowing:
 | Flag | Short | Description | Default |
 | ---- | ----- | ----------- | ------- |
 | `--config` | `-c` | Path to the TOML config file (used to locate the state file) | `incrmit.toml` |
+| `--wait` | `-w` | [Wait for another `incrmit` run](#concurrent-runs) instead of failing | `false` |
 | `--dry-run` | `-d` | Preview the revert without writing | `false` |
 
 ## Version
@@ -538,7 +543,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.3.0
+# incrmit 0.3.1
 ```
 
 The version is baked into the binary and can be overridden at build time
@@ -562,6 +567,7 @@ incrmit [flags]
 | `--release` | `-r` | [Promote a prerelease](#prereleases-and-build-metadata) (`1.2.3-rc.1` -> `1.2.3`) | `false` |
 | `--pre` | `-e` | [Start or advance a prerelease](#prereleases-and-build-metadata) (`1.2.3` -> `1.2.4-rc.1`) | *none* |
 | `--max-file-size` | `-s` | [Refuse to read a target larger than this](#limiting-how-much-is-read) | *no limit* |
+| `--wait` | `-w` | [Wait for another `incrmit` run](#concurrent-runs) instead of failing | `false` |
 | `--dry-run` | `-d` | Print the new version without writing files | `false` |
 
 When no `--major`, `--minor`, or `--patch` flag is given, a patch bump is
@@ -791,6 +797,57 @@ All of the above exit with code `0`. An unknown command (for example
 `incrmit frobnicate`) prints an error with a hint to run `incrmit help` and
 exits with code `2`.
 
+## Concurrent runs
+
+**One `incrmit` writes to a project at a time.** A bump is a read-modify-write
+over shared state — it reads `incrmit.toml` and every target, then writes all of
+them back along with the undo journal — so two runs at once (a `make -j` rule, a
+CI matrix, a file watcher, two terminals) would otherwise interleave and erase
+each other: the tree gets bumped twice while the config records one version and
+the journal one entry, and the erased bump can never be undone.
+
+To prevent that, every writing command (`bump`, `discover`, `undo`) takes an
+exclusive lock on the project before it reads anything, and holds it until it is
+done. The lock is a file named `.incrmit.lock` kept next to `incrmit.toml`
+(with `--file`, next to the file being bumped), so separate projects never wait
+on each other. Add it to your `.gitignore` alongside the state file:
+
+```gitignore
+.incrmit.lock
+```
+
+The file is left in place between runs and is safe to delete. There is no such
+thing as a stale lock to clear by hand: the lock is held by the operating
+system, which releases it when the process exits for **any** reason — including
+a crash or a `kill -9`.
+
+**A second run fails fast.** A bump takes milliseconds, so another one arriving
+mid-run is usually a mistake rather than a queue, and a tool that blocked
+silently would turn a CI misconfiguration into a hung job instead of a failed
+one:
+
+```console
+$ incrmit
+incrmit: another incrmit run is already writing in .
+Wait for it to finish and run again, or pass --wait to queue behind it.
+$ echo $?
+1
+```
+
+A run refused this way writes nothing at all — no file, no config, no journal
+entry. If you really are serializing work, `--wait` (`-w`) queues behind the
+first run instead of failing.
+
+**Read-only commands take no lock.** `preview`, and any command with
+`--dry-run`, neither block nor are blocked, so inspecting a project is always
+possible. The trade-off is that they may observe a bump in progress and show a
+partly updated tree.
+
+**Where locking is unavailable** — some NFS mounts, a few CI overlay
+filesystems — `incrmit` prints a warning and carries on unlocked rather than
+refusing to run, since a tool that cannot bump at all is worse than one that
+cannot detect a second run.
+
 ## Exit codes
 
 `incrmit` returns predictable exit codes so it can be used reliably in
@@ -802,6 +859,9 @@ scripts and CI pipelines:
 | 1    | Generic runtime error (e.g. missing config, filesystem error). |
 | 2    | Invalid arguments or flags.                                    |
 | 3    | No version found, or an ambiguous/unparseable version.         |
+
+A run that finds the project already held by another `incrmit` also exits `1`,
+having written nothing — see [Concurrent runs](#concurrent-runs).
 
 ## Further reading
 

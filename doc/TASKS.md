@@ -821,7 +821,7 @@ before v1.0.0 freezes the behavior.
 
 `incrmit` starts no goroutines, so this is not about internal races — it is
 about two processes. Every mutating command is a read-modify-write over shared
-on-disk state and nothing coordinates them: `bump` loads the journal, pushes an
+on-disk state and nothing coordinated them: `bump` loads the journal, pushes an
 entry, and saves it, and rewrites `incrmit.toml` in place; `undo` loads, pops,
 and saves. Run two bumps at once — `make -j`, a CI matrix, a file watcher, two
 terminals — and the second save silently erases the first: the tree gets bumped
@@ -830,12 +830,22 @@ erased bump can never be undone. `WriteAtomic` is why this is easy to miss.
 Every individual write is all-or-nothing, so nothing is ever *corrupt*; it is
 only lost.
 
-- [ ] Reproduce the loss before fixing it, so the fix has something to prove.
+- [x] Reproduce the loss before fixing it, so the fix has something to prove.
       Drive two runs against one project concurrently (goroutines calling the
       CLI entry point is fair here, since all the contended state is on disk)
       and assert the specific damage: a journal holding one entry after two
       bumps, and a config whose recorded version disagrees with the files.
-- [ ] Add an `internal/lock` package taking one exclusive advisory file lock per
+      `internal/cli/concurrent_test.go` starts eight `cli.Main` calls behind one
+      barrier. Before the fix all eight exited `0` while the tree advanced a
+      single patch (1.0.0 -> 1.0.1), the config recorded that one version, and
+      the journal held **three** entries — seven bumps reported as applied,
+      one applied, three recorded. The assertion is the invariant rather than
+      the damage (tree, config, and journal all agree on the number of applied
+      bumps), so the same test proves the fix instead of being replaced by it.
+      Goroutines are fair for a second reason that only became clear while
+      implementing: flock is held by the open file description, not the process,
+      so two runs inside one test binary contend exactly as two shells do.
+- [x] Add an `internal/lock` package taking one exclusive advisory file lock per
       project, next to the config. Use `syscall.Flock` on Unix and
       `LockFileEx` on Windows in build-tagged files, mirroring the existing
       `internal/testutil/fifo_unix.go` / `fifo_windows.go` split, so this costs
@@ -844,42 +854,97 @@ only lost.
       process exits for any reason, `SIGKILL` and panics included, so there is
       never a leftover lock to clear by hand — a PID file outlives the crash and
       forces the tool to guess whether the owner is still alive.
-- [ ] Hold the lock across the whole read-modify-write of every mutating
+      Shipped as `lock.Acquire` / `lock.AcquireWait` / `Lock.Release` over
+      `.incrmit.lock` (`config.LockFileName`, kept beside `StateFileName` so
+      every tool-maintained file name lives in one place). The file is never
+      unlinked on release: removing it would let a second run create and lock a
+      fresh file at the same name while the first still held a lock on the old
+      inode, which is the race the lock exists to prevent. It is left holding a
+      two-line note explaining what it is, written only once the lock is held,
+      and carrying no version-like token so the scan can never match it.
+      All six release platforms (linux, darwin, windows × amd64, arm64) build.
+- [x] Hold the lock across the whole read-modify-write of every mutating
       command (`bump`, `undo`, and `init`/`discover` when it writes the config),
       releasing it on every return path. Keep read-only commands (`status`,
       `preview`, any `--dry-run`) lock-free so inspecting a project can neither
       block nor be blocked; note in their docs that they may therefore observe a
       bump in progress. Scope the lock to the config's directory so separate
       projects never contend.
-- [ ] Decide, and state, what a contended lock does. Fail fast is the better
+      The lock is taken *before* the config is read, not just before the write:
+      the config names the targets and the targets give the starting versions, so
+      a run that read between our read and our write would compute from the same
+      version and erase us anyway. Released with `defer` so every error path
+      gives it back, which `TestLockReleasedAfterFailedBump` checks by taking the
+      lock directly after a failed bump rather than inferring it from a second
+      run. `--file` mode has no config to anchor to, so the lock goes beside the
+      file being bumped — what two concurrent `--file` runs on one target have in
+      common.
+- [x] Decide, and state, what a contended lock does. Fail fast is the better
       default: a bump takes milliseconds, so a second one arriving mid-run is
       usually a mistake rather than a queue, and a tool that blocks silently
       turns a CI misconfiguration into a hung job instead of a failed one. Exit
       non-zero with a message that says another `incrmit` holds the project and
       what to do about it, and offer opt-in waiting (`--wait`) for the callers
       who really are serializing work.
-- [ ] Degrade rather than refuse where locking is unavailable. On filesystems
+      Exit `1` (the existing generic-error code) with
+      `another incrmit run is already writing in <dir>` plus a line naming
+      `--wait`; a new exit code was considered and rejected as public contract
+      the milestone did not ask for.
+      `-w, --wait` is on all three writing commands and waits indefinitely by
+      poll (`lock.AcquireWait` takes a timeout, which the CLI passes as 0 and the
+      tests use to assert it gives up when asked).
+- [x] Degrade rather than refuse where locking is unavailable. On filesystems
       that do not implement it (some NFS mounts, a few CI overlay filesystems),
       an error that is not contention must warn and continue, because a tool
       that cannot bump at all is worse than one that cannot detect a second run.
-- [ ] Skip in-flight temp files while scanning. `WriteAtomic` writes
+      `Acquire` therefore returns `ErrContended` or nothing at all: every other
+      failure comes back as a *degraded* `*Lock` that reports why, so "someone
+      else holds it" stays distinguishable from "locking is not available" at
+      the type level rather than by inspecting errno at the call site. The
+      degrade path is covered by putting a directory where the lock file belongs,
+      which fails the open the way an unsupported filesystem fails the flock.
+- [x] Skip in-flight temp files while scanning. `WriteAtomic` writes
       `.incrmit-*.tmp` beside its target, and the walk has no dotfile rule and
       no such entry in `ignoredDirs`, so a concurrent — or previously
       crashed — run's temp file can be scanned and written into the generated
       config as a real target. Exclude the pattern in `discovery`, and sweep
       stale ones the next time the project is locked, which is the one moment it
       is provably safe to delete them.
-- [ ] Make `undo` verify before it reverts, since a lock only serializes runs
+      The pattern now has one definition (`files.IsTempName`, next to the
+      `CreateTemp` call that produces it) which both the walk and the sweep use,
+      with a test asserting the two cannot drift. `files.SweepTemps` is
+      non-recursive and the CLI calls it with exactly the directories the command
+      is about to write in; it is skipped entirely when the lock is degraded,
+      since without a real lock a matching file may belong to a run still writing.
+      The walk also skips `.incrmit.lock` by name.
+- [x] Make `undo` verify before it reverts, since a lock only serializes runs
       that use it. Refuse when a file no longer holds the version the journal
       recorded — another run may have bumped past it — and say which file
       diverged instead of writing an older version back over newer work.
-- [ ] Cover the new behavior with tests that a serialized implementation cannot
+      The check already existed from Milestone 22 (`planReverts` fails before
+      phase 2 when the recorded `new` token is gone) and already named the file;
+      what was missing was a test for the concurrent case rather than the edited-
+      by-hand one, so `TestUndoRefusesAfterAnotherRunMovedPast` drives a `--file`
+      bump — the kind that keeps no journal — past a recorded bump and asserts
+      the refusal leaves the newer version in place.
+- [x] Cover the new behavior with tests that a serialized implementation cannot
       pass by accident: the reproduction cases above must now come out
       consistent, a contended second run must fail cleanly without having
       written anything, and the lock must be released after an error partway
       through a bump. Document the model in `README.md` and
       `doc/DEVELOPMENT.md`: one writer per project at a time, readers
       unsynchronized.
+      The case a serialized implementation cannot fake is the `--wait` one:
+      eight queued bumps must land eight patch increments *and* eight journal
+      entries, not one of each. Alongside it: contention writes nothing (file,
+      config, and journal all checked), `undo` and `discover` contend the same
+      way, the read-only commands run while the lock is held, four `--file` runs
+      serialize, and an unavailable lock warns and proceeds. `internal/lock` has
+      its own unit tests (contention, per-directory scoping, idempotent release,
+      wait timeout and wake-up, degraded acquisition). Documented in README
+      ("Concurrent runs"), `doc/DEVELOPMENT.md` §6.4 and §8.6, and the man page's
+      CONCURRENT RUNS section. Suite passes under `-race`; coverage 95.8% ->
+      95.9%.
 
 ## Milestone 30 — Fuzz Testing
 

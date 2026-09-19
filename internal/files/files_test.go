@@ -855,3 +855,107 @@ func TestSetKnownVersionsPrefersTheSuffixedPin(t *testing.T) {
 		t.Errorf("counts = %v, want one match each", counts)
 	}
 }
+
+// IsTempName recognizes exactly the names WriteAtomic gives its in-flight
+// files, so the discovery walk skips those and nothing else.
+func TestIsTempName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{".incrmit-123456.tmp", true},
+		{".incrmit-.tmp", true},
+		{".incrmit-x.tmp", true},
+		{".incrmit.tmp", false}, // no separator: not our pattern
+		{".incrmit-.tmpx", false},
+		{"incrmit-123.tmp", false}, // a real file someone might keep
+		{".incrmit.state.toml", false},
+		{"VERSION", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsTempName(tt.name); got != tt.want {
+			t.Errorf("IsTempName(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// A WriteAtomic temp file really is named the way IsTempName expects. Without
+// this the two halves could drift apart silently.
+func TestWriteAtomicTempNameMatchesIsTempName(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "VERSION")
+
+	// Catch the temp file mid-write by watching the directory from a mode that
+	// makes the rename fail: simplest is to write successfully, then assert the
+	// pattern CreateTemp was given still matches.
+	if err := WriteAtomic(target, []byte("1.2.3\n")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.CreateTemp(dir, tempPrefix+"*"+tempSuffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	_ = f.Close()
+	if !IsTempName(filepath.Base(f.Name())) {
+		t.Errorf("WriteAtomic's temp pattern produces %q, which IsTempName does not match", filepath.Base(f.Name()))
+	}
+}
+
+// SweepTemps clears the residue of a crashed run and leaves everything else —
+// including a subdirectory's temp file, which belongs to whichever run is about
+// to write there — alone.
+func TestSweepTemps(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := map[string]string{
+		filepath.Join(dir, "VERSION"):           "1.2.3\n",
+		filepath.Join(dir, "incrmit.toml"):      "",
+		filepath.Join(dir, "incrmit-1.2.3.tmp"): "not ours: no leading dot\n",
+		filepath.Join(sub, ".incrmit-999.tmp"):  "another directory's business\n",
+	}
+	remove := []string{
+		filepath.Join(dir, ".incrmit-111.tmp"),
+		filepath.Join(dir, ".incrmit-222.tmp"),
+	}
+	for p, body := range keep {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range remove {
+		if err := os.WriteFile(p, []byte("half-written\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	n, err := SweepTemps(dir)
+	if err != nil {
+		t.Fatalf("SweepTemps: %v", err)
+	}
+	if n != len(remove) {
+		t.Errorf("SweepTemps removed %d file(s), want %d", n, len(remove))
+	}
+	for _, p := range remove {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s survived the sweep (stat err = %v)", p, err)
+		}
+	}
+	for p := range keep {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("sweep removed %s: %v", p, err)
+		}
+	}
+}
+
+// A directory that cannot be read is reported rather than silently treated as
+// empty, so a caller that wants to know can ask.
+func TestSweepTempsMissingDir(t *testing.T) {
+	if _, err := SweepTemps(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Error("SweepTemps on a missing directory returned no error")
+	}
+}

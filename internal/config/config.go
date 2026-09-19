@@ -24,6 +24,12 @@ const DefaultPath = "incrmit.toml"
 // tool-maintained state (see package history) and is not a discovery target.
 const StateFileName = ".incrmit.state.toml"
 
+// LockFileName is the name of the per-project lock file kept next to the
+// config. One exclusive advisory lock on it serializes the mutating commands
+// across processes (see package lock). Like the state file it is local,
+// tool-maintained state and is not a discovery target.
+const LockFileName = ".incrmit.lock"
+
 // Config is the in-memory model of an incrmit.toml file.
 //
 // Ignore is declared before Files so it is encoded as a top-level array ahead of
