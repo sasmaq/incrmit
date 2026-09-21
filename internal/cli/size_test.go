@@ -27,6 +27,11 @@ func TestParseSize(t *testing.T) {
 		{"  8M  ", 8 << 20},
 		{"2GB", 2 * 1000 * 1000 * 1000},
 		{"2GiB", 2 << 30},
+		// The spelling formatSize prints for a size with no whole unit. It is
+		// accepted so a limit the tool shows can be pasted straight back.
+		{"1234 bytes", 1234},
+		{"1234bytes", 1234},
+		{"1 byte", 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {

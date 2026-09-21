@@ -47,6 +47,45 @@ jobs:
       - name: Coverage gate
         run: make cover
 
+  # Fuzzing runs in its own job, on every push, for a fixed budget per target.
+  #
+  # Two decisions worth keeping straight. It is a *separate job* because fuzzing
+  # is non-deterministic: the same commit can pass one run and fail the next
+  # when the engine happens to reach a different input, and that must never be
+  # what decides whether Build & Test is green. And it is a *short pass on every
+  # push* rather than a long nightly one, because the value here is catching a
+  # regression in the invariants while the change that caused it is still in
+  # front of the author; the seed corpora (including every input a past run
+  # found) already replay on every `go test`, so this job is looking for what is
+  # new.
+  #
+  # A failure writes the offending input to the package's testdata/fuzz/
+  # directory, which lives only in the runner's workspace, so it is printed
+  # before the job ends: without that the log would say a target failed and the
+  # input that proved it would be gone.
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Fuzz each target
+        run: make fuzz FUZZTIME=30s
+
+      - name: Show any input the fuzzer found
+        if: failure()
+        run: |
+          for f in $(git ls-files --others --exclude-standard -- '*/testdata/fuzz/*'); do
+            echo "=== $f ==="
+            cat "$f"
+          done
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

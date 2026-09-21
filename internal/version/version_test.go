@@ -14,7 +14,6 @@ func TestParse(t *testing.T) {
 		{"leading-space", "  1.2.3", Version{Major: 1, Minor: 2, Patch: 3}},
 		{"trailing-space", "1.2.3  ", Version{Major: 1, Minor: 2, Patch: 3}},
 		{"surrounding-space", "  10.0.42  ", Version{Major: 10, Minor: 0, Patch: 42}},
-		{"leading-zeros", "01.02.03", Version{Major: 1, Minor: 2, Patch: 3}},
 		{"large", "2147483647.0.0", Version{Major: 2147483647, Minor: 0, Patch: 0}},
 		{"v-prefix", "v1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"}},
 		{"V-prefix", "V1.2.3", Version{Major: 1, Minor: 2, Patch: 3, Prefix: "V"}},
@@ -70,6 +69,15 @@ func TestParseErrors(t *testing.T) {
 		{"empty-prerelease-identifier", "1.2.3-rc..1"},
 		{"empty-build-identifier", "1.2.3+build..7"},
 		{"prerelease-leading-zero", "1.2.3-rc.01"},
+		// A leading zero in the numeric core is rejected because String() could
+		// not write it back: accepting "1.02.3" as 1.2.3 gave the rewriter a
+		// token it could never find in the file, so the bump "succeeded" without
+		// changing a byte. See FuzzParse, whose round-trip property found it.
+		{"leading-zero-major", "01.2.3"},
+		{"leading-zero-minor", "1.02.3"},
+		{"leading-zero-patch", "1.2.03"},
+		{"leading-zeros-throughout", "01.02.03"},
+		{"leading-zero-v-prefixed", "v1.2.03"},
 		{"prerelease-bad-char", "1.2.3-rc_1"},
 		{"build-bad-char", "1.2.3+build_7"},
 		{"prerelease-only", "-rc.1"},

@@ -35,7 +35,7 @@ type Version struct {
 // Parse reads a [v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD] string into a Version.
 // Surrounding whitespace is ignored, as is an optional single leading "v" or "V"
 // (recorded in Prefix). Each numeric component must be a non-negative base-10
-// integer with no sign, and exactly three must be present.
+// integer with no sign and no leading zero, and exactly three must be present.
 //
 // The prerelease and build sections follow the semver 2.0.0 grammar: a
 // dot-separated list of non-empty identifiers made of ASCII alphanumerics and
@@ -45,6 +45,17 @@ func Parse(s string) (Version, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
 		return Version{}, fmt.Errorf("version: empty string")
+	}
+	// A token must end with a letter or digit. Semver would allow a trailing
+	// hyphen (identifiers are alphanumerics and hyphens, so "0-" is a legal
+	// build identifier), but the scanner never yields one: tokenRe ends at a
+	// word boundary, so it reads "1.2.3+0-" out of a file as "1.2.3+0" and
+	// hands back a different version than the one written there. Accepting the
+	// full token here would let a config pin a string FindTokens can never
+	// locate, which is a rewrite that quietly finds nothing. The grammar is
+	// narrowed to what the scanner can actually see.
+	if !isAlnumByte(trimmed[len(trimmed)-1]) {
+		return Version{}, fmt.Errorf("version: %q must end with a letter or digit", trimmed)
 	}
 
 	prefix := ""
@@ -93,6 +104,16 @@ func Parse(s string) (Version, error) {
 		if p == "" {
 			return Version{}, fmt.Errorf("version: %s component is empty in %q", names[i], trimmed)
 		}
+		// A leading zero is rejected rather than tolerated, as semver requires.
+		// The reason is not pedantry: Atoi reads "02" as 2 and String() writes
+		// it back as "2", so the token in the file and the token the rewriter
+		// looks for would differ by a byte. matchAt compares them literally,
+		// finds nothing, and the bump reports success having changed no file at
+		// all. Refusing the token instead makes the file report "no semantic
+		// version found", which is a failure the user can see and fix.
+		if len(p) > 1 && p[0] == '0' {
+			return Version{}, fmt.Errorf("version: %s component %q in %q must not have a leading zero", names[i], p, trimmed)
+		}
 		n, err := strconv.Atoi(p)
 		if err != nil {
 			return Version{}, fmt.Errorf("version: %s component %q is not a valid integer", names[i], p)
@@ -133,6 +154,15 @@ func checkIdentifiers(s, kind, token string, numericRules bool) error {
 		}
 	}
 	return nil
+}
+
+// isAlnumByte reports whether b is an ASCII letter or digit. It is what a
+// version token must both begin and end with, matching the word boundaries the
+// scanner's pattern is anchored on.
+func isAlnumByte(b byte) bool {
+	return (b >= '0' && b <= '9') ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z')
 }
 
 // isIdentChar reports whether r may appear in a prerelease or build identifier.

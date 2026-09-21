@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.3.1
+## Version: 0.3.2
 
 ## Overview
 
@@ -64,7 +64,7 @@ checksum file from the same release and comparing hashes (replace `X.Y.Z` with
 the release version):
 
 ```bash
-VERSION=0.3.1
+VERSION=0.3.2
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -89,7 +89,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums-macos.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.3.1
+VERSION=0.3.2
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -98,7 +98,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.3.1
+VERSION=0.3.2
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -108,7 +108,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.3.1
+VERSION=0.3.2
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
@@ -119,7 +119,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.3.1
+VERSION=0.3.2
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -145,7 +145,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.27 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.3.1
+go install github.com/sasmaq/incrmit@v0.3.2
 ```
 
 ### Build from source
@@ -203,7 +203,7 @@ A prerelease or build section is recorded in its own key rather than inside
 ```toml
 [[files]]
   path = "VERSION"
-  version = "0.3.1"
+  version = "0.3.2"
   prerelease = "rc.1"   # the file holds 0.3.1-rc.1
 ```
 
@@ -432,10 +432,10 @@ incrmit preview
 
 ```text
 PATH                             CURRENT  PATCH    MINOR   MAJOR
-Makefile                         0.1.15   0.1.16   0.3.1   1.0.0
-README.md                        0.1.15   0.1.16   0.3.1   1.0.0
-README.md                        v0.1.15  v0.1.16  v0.3.1  v1.0.0
-internal/buildinfo/buildinfo.go  0.1.15   0.1.16   0.3.1   1.0.0
+Makefile                         0.1.15   0.1.16   0.2.0   1.0.0
+README.md                        0.1.15   0.1.16   0.2.0   1.0.0
+README.md                        v0.1.15  v0.1.16  v0.2.0  v1.0.0
+internal/buildinfo/buildinfo.go  0.1.15   0.1.16   0.2.0   1.0.0
 ```
 
 `preview` is **read-only**: it writes no target file, no config, and no bump
@@ -543,7 +543,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.3.1
+# incrmit 0.3.2
 ```
 
 The version is baked into the binary and can be overridden at build time
@@ -641,6 +641,14 @@ A version token is `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`, following
 sections are dot-separated identifiers of ASCII letters, digits, and hyphens; a
 numeric prerelease identifier may not carry a leading zero (`1.2.3-rc.01` is
 not a version).
+
+Two spellings are refused that a reading of semver alone might allow, because
+`incrmit` has to find the token again in the file after writing it. A numeric
+component may not carry a leading zero (`1.02.3`), which would be written back
+as `1.2.3` and no longer match the text on disk, and a token may not end in a
+hyphen (`1.2.3+0-`), which the scanner reads back as `1.2.3+0`. Either one is
+reported as "no semantic version found" rather than bumped to something the
+file does not say.
 
 The whole token is matched and rewritten as a unit, so `1.2.3-rc.1` is never
 confused with the `1.2.3` inside it — a config entry pinning one does not match

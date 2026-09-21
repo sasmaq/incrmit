@@ -1,0 +1,6 @@
+go test fuzz v1
+[]byte("1.2.3-Lrc.1")
+string("1.2.3-Lrc.1")
+string("0.0.0+0-")
+string("")
+string("0")

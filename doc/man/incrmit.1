@@ -65,6 +65,23 @@ three numeric components, and the optional prerelease and build-metadata
 sections, each a dot-separated list of identifiers made of ASCII letters,
 digits, and hyphens
 .Pq a numeric prerelease identifier may not carry a leading zero .
+.Pp
+Two spellings a reading of semver alone might allow are refused, because
+.Nm
+has to find the token again in the file after writing it: a numeric component
+may not carry a leading zero
+.Pq Sy 1.02.3 ,
+which would be written back as
+.Sy 1.2.3
+and no longer match the text on disk, and a token may not end in a hyphen
+.Pq Sy 1.2.3+0- ,
+which the scanner reads back as
+.Sy 1.2.3+0 .
+Either is reported as
+.Sq no semantic version found
+.Pq exit 3
+rather than bumped to something the file does not say.
+.Pp
 The whole token is matched and rewritten as a unit, so
 .Sy 1.2.3-rc.1
 is never mistaken for the
@@ -243,8 +260,12 @@ is a plain byte count
 or a value with a unit suffix such as
 .Ar 512KB ,
 .Ar 32MiB ,
-or
-.Ar 2G ;
+.Ar 2G ,
+or the
+.Ar "1234 bytes"
+form
+.Nm
+itself prints for a limit that is not a whole number of units;
 a size of
 .Ar 0
 means no limit.

@@ -955,7 +955,7 @@ that eats bytes around the version token — and the "only the token changed"
 promise is currently checked against four handcrafted fixtures. Go's built-in
 fuzzing exercises the same invariants against input nobody imagined.
 
-- [ ] Add `FuzzSetKnownVersions` in `internal/files` asserting the invariant the
+- [x] Add `FuzzSetKnownVersions` in `internal/files` asserting the invariant the
       whole tool rests on: for arbitrary input bytes and a set of replacements,
       every byte outside the replaced ranges is identical to the input. Compare
       ranges rather than reusing `assertOnlyVersionChanged`, whose
@@ -963,25 +963,82 @@ fuzzing exercises the same invariants against input nobody imagined.
       appears more than once. Assert the returned counts match the replacements
       actually made, and that a replacement never produces an output containing
       a token the input did not have.
-- [ ] Add `FuzzFindTokens` in `internal/version` checking that the returned
+      The byte check searches for an alignment of input and output that uses
+      only two moves — copy one identical byte, or consume a pin's old token
+      against its new one — over a memoized (i, j) state space. The search is
+      exhaustive, so a failure means some byte outside a token really changed
+      rather than that the check failed to guess the decomposition; inputs large
+      enough to make the search expensive fall back to the cheaper properties.
+      The counts are tied to the output two ways that do not depend on where any
+      replacement landed: the output's length must equal the input's plus the
+      per-token deltas, and no token may be replaced more times than its text
+      occurs in the input. `assertNoInventedTokens` allows a new version's
+      numeric core as well as its full token, since a pin whose suffix was
+      consumed inside a filename leaves the core behind.
+      The "never produces a token the input did not have" half turned out to be
+      stated more strongly than the rewriter can promise, and the fuzzer said so:
+      a new token can weld to bytes the scanner left behind when a token is
+      followed by something its grammar cannot absorb but a shorter token can
+      (`0.0.0+H+0` is the version `0.0.0+H` with `+0` left over, so a pin
+      rewriting it to `0.0.0` yields `0.0.0+0`). Neither string is a valid
+      version, and the file ends up reporting one the config does not pin, which
+      the next command refuses rather than acts on — so the case is documented
+      in `doc/DEVELOPMENT.md` §12.1 and kept in the regression corpus, and the
+      assertion allows exactly that weld: a token beginning where a new token
+      was written and running past its end. It still catches a version conjured
+      anywhere else, and a token written but scanned back short — which is the
+      shape the trailing-hyphen defect took.
+- [x] Add `FuzzFindTokens` in `internal/version` checking that the returned
       ranges are in bounds, strictly ordered, non-overlapping, and that the
       bytes each range spans parse with `version.Parse` — the property the
       rewriter assumes when it walks the ranges in one pass.
-- [ ] Add `FuzzParse` in `internal/version`: `Parse` never panics on arbitrary
+      The last of those is not the property the package actually has, and
+      asserting it would have been asserting a bug: `FindTokens` deliberately
+      reports candidates for `Parse` to reject, which is how an IPv4 address is
+      rejected whole instead of having a three-component slice pulled out of it.
+      What the rewriter assumes is the weaker statement, and it is what the
+      target checks: a range `Parse` *accepts* spans exactly the bytes
+      `String()` produces, because that equality is how `matchAt` decides an
+      occurrence is the pinned version.
+- [x] Add `FuzzParse` in `internal/version`: `Parse` never panics on arbitrary
       input, and anything it accepts round-trips through `String()` back to the
       same token (prefix, prerelease, and build sections included). Feed the
       corpus the near-miss forms already in the table tests (`rev1.2.3`,
       IPv4 addresses, leading zeros, empty identifiers) so the fuzzer starts
       from the known boundaries rather than rediscovering them.
-- [ ] Add fuzz targets for the two remaining parsers of untrusted text:
+      The near-miss seeds earned their place immediately: the leading-zero forms
+      failed the round trip on the first run, before any fuzzing engine was
+      involved. The target also asserts the two halves of the package agree on
+      where a token ends — `FindTokens` must locate an accepted token whole —
+      which is the property that caught the trailing-hyphen case. Both are the
+      same statement in the end: a version the tool accepts must be one it can
+      find again in a file.
+- [x] Add fuzz targets for the two remaining parsers of untrusted text:
       `cli.parseSize` (arbitrary strings must return an error, never panic or
       overflow) and config loading (arbitrary bytes must be reported as a config
       error, never panic — the config is trusted input, but a corrupt file is
       not the same as a hostile one).
-- [ ] Seed each target with a corpus under `testdata/fuzz/` covering the shapes
+      `FuzzParseSize` checks the accepted values as well as the rejected ones:
+      a size must be non-negative and must survive `formatSize` and back, which
+      is what the flag prints as its default and what error messages quote.
+      `FuzzFormatSize` drives the same round trip from the number. `FuzzLoad`
+      writes the bytes to a real config in a temp directory next to a real
+      target, so validation can succeed and the fuzzer reaches the code past it;
+      every error must carry the `config:` prefix the CLI keys its exit codes
+      off, and a config that loads must marshal and reload identically, because
+      a bump rewrites the config it just read.
+- [x] Seed each target with a corpus under `testdata/fuzz/` covering the shapes
       the table tests already know matter, and commit any input the fuzzer finds
       as a regression case so a fixed crash stays fixed.
-- [ ] Wire fuzzing into the workflow in two places: `go test ./...` already runs
+      Split by purpose rather than put both in one place. The table-derived
+      shapes are `f.Add` calls sitting next to the invariant they exercise,
+      where a reviewer reads them with the property instead of as a directory of
+      one-line files. `testdata/fuzz/<Target>/` holds the regression corpus, one
+      file per input a run has found, named for what it proves
+      (`leading_zero_in_core`, `trailing_hyphen_in_build`,
+      `printed_byte_count`). The go command treats both as seed corpora, so
+      `go test ./...` replays all of them as ordinary subtests.
+- [x] Wire fuzzing into the workflow in two places: `go test ./...` already runs
       every seed corpus entry as a unit test, so make sure the seeds alone catch
       the known cases, and add a `make fuzz` target that runs each target for a
       bounded `-fuzztime` (e.g. 30s) for local use. Decide and document whether
@@ -989,10 +1046,34 @@ fuzzing exercises the same invariants against input nobody imagined.
       a fixed `-fuzztime` in the existing test job is simplest, but note that
       fuzzing is non-deterministic, so it belongs in its own job rather than
       gating the build/test job on a random failure.
-- [ ] Fix whatever the fuzzers find before moving on, and record in
+      The seeds do catch the known cases: two of the three defects below were
+      reported by `go test` alone. `make fuzz` enumerates every target with
+      `go test -list '^Fuzz'` and runs each for `FUZZTIME` (30s by default), so
+      a new target is picked up without editing the Makefile; it is not part of
+      `make check`. CI runs the same bounded pass on every push in a job of its
+      own — short and frequent, because the value is catching a broken invariant
+      while the change that broke it is still in front of the author, and
+      separate, because a non-deterministic failure must never decide whether
+      Build & Test is green. The job prints any input it found before exiting,
+      since `testdata/fuzz/` in a runner's workspace is discarded with it.
+- [x] Fix whatever the fuzzers find before moving on, and record in
       `doc/DEVELOPMENT.md` what each target proves — the invariants above are
       the actual specification of the rewriter, and they are worth stating in
       prose next to the code they constrain.
+      Three defects, all the same shape: a token the tool could write or accept
+      but never find again. `Parse` accepted leading zeros in the numeric core,
+      so `1.02.3` read as `1.2.3`, the rewriter searched for the text `1.2.3`,
+      found nothing, and returned the file unchanged with no error — the bump
+      printed `1.2.3 -> 1.2.4` over a file that still said `1.02.3`. `Parse`
+      also accepted a token ending in `-` (`1.2.3+0-`), which semver permits but
+      the scanner's trailing `\b` cuts short, so a config could pin a token
+      `FindTokens` can never locate. Both are now rejected, which turns a silent
+      no-op into an exit-3 "no semantic version found" naming the file. Third,
+      `formatSize` printed `1234 bytes` for a size with no whole unit and
+      `parseSize` refused that spelling, so the default the flag showed could
+      not be pasted back; `parseSize` accepts it now. Written up in
+      `doc/DEVELOPMENT.md` §12.1, with the user-visible half in `README.md` and
+      `CHANGELOG.md`.
 
 ## Milestone 31 — Pathological File Shapes
 

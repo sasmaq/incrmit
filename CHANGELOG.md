@@ -5,6 +5,33 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-09-22
+
+### Fixed
+
+- A version with a leading zero in one of its numeric components (`1.02.3`) no
+  longer reports a successful bump while leaving the file untouched. The token
+  parsed as `1.2.3`, so the rewriter went looking for the text `1.2.3`, found
+  nothing, and wrote the file back unchanged — `incrmit --patch` printed
+  `1.2.3 -> 1.2.4` over a file that still said `1.02.3`. Leading zeros are
+  rejected now, as semver requires, so the file reports "no semantic version
+  found" and says which file it is.
+- A version token ending in a hyphen (`1.2.3+0-`) is rejected for the same
+  reason: semver permits it, but the scanner stops at the word boundary and
+  reads it back out of a file as `1.2.3+0`, so a config could pin a token no
+  bump could ever locate.
+- `--max-file-size` now accepts the `1234 bytes` spelling that `incrmit` itself
+  prints for a limit that is not a whole number of KiB/MiB/GiB. The flag showed
+  a default the flag would not take back.
+
+### Added
+
+- Fuzz targets over the version parser, the token scanner, the file rewriter,
+  the size parser, and config loading, with `make fuzz` to run them locally and
+  a CI job that runs a bounded pass on every push. See `doc/DEVELOPMENT.md`
+  §12.1 for what each one proves; the three fixes above are what the first pass
+  found.
+
 ## [0.3.1] - 2026-09-19
 
 ### Fixed

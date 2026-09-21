@@ -25,13 +25,21 @@ var sizeUnits = []struct {
 	{"K", 1 << 10},
 	{"M", 1 << 20},
 	{"G", 1 << 30},
+	// "bytes" is listed ahead of the bare "B" it ends with, because the first
+	// matching suffix wins. It is here because formatSize writes a size with no
+	// whole unit as "1234 bytes", and that is the spelling the flag prints as
+	// its default and that error messages quote: a limit the tool shows must be
+	// one the user can paste back.
+	{"BYTES", 1},
+	{"BYTE", 1},
 	{"B", 1},
 }
 
-// parseSize converts a human-written size such as "32MiB", "64MB", "512K", or a
-// plain byte count such as "1048576" into a number of bytes. The suffix is
-// case-insensitive and may be separated from the number by spaces. A value of 0
-// means "no limit"; a negative value is rejected.
+// parseSize converts a human-written size such as "32MiB", "64MB", "512K", a
+// plain byte count such as "1048576", or the "1234 bytes" form formatSize
+// prints, into a number of bytes. The suffix is case-insensitive and may be
+// separated from the number by spaces. A value of 0 means "no limit"; a
+// negative value is rejected.
 func parseSize(s string) (int64, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
@@ -65,7 +73,9 @@ func parseSize(s string) (int64, error) {
 // formatSize renders a byte count the way parseSize accepts it, using the
 // largest binary unit that divides it exactly so a limit reads back as the user
 // wrote it (33554432 -> "32MiB"). Sizes that are not whole units are reported
-// as a plain byte count.
+// as a plain byte count ("1234 bytes"), which parseSize accepts as well: every
+// size the tool prints must parse back to the same number, which is what
+// FuzzFormatSize pins.
 func formatSize(n int64) string {
 	units := []struct {
 		suffix string

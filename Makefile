@@ -1,13 +1,17 @@
 BINARY := incrmit
 # Static version, kept in sync by incrmit itself (see incrmit.toml). Override on
 # the command line for one-off builds, e.g. `make build VERSION=1.2.3`.
-VERSION ?= 0.3.1
+VERSION ?= 0.3.2
 LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 # -trimpath keeps the builder's absolute source paths out of the binary, so an
 # artifact neither discloses the directory it was built in nor depends on it:
 # the same source then produces the same bytes on any machine.
 BUILDFLAGS := -trimpath -ldflags "$(LDFLAGS)"
 COVER_THRESHOLD ?= 80
+# How long `make fuzz` spends on each fuzz target. Fuzzing has no natural end,
+# so the budget is the knob: 30s each is a coffee-length local pass, and a
+# longer value is what to reach for when chasing something.
+FUZZTIME ?= 30s
 DIST := dist
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 LINUX_ARCHES := amd64 arm64
@@ -15,7 +19,7 @@ DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg checksums pkg-checksums release release-macos test cover vet fmt fmt-check lint check clean
+.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg checksums pkg-checksums release release-macos test cover vet fmt fmt-check lint check clean fuzz
 
 build:
 	go build $(BUILDFLAGS) -o $(BINARY) .
@@ -167,6 +171,24 @@ cover:
 	echo "total coverage: $${total}% (threshold $(COVER_THRESHOLD)%)"; \
 	awk "BEGIN { exit !($${total} >= $(COVER_THRESHOLD)) }" || \
 		{ echo "FAIL: coverage $${total}% is below threshold $(COVER_THRESHOLD)%"; exit 1; }
+
+# fuzz runs every Fuzz target in the module for FUZZTIME each, one at a time
+# (the go command fuzzes a single target per invocation). It is deliberately not
+# part of `check`: fuzzing is non-deterministic, so a green run proves only that
+# nothing was found in the time given, and a red one may take a different number
+# of executions to reproduce. The seed corpora are what run on every `go test`.
+#
+# An input that fails is written to the package's testdata/fuzz/<Target>/ by the
+# go command; commit it, and it becomes a regression case the ordinary test run
+# replays from then on.
+fuzz:
+	@for pkg in $$(go list ./...); do \
+		targets=$$(go test -list '^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz' || true); \
+		for t in $$targets; do \
+			echo "fuzzing $$t ($$pkg) for $(FUZZTIME)"; \
+			go test $$pkg -run '^$$' -fuzz "^$$t\$$" -fuzztime $(FUZZTIME) || exit 1; \
+		done; \
+	done
 
 vet:
 	go vet ./...

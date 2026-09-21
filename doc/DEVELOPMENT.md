@@ -908,6 +908,98 @@ incrmit/
   (`internal/cli/testdata/preview_*.golden`, regenerated with
   `go test ./internal/cli/ -update`), alongside a test that asserts a preview
   leaves every file in the tree byte-identical.
+- Fuzz targets over the parsers and the rewriter (§12.1).
+
+### 12.1 Fuzzing
+
+Every test above feeds input someone thought to write down. `incrmit` rewrites
+other people's files in place, so the failure that matters most is a scanner or
+rewriter bug that eats bytes around the version token — and a handful of
+fixtures cannot cover the shapes a real tree holds. The fuzz targets state the
+invariants as properties and let the engine look for input that breaks them.
+
+What each target proves:
+
+- `version.FuzzParse` — `Parse` never panics, and anything it accepts
+  round-trips through `String()` back to the identical token. The round trip is
+  not cosmetic: `files.matchAt` locates an occurrence by comparing the bytes in
+  the file against `pin.String()`, so a token `Parse` accepts but `String()`
+  re-spells differently can never be matched, and the bump reports success
+  having written nothing. It also asserts that `FindTokens` finds any accepted
+  token *whole*, which is what keeps the config's reading of a version and the
+  file's reading of it the same string.
+- `version.FuzzFindTokens` — the returned ranges are in bounds, strictly
+  ordered, and non-overlapping, which is what lets the rewriter walk them in one
+  pass writing `data[prev:start]` without panicking or emitting a byte twice.
+  Not every range parses, by design: `FindTokens` reports candidates (an IPv4
+  address, a two-component number) for `Parse` to reject. The property is that a
+  range `Parse` *accepts* spans exactly the bytes `String()` produces.
+- `files.FuzzSetKnownVersions` — the promise the whole tool rests on: for
+  arbitrary bytes and a set of pins, every byte outside the replaced ranges is
+  the input's, in the input's order. The check searches for an alignment of
+  input and output using only two moves (copy an identical byte, or consume a
+  pin's old token against its new one); the search is exhaustive, so a failure
+  means some byte outside a token really did change. It deliberately does not
+  reuse `assertOnlyVersionChanged`, whose `strings.ReplaceAll` round trip
+  repairs a stray extra replacement as readily as the intended one when the same
+  token appears twice. Alongside it: the counts match the replacements actually
+  made (tied to the output through its length, and bounded by the occurrences of
+  each token in the input), and a rewrite never leaves behind a version the file
+  did not have and the pins did not ask for — with one weld allowed, because the
+  rewriter cannot prevent it (below).
+- `cli.FuzzParseSize` / `cli.FuzzFormatSize` — `--max-file-size` comes off the
+  command line, so anything a shell can pass must come back as an error rather
+  than a panic or a silently wrong limit; and every size the tool *prints*
+  parses back to the same number, in both directions.
+- `config.FuzzLoad` — the config is trusted input, but a truncated or
+  hand-mangled file is not a hostile one: arbitrary bytes must produce a
+  `config: ...` error, never a panic, and never a config that loaded into a
+  shape the commands do not expect. What loads must also marshal and reload
+  identically, because a bump rewrites the config it just read.
+
+Seeds live in `f.Add` calls next to the invariant they exercise, where a
+reviewer reads them with the property rather than as an opaque file. The
+`testdata/fuzz/<Target>/` directories hold the regression corpus: every input a
+fuzzing run has found, kept so a fixed crash stays fixed. Both are seed corpora
+to the go command, so `go test ./...` replays all of them as ordinary subtests —
+the seeds alone catch the known cases, with no fuzzing engine involved.
+
+`make fuzz` runs every target for `FUZZTIME` (30s each by default) and is
+deliberately not part of `make check`: fuzzing is non-deterministic, so a green
+run proves only that nothing was found in the time given. CI runs the same
+bounded pass on every push, in a job of its own, so a random failure never
+decides whether Build & Test is green. An input that fails is written to the
+package's `testdata/fuzz/<Target>/`; commit it under a name that says what it
+proves, and it becomes a regression case from then on.
+
+One limitation is documented rather than fixed. A new token can run on into the
+bytes that followed the token it replaced, when the scanner left bytes behind
+that its grammar could not absorb but a shorter token can: `0.0.0+H+0` is read
+as the version `0.0.0+H` with `+0` left over, so a pin rewriting it to `0.0.0`
+produces `0.0.0+0`. Neither string is a valid version to begin with — semver
+allows one build section, not two — and the result is a file reporting a version
+the config does not pin, which the next command refuses with "expected version
+not found" rather than acting on. Refusing the rewrite instead would trade a
+bumped-but-odd file for an unbumped one and an error, on input nobody writes.
+`FuzzSetKnownVersions` therefore allows a token that begins exactly where a new
+token was written and runs past its end, and nothing else; the regression corpus
+keeps the case under
+`internal/files/testdata/fuzz/FuzzSetKnownVersions/weld_onto_second_build_section`.
+
+The first pass found three real defects, all of the same shape — a token the
+tool could write or accept but never find again:
+
+- `Parse` accepted leading zeros in the numeric core, reading `1.02.3` as
+  `1.2.3`. `SetVersion` then looked for the literal text `1.2.3`, found nothing,
+  and returned the file unchanged with no error: the bump printed
+  `1.2.3 -> 1.2.4` and wrote nothing. Leading zeros are now rejected, as semver
+  requires, so such a file reports "no semantic version found" instead.
+- `Parse` accepted a token ending in `-` (`1.2.3+0-`), which semver permits but
+  the scanner's trailing `\b` cuts short, so `FindTokens` reads it back out of a
+  file as `1.2.3+0`. A token must now end with a letter or digit.
+- `formatSize` printed a size with no whole unit as `1234 bytes`, which
+  `parseSize` refused — so the limit the flag showed as its default could not be
+  pasted back. `parseSize` now accepts the spelling `formatSize` prints.
 
 ## 13. Build and Release
 
