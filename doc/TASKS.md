@@ -393,7 +393,7 @@ completed.
       correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
       verified working (`-ldflags` override honored, and an unstamped `go build`
       falls back to the same source default); the value is `0.1.13` until the
-      version is bumped to `1.0.0` in Milestone 36.
+      version is bumped to `1.0.0` in Milestone 42.
 - [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
       missing dependencies); confirm the Go version pin is intentional. Tidy is
       a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
@@ -1250,8 +1250,9 @@ render ANSI.
       through `displayName`, and `fsErrorMessage` renders the name itself, so
       its callers pass the raw path. It also drops an `*fs.PathError`'s own
       path, wrapped or not, which repeated the name raw ahead of the reason
-      (`reading X: stat X: file name too long`). Context lines and wrapped error text are left to
-      the writer, which escapes in place without quoting.
+      (`reading X: stat X: file name too long`). Context lines and wrapped
+      error text are left to the writer, which escapes in place without
+      quoting.
 - [x] Escape for display only. The name used to open, lock, and rename a file,
       and the name written to the config and the journal, must stay the raw
       bytes. TOML already escapes control characters in a string, so a name
@@ -1302,7 +1303,272 @@ render ANSI.
       `doc/DEVELOPMENT.md` §9.5 Terminal output with the decisions above, the
       man page's CAVEATS, and a Security entry in `CHANGELOG.md`.
 
-## Milestone 32 — Release Tagging Helper (the `tag` command)
+## Milestone 32 — Symlinked Lock File
+
+`lock.Acquire` opens `.incrmit.lock` with `O_CREATE|O_RDWR`, which follows a
+symlink, and `writeNote` then truncates whatever it opened and writes the lock
+note into it. A repository can commit `.incrmit.lock` as a symlink, so cloning
+one and running `incrmit discover` (which needs no config at all) or a plain
+bump replaces the contents of any file the user can write with two lines of
+lock text. Reproduced: `.incrmit.lock -> ../victim.txt` left `victim.txt`
+holding the note after a `discover`, and again after a bump. A dangling link
+does damage of its own: `O_CREATE` follows it and creates the file it names.
+Milestone 26 closed the same hole on the read side of discovery; the lock is
+the one place incrmit opens an existing path for writing instead of replacing
+it by rename.
+
+- [ ] Reproduce the damage before fixing it, as Milestone 29 did, so the fix
+      has something to prove: plant `.incrmit.lock` as a symlink to a file
+      outside the project, run `discover`, a bump, and `undo` through
+      `cli.Main`, and assert that file's bytes and mode are unchanged. Add a
+      dangling link whose target must still not exist afterward.
+- [ ] Open the lock file without following a symlink, so the check and the
+      open are one step rather than an `Lstat` followed by a racing `Open`:
+      `O_NOFOLLOW` in `lock_unix.go` and `FILE_FLAG_OPEN_REPARSE_POINT` in
+      `lock_windows.go`, behind a build-tagged `openLockFile` that mirrors
+      `tryLock`. Then `Stat` the descriptor and accept only a regular file.
+- [ ] Decide what a lock path that is not a regular file does: a symlink, a
+      directory, a FIFO. Recommend a degraded lock, keeping Milestone 29's
+      rule that only contention refuses: warn naming the path and why ("is a
+      symbolic link"), continue unlocked, and sweep nothing. Nothing is opened
+      through the link either way, and the warning is what points the user at
+      a planted file. Record the decision and the reason.
+- [ ] Stop truncating. Write the note only into a file that was empty when the
+      lock was taken, which in practice means one this run just created, so
+      even a regular file that happens to sit at that name is never rewritten.
+      The note is a courtesy and must never be the reason a file loses data.
+- [ ] Confirm the lock is the only place incrmit writes through an existing
+      path: `WriteAtomic` renames over a link rather than writing through it,
+      and `SweepTemps` removes a link named like a temp file rather than its
+      target. Add a test for the sweep case, a `.incrmit-x.tmp` symlink to a
+      file outside the tree, which must be removed with its target untouched.
+- [ ] Cover the other shapes on Unix, skipping where the system will not
+      create them: a symlink to a directory, a FIFO at the lock path, and a
+      regular file holding unrelated text, which must come out unchanged. In
+      every case assert the command behaves as decided above and that nothing
+      outside the project changed.
+- [ ] Document the behavior in `README.md` ("Concurrent runs"),
+      `doc/DEVELOPMENT.md` §6.4, and the man page's CONCURRENT RUNS section,
+      and add a Security entry to `CHANGELOG.md`.
+
+## Milestone 33 — File-Type Checks for the Config, Ignore List, and Journal
+
+Milestone 26 routed every *target* read through `files.ReadTarget`, which
+checks the file type before opening, because opening a FIFO blocks until a
+writer appears and `/dev/zero` never ends. The files incrmit reads for itself
+were left out: `config.Load`, `config.LoadIgnore`, and `history.Load` all call
+`os.ReadFile` directly. Reproduced with a FIFO: `preview` and
+`discover --dry-run` hang on one at `incrmit.toml`, and those are the two
+commands meant to be safe on an unfamiliar tree; `undo` hangs on one at
+`.incrmit.state.toml`. A bump hangs there too, and worse, it hangs *after*
+rewriting the targets and the config, because the journal is read last, so
+killing it leaves a bump that `undo` has no record of. A repository cannot
+commit a FIFO, but it can commit `incrmit.toml -> /dev/zero`, which reads
+without end.
+
+- [ ] Write the failing tests first, each under a deadline so a regression
+      fails rather than hanging the suite (the pattern
+      `TestBumpNonRegularFileTarget` already uses): a FIFO at the config for a
+      bump, `--dry-run`, `preview`, and `undo`; at the `--output` path for
+      `discover` with and without `--dry-run`; and at the state file for a
+      bump and `undo`. Create them with `testutil.Mkfifo`.
+- [ ] Route all three reads through one checked helper, `files.ReadTarget` or
+      a sibling for tool-maintained files, so one function decides that a
+      file is safe to open. A symlink to a regular file is still followed, as
+      it is for targets, since a symlinked config is a legitimate setup; a
+      link to a device or a pipe fails the same type check.
+- [ ] Cap the size of these reads. The config and the journal are small, and
+      the journal holds at most `history.MaxEntries` entries, so a fixed cap
+      in a named constant is enough; `--max-file-size` is about targets and
+      stays that way. Report an oversized file as an error that names it.
+- [ ] Decide what `LoadIgnore` does with a `--output` that is not a regular
+      file. It is lenient today (a missing or unparseable file yields no
+      patterns), but a FIFO or a device is not a stale config, and `discover`
+      would go on to replace it. Recommend an error with exit `1`, decided
+      together with Milestone 36's rule for what `--output` may overwrite.
+- [ ] Read the journal before phase 2 of a bump instead of after the writes,
+      so a state file that cannot be read fails the bump with nothing
+      written. Milestone 40 moves the journal *write* ahead of phase 2 too;
+      this item is only the read.
+- [ ] Add a symlink to `/dev/zero` as the config and as the state file (Unix
+      only), and assert each command fails promptly with a "not a regular
+      file" message and exit `1`.
+- [ ] Document the checks next to the other read boundaries in `README.md`,
+      `doc/DEVELOPMENT.md`, and the man page's CAVEATS, and add a Security
+      entry to `CHANGELOG.md`.
+
+## Milestone 34 — Undo from Config-Relative Paths
+
+Each journal change records the path as the config lists it (`path`) and the
+absolute path it resolved to (`fs`), and each entry records the config's
+absolute path (`config`). `undo` acts on the absolute ones, which ties the
+journal to the directory the bump ran in rather than to the project. After
+`cp -R orig copy`, running `undo` in `copy` reverted `orig/VERSION` and
+`orig/incrmit.toml`, left `copy` at the bumped version, printed
+`VERSION: 1.0.1 -> 1.0.0` as though the change were local, and popped the
+entry from `copy`'s journal, while `orig`'s journal still records a bump that
+has now been undone. It is also the one way incrmit writes to a path no trusted
+input named: `incrmit.toml` is documented as trusted, like a Makefile, but a
+committed `.incrmit.state.toml` is not, and its `fs` values can point `undo`
+at any file the user can write.
+
+- [ ] Reproduce first: the copied project (assert `orig` is untouched), the
+      moved project (today `undo` fails with "reading VERSION: file does not
+      exist" beside a `VERSION` that exists), and a hand-written state file
+      whose `fs` names a file outside the project.
+- [ ] Resolve every journal path against the directory of the config `undo`
+      was given (`-c`, or `incrmit.toml` by default), the same way
+      `resolveTargets` resolves config entries for a bump, and write the
+      reverted config back to that path rather than to the recorded `config`.
+      `undo` still works from any working directory, because it finds the
+      state file through the config.
+- [ ] Stop writing `fs` and `config` into new entries. `path` is already the
+      config-relative path, so no new field is needed. Old state files keep
+      loading: both keys are ignored on read, so an entry written by an
+      earlier version is undone against the current project rather than its
+      old location.
+- [ ] Only undo what the current config names. Before planning, check that
+      every change's `path` matches a `[[files]]` entry in the config being
+      undone whose version is the change's `new`, and refuse otherwise,
+      naming the path, with nothing written. The config is the trusted input,
+      so this limits what a journal can reach to what the config could
+      already bump. An absolute `path`, or one with `../`, stays allowed
+      exactly when the config lists it.
+- [ ] Confirm the lock, the state file, and every write now belong to one
+      project. The lock is already taken beside the config `undo` was given;
+      with the recorded `config` gone, `undo` can no longer rewrite a config
+      in a directory it did not lock.
+- [ ] Update the tests that assert absolute journal paths, and add undo from
+      a subdirectory with `-c ../incrmit.toml`, after the project was moved,
+      after it was copied, with a config that lists a `../` path, and from an
+      old state file that still carries `fs` and `config`.
+- [ ] Update the `internal/history` package doc, `doc/DEVELOPMENT.md` (the
+      state file format, which says paths are stored absolute), `README.md`,
+      and the man page, and add a `Changed` entry to `CHANGELOG.md`.
+
+## Milestone 35 — Integer Overflow on Bump
+
+`Parse` accepts any numeric component `strconv.Atoi` can read, up to
+`math.MaxInt64`, and the bump methods add one without checking.
+`1.2.9223372036854775807` bumps to `1.2.-9223372036854775808`: the bump
+reports success, writes that into the file, and records it in the config, and
+the next command finds no version at all and exits `3`. Major and minor wrap
+the same way, and so does a numeric prerelease counter in `AdvancePrerelease`,
+where the result, `rc.-9223372036854775808`, is legal semver but no longer a
+counter: the next `--pre rc` appends `.1` to it instead of counting. `preview`
+prints the wrapped values too. It is the defect Milestone 30 fixed three
+times, incrmit writing a token it cannot find again, reached through
+arithmetic instead of parsing.
+
+- [ ] Write table tests at the boundary against the intended behavior, so
+      they fail today and pass after the fix: each of major, minor, and patch
+      at `math.MaxInt64`, and a prerelease counter at `math.MaxInt64`, through
+      a bump, `--dry-run`, `preview`, and `--pre`.
+- [ ] Decide what an unbumpable version does. Recommend refusing: the command
+      exits `3` naming the file and the component, and writes nothing, which
+      is how incrmit treats every other version it cannot handle. Clamping
+      and wrapping both write a version that is not greater than the one it
+      replaced. The `Bump*` methods return no error today; either give them
+      one or add checked variants for the CLI, and surface the error through
+      `bumpFunc`, whose error path in `planGroups` already fails before any
+      write.
+- [ ] Make `preview` show a projection that would overflow as unavailable
+      rather than as a wrapped number, with the table still aligned.
+- [ ] Settle the prerelease counter's other edge separately: a numeric
+      identifier too large for an `int` has `.1` appended today
+      (`rc.99999999999999999999` -> `rc.99999999999999999999.1`) rather than
+      being counted. Keep that (it does sort higher) or refuse it like the
+      numeric core, and test whichever is chosen.
+- [ ] Add a fuzz target for the property all of this breaks: for any version
+      `Parse` accepts, every component bump and every same-series prerelease
+      advance that succeeds yields a token that parses back to itself through
+      `String()` and that `version.Compare` ranks above the input. Leave out
+      switching series, since `rc` to `beta` may rank lower by design. Seed
+      it with the `MaxInt64` boundaries.
+- [ ] Document the limit in `README.md` and in `doc/DEVELOPMENT.md` §12.1 next
+      to the other tokens incrmit refuses, and add a `Fixed` entry to
+      `CHANGELOG.md`.
+
+## Milestone 36 — Discover Overwriting an Unrelated File
+
+`discover -o PATH` replaces whatever is at `PATH`. Regenerating an existing
+`incrmit.toml` is the point, but nothing checks that the file being replaced
+*is* one: `incrmit discover -o NOTES.md` turned a Markdown file into a
+generated config and exited `0`, and a slip such as `-o package.json` would do
+the same to a manifest. The read that comes first does not catch it either:
+`config.LoadIgnore` is deliberately lenient, so a file that does not parse
+yields no ignore patterns rather than an error, and discover carries on as if
+it had found a config with nothing to keep.
+
+- [ ] Reproduce first: `-o` naming an existing Markdown file, an existing
+      target such as `VERSION` (which `excludeOutput` drops from the results
+      just before overwriting it), an empty file, and an existing
+      `incrmit.toml`, which must still be regenerated.
+- [ ] Define what `--output` may replace: a path with no file yet, an empty
+      file, or a file that parses as TOML and holds only keys incrmit knows
+      (`ignore` and `files`). That accepts every config incrmit has written
+      and every hand-written one, and rejects a Markdown file, a JSON
+      manifest, or a `pyproject.toml`. Keep the list of known keys next to
+      `config.Config` so Milestone 38's `[git]` table extends it in one place.
+- [ ] Refuse anything else with exit `1` before the scan starts, so a mistake
+      costs nothing, and say why and what to do: "NOTES.md exists and is not
+      an incrmit config; choose another --output or remove the file". No
+      `--force` is needed: removing the file is the explicit way to ask.
+- [ ] Apply the same check in `--dry-run`, so the dry run predicts the refusal
+      rather than printing a plan the real run will not carry out.
+- [ ] Retire `LoadIgnore`'s leniency along with it: a file that fails the
+      check never reaches it, so an unparseable `--output` becomes an error
+      rather than "no patterns". Share the check with Milestone 33's type
+      check, so a FIFO or a device at `--output` is refused by the same code.
+- [ ] Assert in every refusal test that the file's bytes are unchanged.
+      Document the rule in `README.md`, `incrmit help discover`, and the man
+      page, and add a `Fixed` entry to `CHANGELOG.md`.
+
+## Milestone 37 — Discover Paths Relative to the Config
+
+`discover` records each file's path relative to the scan root (`--path`), but
+every command resolves a config path relative to the directory holding the
+config (`--output`). The two agree only when the config is written into the
+directory that was scanned, which the defaults do. Run from the root,
+`incrmit discover --path sub` writes `path = "VERSION"` into `./incrmit.toml`
+for `sub/VERSION`, and the next bump resolves that to `./VERSION`. If no such
+file exists, the config fails to load. If one exists and holds the same
+version, the bump rewrites the wrong file and reports success. Reproduced
+with `1.0.0` in both: the bump moved the root `VERSION` to `1.0.1` and left
+`sub/VERSION` at `1.0.0`. `-o sub/incrmit.toml` run from the root breaks the
+same way in the other direction, and `README.md` shows `--path ./src` as an
+example.
+
+- [ ] Reproduce first, with a decoy holding the same version at the location
+      the bad path resolves to, since that is the silent case: `--path sub`
+      with the default output, `-o sub/incrmit.toml` with the default path,
+      and the two flags naming sibling directories. After each, assert that a
+      bump changes the scanned file and nothing else.
+- [ ] Write every path relative to the output config's directory: make the
+      root and the output absolute, join each result to the root, and take
+      `filepath.Rel` from the config's directory, in slash form. A root
+      outside the config's directory gives `../` paths, which config loading
+      already accepts. Rework `excludeOutput`, which joins paths to the root
+      today.
+- [ ] Decide what `ignore` patterns are relative to. They are matched against
+      paths relative to the scan root, but they live in the config, so one
+      pattern means something different under a different `--path`.
+      Recommend the config's directory, so a config means the same thing
+      wherever discover is run from; either way, say so in the comment
+      `IgnoreComment` writes into every config.
+- [ ] Print the config-relative paths in the `--dry-run` listing and the
+      "Wrote ..." summary too, so the paths a user reviews are the ones a bump
+      will resolve.
+- [ ] A config written by the old behavior cannot be detected in general,
+      since its paths may exist and hold the pinned version. Add a `Fixed`
+      entry to `CHANGELOG.md` telling anyone who ran `discover` with `--path`
+      or `-o` pointing elsewhere to run it again.
+- [ ] Test the cases above plus the default run (paths unchanged), an absolute
+      `--path`, and a `--path` written with `./`. Update `README.md`
+      (Discovery) and the man page to say paths are written relative to the
+      config.
+
+## Milestone 38 — Release Tagging Helper (the `tag` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
 no tag, no push. The gap is closed without incrmit ever running git: `os/exec`
@@ -1335,7 +1601,7 @@ stays git-free exactly as it is today.
       The command is read-only, so it takes no `--dry-run`: the printed
       commands are the preview. Thread stdin through `cli.Main` as an
       `io.Reader`, with a way to ask whether it is a terminal, so the picker
-      (and Milestone 33's `--auto`) can be tested in-process.
+      (and Milestone 39's `--auto`) can be tested in-process.
 - [ ] Build the candidate list from `incrmit.toml`: collect the distinct tokens
       the `[[files]]` entries pin (`FileEntry.Token()`, so a prerelease is
       offered as `1.2.4-rc.1`, not `1.2.4`), order them by `version.Compare`
@@ -1418,12 +1684,12 @@ stays git-free exactly as it is today.
       Confirm the `govulncheck` gate from Milestone 26 still passes with the
       `x/term` tree in `go.sum`.
 
-## Milestone 33 — Conventional-Commit Bump Inference (`--auto`)
+## Milestone 39 — Conventional-Commit Bump Inference (`--auto`)
 
 Reading the commits since the last tag and inferring the bump component turns
 `discover` + language-agnostic + single-binary from a narrow story into a real
 one: no other tool does automatic inference *and* arbitrary-file rewriting
-without a per-ecosystem plugin. As in Milestone 32, incrmit does not run git:
+without a per-ecosystem plugin. As in Milestone 38, incrmit does not run git:
 `--auto` reads commit messages from stdin, and the user's own `git log`
 supplies them.
 
@@ -1455,11 +1721,11 @@ supplies them.
       terminal stdin refusing to wait.
 - [ ] Document the rules and a full CI recipe in `README.md`, the man page, and
       `doc/DEVELOPMENT.md` — the `git log | incrmit --auto` pipeline, matching
-      the Milestone 32 tag prefix with `git describe --match 'v*'`, and
+      the Milestone 38 tag prefix with `git describe --match 'v*'`, and
       `fetch-depth: 0` on `actions/checkout` so the tags and history are there
       to read; add a `CHANGELOG.md` entry under `Added`.
 
-## Milestone 34 — Crash-Safe Multi-File Writes
+## Milestone 40 — Crash-Safe Multi-File Writes
 
 Planning is already fail-fast (Milestone 22's phase 1/2 split), but phase 2 is
 not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
@@ -1491,7 +1757,7 @@ journal entry exists. Close this before v1.0.0.
 - [ ] Document the crash-safety guarantee — and its limits — in
       `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
 
-## Milestone 35 — Code and Repository Hygiene
+## Milestone 41 — Code and Repository Hygiene
 
 Small cleanups worth doing before v1.0.0 freezes the surface.
 
@@ -1518,7 +1784,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
       build artifact or stray file appears at the repo root, so the tree stays
       clean without relying on remembering.
 
-## Milestone 36 — v1.0.0 Release: Publish
+## Milestone 42 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -1533,7 +1799,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
 
-## Milestone 37 — apt / dnf Repo via GitHub Pages
+## Milestone 43 — apt / dnf Repo via GitHub Pages
 
 Host signed apt and dnf repositories on GitHub Pages so users can
 `apt install incrmit` / `dnf install incrmit` after adding the repo once.
