@@ -230,6 +230,46 @@ A target must be an ordinary file. A named pipe, device, or socket is reported a
 `reading <path>: not a regular file` (exit `1`) rather than opened, since reading
 one could block forever.
 
+A `path`, like a `--file` argument, names one file literally: spaces, a leading
+dash, non-ASCII characters, and glob characters such as `*`, `?`, and `[` are
+just part of the name, so `path = "[ab].txt"` bumps the file called `[ab].txt`
+and never `a.txt`. Only the [`ignore` list](#ignoring-folders-and-files) treats
+those characters as patterns.
+
+### What a bump keeps
+
+A bump rewrites the version token and nothing else. Every other byte of the file
+comes back exactly as it was: CRLF, LF, mixed, or classic-Mac (`\r`) line
+endings, a UTF-8 byte-order mark, a missing final newline, and any non-ASCII
+text around the version. Nothing is normalized.
+
+`incrmit` reads a file as bytes and looks for an ASCII version token in them,
+which works in UTF-8 and in any other encoding that writes digits and dots as
+ASCII (Latin-1, Windows-1252, ...). **UTF-16 is not supported**: it stores every
+character in two bytes, one of them `NUL`, so there is no `1.2.3` in the file
+for `incrmit` to see. A UTF-16 target reports `no semantic version found` (or
+`expected version not found` when the config pins a version) with exit `3` and
+is left untouched, and `discover` skips UTF-16 files as binary. Convert such a
+file to UTF-8 to manage it with `incrmit`.
+
+The new contents are written to a temporary file beside the target and renamed
+over it, so a crash can never leave a half-written file. The rename puts a *new*
+file under the target's name, and what the old file carried beyond its contents
+follows from that:
+
+- **Permission bits are kept**, and a **read-only file is still bumped** and
+  stays read-only: nothing opens it for writing. To protect a file from
+  `incrmit`, make its directory unwritable.
+- **The setuid, setgid, and sticky bits are dropped.** A bumped file is a new
+  file written by whoever ran `incrmit`, and it is not given privileges it was
+  never written with.
+- **Hard links are broken.** The name you bumped gets the new version; any other
+  name for the same file keeps the old contents. List every name in the config
+  if each should be bumped. (A symlink is no workaround: it is replaced by a
+  regular file, as described above.)
+- **Ownership, extended attributes, and ACLs** are those of a new file created
+  by the user running `incrmit`, not the original's.
+
 ### Ignoring folders and files
 
 An optional top-level `ignore` list tells `discover` which folders and files to
@@ -265,6 +305,11 @@ root**, always using forward slashes, and matching is **case-sensitive**):
   the whole relative path, segment by segment. Each segment is a `path.Match`
   glob, and `**` matches zero or more path segments — so `docs/**` prunes the
   `docs` directory and everything inside it.
+- To match `*`, `?`, or `[` **literally**, wrap it in brackets: `v[*].txt`
+  ignores a file named `v*.txt` but not `vX.txt`, and `[[]ab].txt` ignores
+  `[ab].txt`. A backslash cannot escape a metacharacter, because backslashes in
+  `ignore` are read as path separators (so a config written on Windows works
+  everywhere).
 
 The `ignore` list is preserved when `discover` regenerates the config and when a
 bump rewrites it, so hand-authored entries are never dropped. `discover` reads
@@ -310,8 +355,9 @@ for versions: a four-octet token such as `192.168.1.1`, `10.0.0.255`, or
 integer. A real version on the same line as an address (`server 10.0.0.1
 running 2.3.4`) is still detected.
 
-Binary files and common noise directories (`.git`, `node_modules`, `vendor`,
-build outputs) are skipped, as is the config file itself (`incrmit.toml` and
+Binary files (any file holding a `NUL` byte, which includes UTF-16 text) and
+common noise directories (`.git`, `node_modules`, `vendor`, build outputs) are
+skipped, as is the config file itself (`incrmit.toml` and
 the `--output` path), so it is never listed as a target. Any folders and files
 matched by the config's [`ignore` list](#ignoring-folders-and-files) are skipped
 too.
@@ -368,6 +414,11 @@ Discovered 1 file(s) under . (no config written):
     L1: release 1.2.3
     L5: legacy 2.0.0
 ```
+
+Line numbers count `\n`, `\r\n`, and a lone `\r` as line breaks, so they match
+what an editor shows whatever the file's line endings. A long line — a minified
+bundle is one line from start to finish — is clipped to 80 bytes on each side of
+the version, with `...` marking each cut.
 
 When the config has an `ignore` list, `--dry-run` notes the applied rules on a
 `(ignoring: …)` line and, like a normal run, never lists any skipped path as a

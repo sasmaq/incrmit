@@ -383,17 +383,35 @@ func SweepTemps(dir string) (int, error) {
 // WriteAtomic writes data to path by writing to a temporary file in the same
 // directory and renaming it over the target. The rename is atomic on the same
 // filesystem, so a crash mid-write never leaves a partially written file. The
-// existing file mode is preserved when the target already exists.
+// existing permission bits are preserved when the target already exists.
 //
 // The temp file is created in the target's own directory (never a shared temp
 // directory) under an unpredictable name with O_EXCL, and holds mode 0600 while
 // the data is written, so its contents are never readable at a wider mode than
-// the target ends up with. Nothing here widens permissions: the final mode is
-// exactly the target's previous one, or 0644 for a file being created.
+// the target ends up with. Nothing here widens permissions: the final
+// permission bits are exactly the target's previous ones, or 0644 for a file
+// being created.
 //
-// Because the rename replaces the name itself, a path that is a symlink ends up
-// a regular file: incrmit never writes *through* a link to whatever it points
-// at, which keeps a link in the tree from redirecting a write elsewhere.
+// Because the rename replaces the name itself, the file at path afterwards is a
+// new file, not the old one rewritten. Everything the old file carried beyond
+// its contents and permission bits follows from that, and each consequence is
+// deliberate:
+//
+//   - A symlink ends up a regular file: incrmit never writes *through* a link to
+//     whatever it points at, which keeps a link in the tree from redirecting a
+//     write elsewhere.
+//   - A read-only file (0444) is still rewritten, and stays 0444: nothing opens
+//     the target for writing, so its own mode does not stand in the way. Write
+//     protection comes from the directory.
+//   - The setuid, setgid, and sticky bits are dropped, because only Perm() is
+//     carried across. Re-applying setuid would mint a setuid file owned by
+//     whoever ran incrmit, which is why the kernel clears those bits on an
+//     unprivileged in-place write too.
+//   - A hard link is broken: the other names keep the old file, and with it the
+//     old contents. Keeping the link would mean truncating and rewriting the
+//     shared file in place, which is the partial write the rename rules out.
+//   - Ownership, extended attributes, and ACLs are those of a new file created
+//     by the running user, not the old file's.
 func WriteAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 

@@ -1,0 +1,7 @@
+﻿{
+  "Application": {
+    "Name": "app",
+    "Version": "2.0.0"
+  },
+  "Logging": { "LogLevel": { "Default": "Information" } }
+}

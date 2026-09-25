@@ -36,6 +36,13 @@ func FuzzSetKnownVersions(f *testing.F) {
 	f.Add([]byte("{\"version\":\"1.2.3\"}"), "1.2.3", "1.2.3", "", "")
 	f.Add([]byte("1.2.3-rc.10"), "1.2.3-rc.1", "1.2.3-rc.2", "", "")
 	f.Add([]byte(""), "1.2.3", "1.2.4", "", "")
+	// File shapes (see shapes_test.go): the engine mutates bytes, so it only
+	// reaches CRLF, a BOM, or UTF-16 quickly if it starts from them.
+	f.Add([]byte("[package]\r\nversion = \"1.2.3\"\r\n"), "1.2.3", "1.2.4", "", "")
+	f.Add([]byte("a\rversion=1.2.3\r\r\n"), "1.2.3", "1.2.4", "", "")
+	f.Add([]byte("\xEF\xBB\xBF1.2.3"), "1.2.3", "2.0.0", "", "")
+	f.Add([]byte("\xFF\xFE1\x00.\x002\x00.\x003\x00"), "1.2.3", "1.2.4", "", "")
+	f.Add([]byte("caf\xE9 1.2.3\xA9"), "1.2.3", "1.2.4", "", "")
 
 	f.Fuzz(func(t *testing.T, data []byte, oldA, newA, oldB, newB string) {
 		repls := buildReplacements(oldA, newA, oldB, newB)

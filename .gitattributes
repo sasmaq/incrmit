@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The rewriter's golden fixtures are byte-exact: some exist to hold CRLF line
+# endings or a byte-order mark, so git must store and check them out exactly as
+# written rather than normalizing them to LF.
+internal/files/testdata/*.input -text
+internal/files/testdata/*.golden -text

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 
@@ -20,7 +21,8 @@ import (
 
 // Occurrence is a single version token found inside a file: the parsed version,
 // the 1-based line it appears on, and the trimmed text of that line (used for
-// human-readable dry-run output).
+// human-readable dry-run output). A long line is clipped to the stretch around
+// the token, with "..." marking each cut (see contextText).
 type Occurrence struct {
 	Version version.Version
 	Line    int
@@ -197,12 +199,12 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 
 // detect reads the file at path and returns every [v]MAJOR.MINOR.PATCH token it
 // contains, in the order they appear, each tagged with its 1-based line number
-// and the trimmed text of that line. Files larger than maxBytes are skipped
-// (maxBytes <= 0 means no cap). It is best-effort: unreadable, oversized,
-// non-regular, and binary files yield ok == false. The matcher also yields
-// dotted-number runs that are not versions (two-component numbers like 3.9,
-// four-octet IPv4 addresses like 192.168.1.1, ...); those fail version.Parse and
-// are skipped, so only real three-component versions are reported.
+// and the text of that line. Files larger than maxBytes are skipped (maxBytes <=
+// 0 means no cap). It is best-effort: unreadable, oversized, non-regular, and
+// binary files yield ok == false. The matcher also yields dotted-number runs
+// that are not versions (two-component numbers like 3.9, four-octet IPv4
+// addresses like 192.168.1.1, ...); those fail version.Parse and are skipped, so
+// only real three-component versions are reported.
 func detect(path string, maxBytes int64) ([]Occurrence, bool) {
 	capped := maxBytes > 0
 
@@ -228,54 +230,139 @@ func detect(path string, maxBytes int64) ([]Occurrence, bool) {
 		return nil, false
 	}
 
-	// LimitReader is a second guard: the file may still grow past the cap
-	// between the stat above and the read here. With the cap removed there is
-	// nothing to guard against, so the file is read whole.
-	var r io.Reader = f
-	if capped {
-		r = io.LimitReader(f, maxBytes)
-	}
-	data, err := io.ReadAll(r)
-	if err != nil {
+	data, ok := readAtMost(f, maxBytes)
+	if !ok || isBinary(data) {
 		return nil, false
 	}
-	if isBinary(data) {
-		return nil, false
-	}
-	var occ []Occurrence
-	for _, loc := range version.FindTokens(data) {
-		start, end := loc[0], loc[1]
-		v, perr := version.Parse(string(data[start:end]))
-		if perr != nil {
-			continue
-		}
-		occ = append(occ, Occurrence{
-			Version: v,
-			Line:    lineNumber(data, start),
-			Text:    lineText(data, start),
-		})
-	}
+	occ := scan(data)
 	if len(occ) == 0 {
 		return nil, false
 	}
 	return occ, true
 }
 
-// lineNumber returns the 1-based line number of the byte at offset in data.
-func lineNumber(data []byte, offset int) int {
-	return 1 + bytes.Count(data[:offset], []byte{'\n'})
+// readAtMost reads r to the end, refusing it (ok == false) when it holds more
+// than maxBytes; maxBytes <= 0 reads everything. It is the second guard behind
+// the size check in detect, for a file that grows past the cap between the stat
+// and the read. Such a file is refused whole rather than scanned truncated: a
+// cut that falls mid-token turns "1.2.34" into "1.2.3", and discovery would
+// record a version the file does not contain.
+func readAtMost(r io.Reader, maxBytes int64) ([]byte, bool) {
+	if maxBytes <= 0 {
+		data, err := io.ReadAll(r)
+		return data, err == nil
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil || int64(len(data)) > maxBytes {
+		return nil, false
+	}
+	return data, true
 }
 
-// lineText returns the trimmed text of the line containing the byte at offset.
-func lineText(data []byte, offset int) string {
-	start := bytes.LastIndexByte(data[:offset], '\n') + 1
-	end := bytes.IndexByte(data[offset:], '\n')
-	if end < 0 {
-		end = len(data)
-	} else {
-		end += offset
+// scan returns every version token in data as an occurrence, in the order they
+// appear, each tagged with its 1-based line number and the text around it.
+func scan(data []byte) []Occurrence {
+	var occ []Occurrence
+	lines := newLineCursor(data)
+	for _, loc := range version.FindTokens(data) {
+		start, end := loc[0], loc[1]
+		v, err := version.Parse(string(data[start:end]))
+		if err != nil {
+			continue
+		}
+		lines.seek(start)
+		occ = append(occ, Occurrence{
+			Version: v,
+			Line:    lines.num,
+			Text:    contextText(data, lines.start, lines.end, start, end),
+		})
 	}
-	return string(bytes.TrimSpace(data[start:end]))
+	return occ
+}
+
+// lineCursor tracks the line holding each token as scan walks the tokens in
+// order. A line ends at "\n", "\r\n", or a lone "\r" — the three conventions an
+// editor recognizes — so a file with classic Mac line endings is numbered line
+// by line, rather than reported as one line with carriage returns embedded in
+// its text, which a terminal would act on when the dry run printed it.
+//
+// The cursor only moves forward, so a file costs one pass over its bytes however
+// many tokens share a line. Locating each token's line from the start of the
+// file instead made a minified file quadratic: twenty thousand occurrences on
+// one 620 KB line took seconds and allocated gigabytes.
+type lineCursor struct {
+	data       []byte
+	num        int // 1-based number of the current line
+	start, end int // the current line's bytes, excluding its terminator
+}
+
+func newLineCursor(data []byte) *lineCursor {
+	return &lineCursor{data: data, num: 1, end: lineEnd(data, 0)}
+}
+
+// seek moves the cursor to the line containing offset, which must not lie
+// before the current line.
+func (c *lineCursor) seek(offset int) {
+	for offset > c.end && c.end < len(c.data) {
+		next := c.end + 1
+		if c.data[c.end] == '\r' && next < len(c.data) && c.data[next] == '\n' {
+			next++ // "\r\n" is one line break, not two
+		}
+		c.num++
+		c.start = next
+		c.end = lineEnd(c.data, next)
+	}
+}
+
+// lineEnd returns the index of the first line terminator at or after from, or
+// len(data) when the last line has none.
+func lineEnd(data []byte, from int) int {
+	if i := bytes.IndexAny(data[from:], "\r\n"); i >= 0 {
+		return from + i
+	}
+	return len(data)
+}
+
+// maxContext bounds how much of a token's line is kept on each side of it as
+// dry-run context. Hand-written lines are shorter than that and are shown whole,
+// trimmed; a minified file is one enormous line, and copying all of it into every
+// occurrence made memory grow with occurrences times line length, and made the
+// dry run print the whole file once per occurrence.
+const maxContext = 80
+
+// utf8BOM is the byte-order mark some Windows tools write at the start of a
+// UTF-8 file.
+var utf8BOM = []byte("\xEF\xBB\xBF")
+
+// contextText returns the trimmed text of the line [start, end) holding the
+// token [tokStart, tokEnd), keeping at most maxContext bytes on either side of
+// the token and marking a cut with "...". A cut never splits a UTF-8 sequence.
+// A byte-order mark opening the file is an encoding marker rather than text, so
+// it is left out of the first line's context.
+func contextText(data []byte, start, end, tokStart, tokEnd int) string {
+	if start == 0 && bytes.HasPrefix(data, utf8BOM) {
+		start = len(utf8BOM)
+	}
+	head, tail := "", ""
+	if tokStart-start > maxContext {
+		start = runeStart(data, tokStart-maxContext, tokStart)
+		head = "..."
+	}
+	if end-tokEnd > maxContext {
+		end = runeStart(data, tokEnd+maxContext, end)
+		tail = "..."
+	}
+	return head + string(bytes.TrimSpace(data[start:end])) + tail
+}
+
+// runeStart returns the first index from i (and no further than limit) where a
+// UTF-8 sequence begins, so cutting there never splits a character. Bytes that
+// are not UTF-8 at all, such as Latin-1, end the search after utf8.UTFMax steps.
+func runeStart(data []byte, i, limit int) int {
+	for n := 0; n < utf8.UTFMax && i < limit && !utf8.RuneStart(data[i]); n++ {
+		i++
+	}
+	return i
 }
 
 // isBinary reports whether data looks like a binary (non-text) file. A NUL byte

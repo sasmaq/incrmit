@@ -5,6 +5,36 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `incrmit discover` no longer slows to a crawl on minified files. Each
+  occurrence kept a copy of its whole line and recounted lines from the top of
+  the file, so a 620 KB one-line bundle holding twenty thousand versions took
+  seconds and allocated about 12 GB. The scan is now a single pass, and the
+  `--dry-run` context for a long line is clipped to 80 bytes on each side of the
+  version, with `...` marking each cut.
+- `discover --dry-run` numbers lines correctly in files with classic-Mac (`\r`)
+  line endings. Such a file was reported as one line, and its carriage returns
+  were printed to the terminal, which overprinted the output. A lone `\r` now
+  ends a line, as it does in an editor, and a UTF-8 byte-order mark is left out
+  of the first line's context.
+- A file that grows past the discovery size cap while it is being read is
+  skipped, as a file over the cap already was, rather than scanned up to the
+  cap. A cut falling mid-token could record `1.2.34` as `1.2.3`.
+
+### Documented
+
+- What a bump keeps and what it gives up: line endings, a byte-order mark, and a
+  missing final newline are preserved exactly; UTF-16 files are not supported
+  and report no version; and because the new contents are renamed into place,
+  permission bits survive (a read-only file is still bumped) while setuid,
+  setgid, and sticky bits, hard links, ownership, and extended attributes do
+  not. See "What a bump keeps" in `README.md`.
+- `ignore` patterns match a metacharacter literally when it is bracketed
+  (`v[*].txt`); a config `path` and `--file` are always literal names.
+
 ## [0.3.2] - 2026-09-22
 
 ### Fixed

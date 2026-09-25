@@ -666,9 +666,12 @@ only what it was aimed at and only what it can read in bounded time and memory:
   The check is repeated on the open descriptor so a path swapped in between is
   still rejected.
 - **Reads are capped at `DefaultMaxScanBytes` (32 MiB)**, enforced by the size
-  check and again by an `io.LimitReader` in case the file grows in between.
-  Version tokens live in small text files, so the cap costs nothing in practice
-  while keeping peak memory bounded regardless of what the tree contains.
+  check and again on the read (`readAtMost`) in case the file grows in between.
+  A file that grew past the cap is refused whole rather than scanned up to it:
+  a cut falling mid-token would read `1.2.34` as `1.2.3` and record a version
+  the file does not hold. Version tokens live in small text files, so the cap
+  costs nothing in practice while keeping peak memory bounded regardless of what
+  the tree contains.
   `DiscoverWithLimit` takes the cap as a parameter (`Discover` supplies the
   default), which is what `discover --max-file-size` sets; a cap of `0` disables
   it and scans every regular file.
@@ -679,6 +682,19 @@ only what it was aimed at and only what it can read in bounded time and memory:
   nothing is written. Unlike the scan, a capped read never returns truncated
   data: the bumped bytes are written back over the file, so a file that grew
   past the cap mid-read is rejected rather than shortened.
+- **A scan is linear in the file, however many tokens it holds.** Each
+  occurrence records its line number and the text around it, and both come from
+  a cursor (`lineCursor`) that only moves forward as the tokens are visited in
+  order. Recomputing them from the start of the file for every token, as the
+  scan once did, was quadratic: a minified file is one line, and twenty
+  thousand occurrences on one 620 KB line took seconds and allocated about 12
+  GB, because every occurrence also held its own copy of the whole line. The
+  context kept per occurrence is now capped at `maxContext` (80) bytes on each
+  side of the token, cut on a UTF-8 boundary and marked with `...`.
+- **A line ends at `\n`, `\r\n`, or a lone `\r`**, the conventions an editor
+  recognizes, so line numbers match what the user sees. Counting only `\n`
+  reported a classic-Mac file as one line and printed its carriage returns into
+  the dry run, where the terminal obeyed them and overprinted the output.
 
 Config target paths are a separate matter: they are trusted input (see
 [section 6.1](#61-config-schema-toml)) and may be absolute or reach outside the
@@ -687,18 +703,33 @@ config's directory.
 ### Consequences of the atomic write
 
 `files.WriteAtomic` writes a temp file in the target's directory and renames it
-over the target, carrying the original file mode across. Two behaviors follow
-from that and are intentional:
+over the target, carrying the original permission bits across. The file at the
+path afterwards is therefore a new file, not the old one rewritten, and several
+behaviors follow from that. All are intentional, and each is pinned by a test
+(`internal/files/shapes_test.go`, `files_test.go`):
 
-- A **read-only target is still rewritten** when its directory is writable,
-  because the rename never opens the target for writing. Write protection comes
-  from the containing directory's permissions, not the file's mode.
+- A **read-only target is still rewritten** when its directory is writable, and
+  stays read-only, because the rename never opens the target for writing. Write
+  protection comes from the containing directory's permissions, not the file's
+  mode.
 - An **unwritable directory fails before any change**: the temp file cannot be
   created, so the target keeps its original contents and no partial write or
   stray temp file is left behind.
 - A **symlinked target is replaced, not written through**: the rename swaps the
   name itself, so the link becomes a regular file and whatever it pointed at is
   untouched. A link inside the tree therefore cannot redirect a write elsewhere.
+- The **setuid, setgid, and sticky bits are dropped**, since only `Perm()` is
+  carried across. Re-applying setuid would mint a setuid file owned by whoever
+  ran `incrmit` — the same reason the kernel clears those bits when an
+  unprivileged process writes such a file in place.
+- A **hard link is broken**: the other names keep the old file and the old
+  contents. Keeping the link would mean truncating and rewriting the shared file
+  in place, which is exactly the partial write the rename exists to rule out. A
+  config that lists every name still bumps them all, because planning reads
+  every target before the first write.
+- **Ownership, extended attributes, and ACLs** are those of a new file created
+  by the running user. This one is not tested, since changing a file's owner
+  needs privileges the test suite does not have.
 
 The temp file is created with `os.CreateTemp` in the target's own directory —
 never a shared temp directory — which gives it an unpredictable name, `O_EXCL`
@@ -832,6 +863,46 @@ Two consequences worth knowing:
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
 - On write, replace only the matched token to preserve surrounding formatting.
 
+### 9.4 File shapes
+
+The scanner and the rewriter work on bytes, not text, and the only bytes they
+interpret are the ASCII digits, dots, letters, and hyphens of a token and the
+word boundaries around it. Everything else passes through untouched, which is
+what makes the shapes below round-trip:
+
+- **Line endings are never normalized.** CRLF, LF, mixed, and lone-CR files keep
+  every terminator; `\r` is a non-word byte like any other, so a token right
+  against one is found whole.
+- **A UTF-8 byte-order mark survives** and does not hide a token that follows
+  it directly: its three bytes are non-word bytes, so every token range sits
+  exactly three bytes later than in the same file without the mark. Discovery
+  leaves the mark out of the first line's dry-run context.
+- **A missing trailing newline stays missing**, and a token at byte 0 or flush
+  against EOF is found whole: the filename guard's `start < 2` branch and
+  `matchAt`'s `after < len(data)` check are the two places that read past a
+  token, and both are bounds-checked.
+- **ASCII-compatible encodings work.** Latin-1 and its relatives hold no `NUL`,
+  so discovery treats them as text, and a non-UTF-8 byte next to a token is a
+  word boundary like any other non-ASCII byte.
+- **UTF-16 does not.** Every character is two bytes, one of them `NUL`, so the
+  digits of a version are never adjacent and there is no token to find: a bump
+  reports `no semantic version found` (or `expected version not found` for a
+  pinned version) with exit 3 and writes nothing, and discovery skips the file
+  as binary. Supporting it would mean decoding and re-encoding the file, which
+  is exactly the normalization this design avoids; a documented refusal is the
+  better failure than a rewrite that changes the encoding.
+- **An empty or whitespace-only file has no version**, reported as such by every
+  entry point.
+
+Names are taken as literally as bytes: a `--file` argument or a config `path` is
+a file name, never a pattern, and nothing in the read, lock, or write path
+interprets a leading dash, a newline, or a glob metacharacter in one. The temp
+file's name does not derive from the target's, so a name already at the
+255-byte limit is written like any other. The config's `ignore` list is the one
+place those characters are patterns; bracketing a metacharacter (`[*]`) is the
+way to match it literally, since backslashes there are normalized to slashes
+and cannot escape anything.
+
 ## 10. Error Handling
 
 - Missing config file: clear message; suggest running `incrmit discover`.
@@ -912,7 +983,21 @@ incrmit/
   (`internal/cli/testdata/preview_*.golden`, regenerated with
   `go test ./internal/cli/ -update`), alongside a test that asserts a preview
   leaves every file in the tree byte-identical.
-- Fuzz targets over the parsers and the rewriter (§12.1).
+- Pathological file shapes (`shapes_test.go` in `files`, `discovery`, and
+  `cli`): line endings, a BOM, UTF-16 and Latin-1, tokens at the edges of the
+  data, empty files, minified single-line files, thousands of occurrences, file
+  metadata (read-only, setuid, hard links), and awkward names. Expected output
+  is built from the same template as the input and compared byte for byte. The
+  largest cases shrink under `go test -short`.
+- Golden fixtures for the readable shapes — CRLF (`Directory.Build.props`), a
+  BOM (`appsettings.json`), no trailing newline (`setup.cfg`), and a minified
+  line (`package.min.json`) — sit beside the format fixtures in
+  `internal/files/testdata`. `.gitattributes` marks the fixtures `-text`,
+  because the repository's `* text=auto` would otherwise store the CRLF fixture
+  as LF, and `TestShapeFixturesKeepTheirShape` fails if a fixture loses the
+  shape it is there to test, rather than letting its golden test pass while
+  proving nothing.
+- Fuzz targets over the parsers, the rewriter, and discovery's scan (§12.1).
 
 ### 12.1 Fuzzing
 
@@ -955,6 +1040,11 @@ What each target proves:
   command line, so anything a shell can pass must come back as an error rather
   than a panic or a silently wrong limit; and every size the tool *prints*
   parses back to the same number, in both directions.
+- `discovery.FuzzScan` — every occurrence's line number matches a reference
+  count of the line breaks before it (`\n`, `\r\n`, and a lone `\r` once each),
+  and its context holds the token, no line terminator, and no more than the
+  context window. The scan finds lines with a forward-only cursor to stay linear
+  on minified files, and a cursor has state for `\r\n` to be counted twice in.
 - `config.FuzzLoad` — the config is trusted input, but a truncated or
   hand-mangled file is not a hostile one: arbitrary bytes must produce a
   `config: ...` error, never a panic, and never a config that loaded into a

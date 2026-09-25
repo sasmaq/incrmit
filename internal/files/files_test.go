@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"os"
@@ -27,6 +28,9 @@ func TestSetVersionGolden(t *testing.T) {
 		"package.json",
 		"pyproject.toml",
 		"version.go",
+	}
+	for name := range shapeFixtures {
+		cases = append(cases, name)
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -60,6 +64,44 @@ func TestSetVersionGolden(t *testing.T) {
 			// Only the version token may differ between input and output.
 			assertOnlyVersionChanged(t, in, got, "1.2.3", newVer.String())
 		})
+	}
+}
+
+// shapeFixtures are the golden fixtures that exist for their shape rather than
+// their format, each paired with a check that the shape is really there. A
+// golden diff can only vouch for bytes the fixture actually has: if a checkout
+// normalized the CRLF fixture to LF, or an editor stripped the BOM or added the
+// final newline, the golden test would go on passing while testing nothing. The
+// repository's .gitattributes keeps git from doing that; this catches the rest.
+var shapeFixtures = map[string]struct {
+	shape string
+	holds func([]byte) bool
+}{
+	"Directory.Build.props": {"CRLF on every line", func(b []byte) bool {
+		return bytes.Count(b, []byte("\r\n")) > 0 && bytes.Count(b, []byte("\r\n")) == bytes.Count(b, []byte("\n"))
+	}},
+	"appsettings.json": {"a UTF-8 BOM", func(b []byte) bool {
+		return bytes.HasPrefix(b, []byte(bomUTF8)) && !bytes.Contains(b[len(bomUTF8):], []byte(bomUTF8))
+	}},
+	"setup.cfg": {"the version flush against EOF", func(b []byte) bool {
+		return len(b) > 0 && b[len(b)-1] >= '0' && b[len(b)-1] <= '9'
+	}},
+	"package.min.json": {"one line with no newline", func(b []byte) bool {
+		return len(b) > 0 && !bytes.ContainsAny(b, "\r\n")
+	}},
+}
+
+func TestShapeFixturesKeepTheirShape(t *testing.T) {
+	for name, fx := range shapeFixtures {
+		for _, ext := range []string{".input", ".golden"} {
+			data, err := os.ReadFile(filepath.Join("testdata", name+ext))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fx.holds(data) {
+				t.Errorf("testdata/%s%s no longer has %s, so its golden test proves nothing", name, ext, fx.shape)
+			}
+		}
 	}
 }
 

@@ -448,3 +448,21 @@ Show tool version:
 .Dl incrmit version
 .Sh SEE ALSO
 .Lk https://github.com/sasmaq/incrmit
+.Sh CAVEATS
+A bump rewrites only the version token; line endings, a UTF-8 byte-order mark,
+and a missing final newline are kept exactly.
+Files are read as bytes, so any ASCII-compatible encoding works, but UTF-16 does
+not: its version holds a NUL between every character, so a UTF-16 target
+reports no version
+.Pq exit 3
+and
+.Cm discover
+skips it as binary.
+.Pp
+The new contents are renamed over the target, which puts a new file in its
+place.
+Permission bits are kept, and a read-only file is still bumped, but the setuid,
+setgid, and sticky bits are dropped, a hard link is broken
+.Pq other names keep the old contents ,
+a symlink becomes a regular file, and ownership, extended attributes, and ACLs
+are those of a new file created by the running user.

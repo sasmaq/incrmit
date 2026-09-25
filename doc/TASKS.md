@@ -1086,7 +1086,7 @@ against EOF, one enormous minified line. Fuzzing (Milestone 30) generates
 *bytes*, but not file shapes: it never creates a hard link, a setuid bit, or a
 read-only file. Those need fixtures.
 
-- [ ] Cover line endings and encodings, asserting the file keeps its shape
+- [x] Cover line endings and encodings, asserting the file keeps its shape
       rather than being normalized: CRLF throughout, mixed CRLF and LF, a lone
       CR, and a UTF-8 BOM before the first key (the BOM must survive and must
       not shift the token ranges). Add the two encodings that are not text as
@@ -1094,17 +1094,39 @@ read-only file. Those need fixtures.
       token, and Latin-1 bytes with no NUL, which is not caught by `isBinary` —
       and pin what each does today so a "no version found" on a UTF-16 file is a
       documented answer rather than a surprise.
-- [ ] Cover the boundary positions the code special-cases: a file that is
+      The rewriter already kept every shape: it only interprets the bytes of a
+      token and the word boundaries around it, so `\r`, the BOM, and Latin-1
+      bytes are all just non-word bytes. Each expected output is built from the
+      same template as its input and compared byte for byte, rather than by a
+      `strings.ReplaceAll` revert. UTF-16 is pinned in both halves: a scan
+      reports `ErrNoVersion`, a pinned version `ErrVersionNotFound` (both exit
+      3, and the file is not written), and discovery skips it as binary.
+      Latin-1 is scanned as text and passes through untouched. Discovery was
+      where the lone CR went wrong (below).
+- [x] Cover the boundary positions the code special-cases: a file that is
       exactly `1.2.3` with no trailing newline, which puts the token at byte 0
       and flush against EOF and so takes the `start < 2` branch in
       `suffixBelongs` and the `after < len(data)` check in `matchAt`; a token as
       the final byte of a longer file; and an empty or whitespace-only file,
       which must report `ErrNoVersion` rather than panic.
-- [ ] Cover files with no line structure at all: minified JSON on one very long
+      The `after < len(data)` check is only reached when a pinned suffix is
+      consumed past a guard-cut core, so the table adds `app-1.2.3-rc.1` flush
+      against EOF (and `-rc.10` there, which must not match), plus
+      `-1.2.3-rc.1`, whose token starts at byte 1 — the case where the
+      `start < 2` guard is what keeps `data[start-2]` in bounds. Blank files
+      include a lone BOM and bare `\r`; every entry point, `ApplyBump`
+      included, reports no version and writes nothing.
+- [x] Cover files with no line structure at all: minified JSON on one very long
       line, and a file holding thousands of occurrences of the same version.
       Assert both the replacement counts and byte preservation. Keep the largest
       case behind `testing.Short()` if it measurably slows `go test ./...`.
-- [ ] Cover the metadata shapes, which is where the atomic write's design shows
+      The rewriter is linear and passed; the cost is `FindTokens` at about
+      390 ns a token. 500,000 occurrences took 12 s under `-race`, which is
+      what CI runs, so the sizes are kept to what still catches a quadratic
+      regression: a ~625 KB one-line manifest and 100,000 packed tokens
+      normally, and 2,000 dependencies and 5,000 tokens under `-short`.
+      Discovery did not pass — see the last item.
+- [x] Cover the metadata shapes, which is where the atomic write's design shows
       through. A read-only `0444` file bumps successfully, because the write is
       a rename in the parent directory rather than a write through the file, and
       the mode survives. A setuid, setgid, or sticky file loses those bits,
@@ -1112,24 +1134,124 @@ read-only file. Those need fixtures.
       link broken by the rename, so the other name keeps the old contents. Each
       is a deliberate consequence, not a bug — decide, test, and state them in
       `WriteAtomic`'s doc comment the way the symlink behavior already is.
-- [ ] Cover awkward paths, since the target is whatever the user names: spaces,
+      All three kept as they are. Dropping setuid/setgid is the safe answer:
+      re-applying it would mint a setuid file owned by whoever ran incrmit,
+      which is why the kernel clears those bits on an unprivileged write
+      anyway. Keeping a hard link would mean rewriting the shared file in
+      place, the partial write the rename exists to prevent; a config listing
+      every name still bumps them all, since planning reads every target first
+      (tested). Ownership, xattrs, and ACLs belong to the same list and are
+      stated but not tested, since that needs root. The special-bit test uses
+      `os.ModeSetuid` and friends, not `0o4755` (`os.Chmod` ignores bits above
+      `Perm()` in a plain octal), and skips a bit the system will not set.
+- [x] Cover awkward paths, since the target is whatever the user names: spaces,
       a newline, non-ASCII characters, a leading dash, glob metacharacters
       (`*`, `[`, `?`), and a name near the OS length limit. The metacharacter
       case matters twice — a `--file` argument must be taken literally end to
       end, while the same characters from `ignore` in the config are patterns.
-- [ ] Add golden fixtures for the readable shapes (CRLF, BOM, no trailing
+      Every name works through `--file NAME`, `--file=NAME`, and `-f NAME`
+      given relative to the working directory, including one called `--major`,
+      with decoys (`vX.txt` for `v*.txt`, `a.txt` for `[ab].txt`) left
+      untouched. A `discover` → bump round trip keeps each name exactly through
+      TOML's escaping. A 255-byte name works because the temp file's name does
+      not derive from the target's. One limit surfaced on the `ignore` side: a
+      backslash cannot escape a metacharacter, since config loading turns every
+      backslash into a slash, so brackets (`v[*].txt`) are the only way to
+      match one literally. Documented and tested rather than changed; the
+      normalization is what makes a Windows-authored config portable.
+- [x] Add golden fixtures for the readable shapes (CRLF, BOM, no trailing
       newline, minified single line) in `internal/files/testdata`, alongside the
       four format fixtures already there. A golden diff is the clearest
       statement the rewriter can make about leaving everything else alone.
-- [ ] Cover the discovery side of the same shapes: a zero-length file, a deeply
+      `Directory.Build.props` (CRLF), `appsettings.json` (BOM),
+      `setup.cfg` (version flush against EOF), and `package.min.json`. The
+      repository's `* text=auto` would have stored the CRLF fixture as LF,
+      leaving a golden test that passed while testing nothing, so
+      `.gitattributes` marks the fixtures `-text`, and
+      `TestShapeFixturesKeepTheirShape` fails if a fixture ever loses its
+      shape anyway.
+- [x] Cover the discovery side of the same shapes: a zero-length file, a deeply
       nested tree, and a file whose only version sits past a NUL byte, so it is
       skipped as binary. Confirm a file whose size cap falls mid-token is
       refused whole rather than scanned truncated.
-- [ ] Fix what turns out to be wrong and document what turns out to be merely
+      The size check refused it, but the second guard did not: a file that grew
+      between the stat and the read went through `io.LimitReader(f, max)` and
+      was scanned truncated, so `1.2.34` could be recorded as `1.2.3`.
+      `readAtMost` now reads one byte past the cap and refuses the file if that
+      byte arrives. The tree test is 128 levels deep, with a directory-only
+      ignore pattern pruning halfway down.
+- [x] Fix what turns out to be wrong and document what turns out to be merely
       lossy. Where a shape cannot round-trip (a dropped setuid bit, a broken
       hard link, a UTF-16 file that reads as versionless), say so in `README.md`
       and `doc/DEVELOPMENT.md` — a documented limit is a feature, an undocumented
       one is a bug report waiting to be filed.
+      Three defects, all in discovery; the rewriter needed nothing. The scan was
+      quadratic on a long line: each occurrence recounted lines from the start
+      of the file and copied its whole line as context, so 20,000 occurrences
+      in a 620 KB minified file took 3.8 s and allocated about 12 GB (and the
+      dry run would have printed the file 20,000 times). A forward-only
+      `lineCursor` makes it one pass, and context is clipped to 80 bytes each
+      side of the token on a UTF-8 boundary. Lines ended only at `\n`, so a
+      lone-CR file was one line whose carriage returns reached the terminal
+      and overprinted the dry run; `\r\n` and a lone `\r` now end a line too,
+      and a leading BOM is left out of the context. The third is the size-cap
+      race above. `discovery.FuzzScan` checks the cursor against a reference
+      line count. The lossy shapes are in `README.md` ("What a bump keeps"),
+      `doc/DEVELOPMENT.md` (§9.1, the atomic-write consequences, and a new §9.4
+      File shapes), the man page's CAVEATS, and `CHANGELOG.md`.
+
+The same work showed that file shapes reach the terminal as well as the disk.
+The lone-CR fix stopped one control character from reaching the dry run, but
+any other still gets through: `incrmit` prints file names and file contents it
+did not write, and `discover --dry-run` is meant for exactly the trees a user
+does not own. An `ESC` sequence in a scanned file can clear the screen and hide
+output, retitle the window, plant a fake hyperlink, or — on terminals that
+honor OSC 52 — write to the clipboard. The same bytes also reach CI logs, which
+render ANSI.
+
+- [ ] Add one function in `internal/cli` that renders untrusted text for the
+      terminal, so that every character printed is either printable or a
+      visible escape. Escape the C0 controls (`ESC`, `CR`, `BS`, `BEL`, ...),
+      `DEL`, the C1 controls (U+0080–U+009F, and the raw byte `0x9B`, which some
+      terminals read as a one-byte CSI), invalid UTF-8, and the bidirectional
+      overrides and isolates (U+202A–U+202E, U+2066–U+2069) that make a line
+      display in a different order than its bytes. Printable non-ASCII (`é`,
+      `版本`) passes through unchanged. Use Go-style escapes (`\x1b`, `‮`)
+      so the output matches what the `%q` sites already print. Two decisions
+      to make and record: whether a backslash is escaped (unambiguous output
+      wants `\\`, but Windows paths would print doubled; escaping it only in a
+      string that needed another escape is one answer), and whether a tab in
+      context text is shown as a space rather than as `\t`.
+- [ ] Apply it at every site that prints bytes `incrmit` did not produce: the
+      `discover --dry-run` context, every path (discovered, listed in the
+      config, recorded in the journal for `undo`, and the `--path`, `--output`,
+      and `--file` values), the `(ignoring: …)` echo, the `preview` table, and
+      error messages. That includes OS errors: an `*fs.PathError` embeds the raw
+      path, and `fsErrorMessage` prints its default branch with `%v`. The `%q`
+      sites escape through `strconv` already and need no change. In `preview`,
+      measure column widths on the escaped text so the table still lines up.
+- [ ] Escape for display only. The name used to open, lock, and rename a file,
+      and the name written to the config and the journal, must stay the raw
+      bytes. TOML already escapes control characters in a string, so a name
+      holding `ESC` round-trips exactly. Test that such a file is bumped, is
+      shown escaped, and is still recorded under its real name.
+- [ ] Add an end-to-end regression test over a hostile tree: file names and
+      contents holding `\x1b[2J`, `\x1b]0;title\x07`, an OSC 8 link, `CR`,
+      `BS`, `BEL`, `0x9B`, UTF-8 C1 controls, bidi overrides, and invalid
+      UTF-8. Run every command against it — `discover` with and without
+      `--dry-run`, a bump and its dry run, `preview`, `undo` — plus the failure
+      paths that print a path (unreadable target, version not found, conflicted
+      undo). Assert that nothing on stdout or stderr holds a control character
+      other than `\n`, or a bidi control. This test, rather than a review, is
+      what catches a print site added later without the escaping.
+- [ ] Add a fuzz target for the escaping function: for arbitrary bytes, the
+      output is valid UTF-8 with no control or bidi character, printable input
+      comes back unchanged, and distinct inputs never render the same (so the
+      escaping cannot make two different names look alike).
+- [ ] Document the behavior in `README.md` (discovery and the dry run: names
+      and context are shown with control characters escaped), in
+      `doc/DEVELOPMENT.md` next to the scan boundaries, in the man page, and in
+      `CHANGELOG.md`.
 
 ## Milestone 32 — Release Tagging Helper (the `tag` command)
 
