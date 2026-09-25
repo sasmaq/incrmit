@@ -1317,39 +1317,89 @@ Milestone 26 closed the same hole on the read side of discovery; the lock is
 the one place incrmit opens an existing path for writing instead of replacing
 it by rename.
 
-- [ ] Reproduce the damage before fixing it, as Milestone 29 did, so the fix
+- [x] Reproduce the damage before fixing it, as Milestone 29 did, so the fix
       has something to prove: plant `.incrmit.lock` as a symlink to a file
       outside the project, run `discover`, a bump, and `undo` through
       `cli.Main`, and assert that file's bytes and mode are unchanged. Add a
       dangling link whose target must still not exist afterward.
-- [ ] Open the lock file without following a symlink, so the check and the
+      `internal/cli/lockfile_test.go` builds the project one level down in a
+      sandbox and snapshots everything outside it (type, mode, and contents or
+      link target) before and after each command. Before the fix all three
+      commands left `victim.txt` holding the note at its original `0640`, the
+      dangling link created `created-by-incrmit` at `0600`, and a regular file
+      of unrelated text at the lock path came out as the note. As in
+      Milestone 29 the assertion is the invariant (nothing outside the project
+      changed), so the same tests prove the fix.
+- [x] Open the lock file without following a symlink, so the check and the
       open are one step rather than an `Lstat` followed by a racing `Open`:
       `O_NOFOLLOW` in `lock_unix.go` and `FILE_FLAG_OPEN_REPARSE_POINT` in
       `lock_windows.go`, behind a build-tagged `openLockFile` that mirrors
       `tryLock`. Then `Stat` the descriptor and accept only a regular file.
-- [ ] Decide what a lock path that is not a regular file does: a symlink, a
+      The Unix open also passes `O_NONBLOCK`, so a FIFO or a device cannot
+      block it. The Windows side calls `windows.CreateFile` with `OPEN_ALWAYS`
+      and the sharing mode `os.OpenFile` uses, since `os.OpenFile` cannot pass
+      the flag, and wraps the handle with `os.NewFile`. When the open fails, an
+      `Lstat` only words the warning: nothing is opened after it, so it has
+      nothing to race. All six release platforms build and vet; the Windows
+      path is compiled but not run here.
+- [x] Decide what a lock path that is not a regular file does: a symlink, a
       directory, a FIFO. Recommend a degraded lock, keeping Milestone 29's
       rule that only contention refuses: warn naming the path and why ("is a
       symbolic link"), continue unlocked, and sweep nothing. Nothing is opened
       through the link either way, and the warning is what points the user at
       a planted file. Record the decision and the reason.
-- [ ] Stop truncating. Write the note only into a file that was empty when the
+      Degraded, as recommended. The reason is a `lock.NotRegularError` inside
+      an `*fs.PathError`, and the CLI now builds the warning with
+      `fsErrorMessage`, so it reads
+      `cannot lock .incrmit.lock: is a symbolic link, not a regular file` and
+      other lock failures name the file once too. The planted file is left
+      exactly as it was. Refusing was rejected because it protects nothing
+      more (nothing is opened through the path either way) and would make a
+      stray file a reason no bump can run. Recorded in `doc/DEVELOPMENT.md`
+      §6.4.
+- [x] Stop truncating. Write the note only into a file that was empty when the
       lock was taken, which in practice means one this run just created, so
       even a regular file that happens to sit at that name is never rewritten.
       The note is a courtesy and must never be the reason a file loses data.
-- [ ] Confirm the lock is the only place incrmit writes through an existing
+      `writeNote` checks the held descriptor. It also requires the file to have
+      exactly one name (`Nlink` on Unix, `NumberOfLinks` from
+      `GetFileInformationByHandle` on Windows): an empty file hard-linked from
+      elsewhere is otherwise "empty", and writing the note into it changes the
+      other name. This matters for `--file` in a shared directory, where the
+      lock sits beside the target. Removing either check fails a unit test.
+- [x] Confirm the lock is the only place incrmit writes through an existing
       path: `WriteAtomic` renames over a link rather than writing through it,
       and `SweepTemps` removes a link named like a temp file rather than its
       target. Add a test for the sweep case, a `.incrmit-x.tmp` symlink to a
       file outside the tree, which must be removed with its target untouched.
-- [ ] Cover the other shapes on Unix, skipping where the system will not
+      Confirmed by audit. Outside the lock, the only filesystem writes are
+      `CreateTemp` (a new, unpredictable name with `O_EXCL`), `Chmod` through
+      the temp file's descriptor, `Rename`, and `Remove`. `WriteAtomic`'s
+      `Stat` of the target follows a link but only reads the mode.
+      `TestWriteAtomicDoesNotWriteThroughSymlink` already covered the rename.
+      `TestSweepTempsRemovesLinksNotTargets` covers the sweep with a link to a
+      file and a link to a directory: both links go, and both targets keep
+      their contents and mode.
+- [x] Cover the other shapes on Unix, skipping where the system will not
       create them: a symlink to a directory, a FIFO at the lock path, and a
       regular file holding unrelated text, which must come out unchanged. In
       every case assert the command behaves as decided above and that nothing
       outside the project changed.
-- [ ] Document the behavior in `README.md` ("Concurrent runs"),
+      Each shape runs `discover`, a bump, and `undo` under a 10-second
+      deadline, plus a directory at the lock path, which now gets a warning
+      that says it is a directory instead of the raw `EISDIR`. On macOS a FIFO
+      opened `O_RDWR` without blocking and the old code failed at `flock`
+      with "operation not supported". It is now rejected by the descriptor
+      check before any lock is tried. `internal/lock` has matching unit tests
+      (link, dangling link, FIFO, existing text, empty file, hard link, and
+      the wording for each file kind). Suite passes under `-race` and
+      `make check`; coverage 96.5% -> 96.5%.
+- [x] Document the behavior in `README.md` ("Concurrent runs"),
       `doc/DEVELOPMENT.md` §6.4, and the man page's CONCURRENT RUNS section,
       and add a Security entry to `CHANGELOG.md`.
+      §8.6's "degrades, it does not refuse" bullet now lists a non-regular lock
+      path too. The CHANGELOG entry opens a new `[Unreleased]` section, with a
+      Fixed line for the lock warning naming the file once.
 
 ## Milestone 33 — File-Type Checks for the Config, Ignore List, and Journal
 

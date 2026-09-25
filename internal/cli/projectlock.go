@@ -61,10 +61,13 @@ func acquireProject(dir string, wait bool, stderr io.Writer) (*lock.Lock, int) {
 
 	// Locking was unavailable rather than contended — an NFS mount or a CI
 	// overlay filesystem that does not implement it, a directory that cannot be
-	// written. Warn and carry on: a tool that cannot bump at all is worse than
-	// one that cannot detect a second run.
+	// written, a symbolic link or anything else that is not a regular file at
+	// the lock path. Warn and carry on: a tool that cannot bump at all is worse
+	// than one that cannot detect a second run. The warning names the path and
+	// what is there, which is what points the user at a link planted in a
+	// repository.
 	if lk.Degraded() {
-		fprintf(stderr, "incrmit: warning: cannot lock %s: %v\n", displayName(lk.Path()), lk.Reason())
+		fprintf(stderr, "incrmit: warning: %s\n", fsErrorMessage("cannot lock", lk.Path(), lk.Reason()))
 		fprintln(stderr, "incrmit: warning: continuing unlocked; a concurrent incrmit run could erase this one's work.")
 	}
 	return lk, ExitOK

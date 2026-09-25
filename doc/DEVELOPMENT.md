@@ -251,6 +251,37 @@ never unlinked on release: removing it would let a second run create and lock a
 fresh file at the same name while the first still held a lock on the old inode,
 which is the exact race the lock exists to prevent.
 
+**Only a regular file, never through a link.** The lock file is the one path
+incrmit opens for writing instead of replacing by rename: `files.WriteAtomic`
+renames over a link rather than writing through it, and `files.SweepTemps`
+unlinks a link named like a temp file rather than its target. Before
+Milestone 32 the lock opened with `O_CREATE|O_RDWR`, which follows a symlink,
+and truncated whatever it got to write the note. A repository can commit
+`.incrmit.lock` as a link, so running `discover` in a fresh clone (it needs no
+config) or a bump replaced any file the user could write with the note, and a
+dangling link created the file it named. `openLockFile` now opens with
+`O_NOFOLLOW` on Unix and `FILE_FLAG_OPEN_REPARSE_POINT` on Windows, so refusing
+the link and opening the file are one step, with no window between an `Lstat`
+and an `Open` for a link to be swapped in. `O_NONBLOCK` keeps a FIFO or a device
+from blocking the open. The descriptor is then `Stat`ed, and only a regular file
+is locked.
+
+Anything else at the path — a link, a directory, a FIFO — **degrades** the lock,
+keeping section 8.6's rule that only contention refuses. The reason is a
+`lock.NotRegularError` naming the kind of file; the command warns with the path
+and that kind ("is a symbolic link, not a regular file"), continues unlocked,
+and sweeps no temp files. Refusing was considered and rejected: nothing is
+opened through the path either way, so refusing protects nothing more, and it
+would make a stray file at that name a reason no bump can run. The warning is
+what points the user at a planted file, and the file is left exactly as it was
+so they can see what was put there.
+
+The note is written only into a lock file that is empty and has one name, which
+in practice means one a run just created. A regular file that happens to sit at
+the lock path is locked but never rewritten, whether it holds someone's text or
+is an empty file hard-linked from elsewhere: the note is a courtesy and must
+never be the reason a file loses data.
+
 ## 7. Command-Line Interface
 
 ### Default command (bump)
@@ -584,11 +615,13 @@ The rule is now **one writer per project at a time, readers unsynchronized**:
   written nothing. `--wait` (`-w`) opts into queueing for callers who really are
   serializing work.
 - **Unavailable locking degrades, it does not refuse.** On a filesystem that
-  does not implement locking (some NFS mounts, a few CI overlay filesystems) or
-  in a directory that cannot be written, `lock.Acquire` returns a *degraded*
-  lock rather than an error: the command warns and continues unlocked, because a
-  tool that cannot bump at all is worse than one that cannot detect a second
-  run. Contention is therefore the only error `Acquire` reports, which is what
+  does not implement locking (some NFS mounts, a few CI overlay filesystems), in
+  a directory that cannot be written, or when the lock path holds something
+  other than a regular file (a symbolic link, say; see
+  [section 6.4](#64-project-lock-file-internallock)), `lock.Acquire` returns a
+  *degraded* lock rather than an error: the command warns and continues
+  unlocked, because a tool that cannot bump at all is worse than one that
+  cannot detect a second run. Contention is therefore the only error `Acquire` reports, which is what
   keeps "someone else holds it" distinguishable from "locking is not available".
 
 Because flock (like a Windows byte-range lock) is held by the open file

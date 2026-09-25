@@ -17,13 +17,20 @@
 // there is never a leftover lock to clear by hand.
 //
 // Acquisition fails only on contention. Any other failure — a filesystem with
-// no lock support, a directory that cannot be written — degrades to running
-// unlocked (see Lock.Degraded), because a tool that cannot bump at all is worse
-// than one that cannot detect a second run.
+// no lock support, a directory that cannot be written, something other than a
+// regular file at the lock path — degrades to running unlocked (see
+// Lock.Degraded), because a tool that cannot bump at all is worse than one that
+// cannot detect a second run.
+//
+// The lock file is the one path incrmit opens for writing instead of replacing
+// by rename, so it is opened without following a symbolic link and used only
+// when it is a regular file. A repository can commit .incrmit.lock as a link,
+// and following one would write the lock note into whatever file it names.
 package lock
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,6 +41,43 @@ import (
 // ErrContended reports that another incrmit run holds the project lock. It is
 // the only error Acquire returns.
 var ErrContended = errors.New("lock: the project is locked by another incrmit run")
+
+// NotRegularError is the reason a lock is degraded when something other than a
+// regular file sits at the lock path: a symbolic link, a directory, a named
+// pipe. Acquire opens nothing through such a path and leaves it as it is, so
+// the warning built from this error is what points the user at it. It arrives
+// wrapped in an *fs.PathError naming the path.
+type NotRegularError struct {
+	Mode fs.FileMode // the type bits of what sits at the path
+}
+
+func (e *NotRegularError) Error() string {
+	return "is " + describeType(e.Mode) + ", not a regular file"
+}
+
+// describeType names the kind of file a mode's type bits describe.
+func describeType(m fs.FileMode) string {
+	switch {
+	case m&fs.ModeSymlink != 0:
+		return "a symbolic link"
+	case m.IsDir():
+		return "a directory"
+	case m&fs.ModeNamedPipe != 0:
+		return "a named pipe"
+	case m&fs.ModeSocket != 0:
+		return "a socket"
+	case m&fs.ModeDevice != 0:
+		return "a device"
+	default:
+		return "a special file"
+	}
+}
+
+// notRegular is the degraded reason for the lock path holding mode's kind of
+// file.
+func notRegular(path string, mode fs.FileMode) error {
+	return &fs.PathError{Op: "lock", Path: path, Err: &NotRegularError{Mode: mode.Type()}}
+}
 
 // note is written into the lock file once the lock is held, so someone who
 // finds the file in their tree can tell what it is. It deliberately contains no
@@ -100,11 +144,24 @@ func (l *Lock) Release() error {
 func Acquire(dir string) (*Lock, error) {
 	path := filepath.Join(dir, config.LockFileName)
 
-	// O_CREATE without O_TRUNC: the file's contents are not state, and
-	// truncating before the lock is held would write into a file another run
-	// is using.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := openLockFile(path)
 	if err != nil {
+		// The open refuses a link rather than following it, and a directory
+		// cannot be opened for writing; say which it was. This Lstat only words
+		// the warning — nothing is opened after it, so it has nothing to race.
+		if info, lerr := os.Lstat(path); lerr == nil && !info.Mode().IsRegular() {
+			err = notRegular(path, info.Mode())
+		}
+		return &Lock{path: path, reason: err}, nil
+	}
+	// Check what was actually opened, through the descriptor: a FIFO or a
+	// device opens without complaint, and is no more a lock file than a link.
+	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = notRegular(path, info.Mode())
+	}
+	if err != nil {
+		_ = f.Close()
 		return &Lock{path: path, reason: err}, nil
 	}
 
@@ -137,11 +194,16 @@ func AcquireWait(dir string, timeout time.Duration) (*Lock, error) {
 	}
 }
 
-// writeNote stamps the explanatory note into the held lock file. It is
-// best-effort: the note is a courtesy to whoever finds the file, and failing to
-// write it is no reason to refuse a bump.
+// writeNote stamps the explanatory note into the held lock file, but only into
+// one that is empty and has no other name — in practice, one this run or an
+// earlier one just created. A regular file that happens to sit at the lock path
+// holds whatever someone put there, and a hard link shares its contents with
+// another name, so neither is ever written: the note is a courtesy and must
+// never be the reason a file loses data. It is best-effort for the same reason,
+// and failing to write it is no reason to refuse a bump.
 func writeNote(f *os.File) {
-	if err := f.Truncate(0); err != nil {
+	info, err := f.Stat()
+	if err != nil || info.Size() != 0 || !soleName(f, info) {
 		return
 	}
 	_, _ = f.WriteAt([]byte(note), 0)

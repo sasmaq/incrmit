@@ -5,6 +5,25 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- The project lock no longer writes through a symbolic link. `.incrmit.lock`
+  was opened following links and truncated to hold the lock's note, so a
+  repository that committed it as a link to a file outside the tree had that
+  file's contents replaced with two lines of lock text by the first `discover`,
+  bump, or `undo` in the clone, and a dangling link created the file it named.
+  The lock file is now opened without following links. A link, a directory, or
+  a named pipe at that path is left as it is, named in a warning, and the run
+  continues unlocked. A regular file already there is used as the lock but
+  never rewritten: the note goes only into a lock file that is empty.
+
+### Fixed
+
+- The warning for an unavailable project lock names the lock file once, rather
+  than repeating its path inside the OS error.
+
 ## [0.3.3] - 2026-09-25
 
 ### Security

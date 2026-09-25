@@ -394,6 +394,18 @@ Where locking is unavailable \(em some NFS mounts, a few CI overlay
 filesystems \(em
 .Nm
 warns and carries on unlocked rather than refusing to run.
+.Pp
+The lock file is never opened through a symbolic link, so a link committed to a
+repository cannot aim the lock at a file elsewhere.
+If
+.Pa .incrmit.lock
+is a link, a directory, a named pipe, or anything else that is not a regular
+file,
+.Nm
+leaves it as it is, warns naming it, and carries on unlocked; remove it to lock
+again.
+A regular file already at that name is used as the lock but never rewritten:
+the explanatory note is written only into a lock file that is empty.
 .Sh EXIT STATUS
 .Bl -tag -width Ds
 .It 0

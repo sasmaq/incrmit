@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -991,6 +992,61 @@ func TestSweepTemps(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("sweep removed %s: %v", p, err)
 		}
+	}
+}
+
+// A link named like a temp file is removed as a link: unlinking never follows
+// one, so what it points at — a file or a directory outside the tree — is left
+// exactly as it was. A repository can commit such a link, so this is a sweep of
+// a name incrmit did not create, and it must cost nothing but that name.
+func TestSweepTempsRemovesLinksNotTargets(t *testing.T) {
+	outside := t.TempDir()
+	file := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(file, []byte("precious data\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(outside, "victim-dir")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(sub, "kept")
+	if err := os.WriteFile(kept, []byte("also precious\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	links := map[string]string{
+		filepath.Join(dir, ".incrmit-x.tmp"): file,
+		filepath.Join(dir, ".incrmit-y.tmp"): sub,
+	}
+	for link, target := range links {
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+	}
+
+	n, err := SweepTemps(dir)
+	if err != nil {
+		t.Fatalf("SweepTemps: %v", err)
+	}
+	if n != len(links) {
+		t.Errorf("SweepTemps removed %d entr(ies), want %d", n, len(links))
+	}
+	for link := range links {
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Errorf("%s survived the sweep (lstat err = %v)", link, err)
+		}
+	}
+	for p, want := range map[string]string{file: "precious data\n", kept: "also precious\n"} {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("a link target is gone: %v", err)
+		} else if string(got) != want {
+			t.Errorf("%s = %q after the sweep, want %q", p, got, want)
+		}
+	}
+	if info, err := os.Stat(file); err == nil && runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
+		t.Errorf("%s mode = %v after the sweep, want 0640", file, info.Mode().Perm())
 	}
 }
 

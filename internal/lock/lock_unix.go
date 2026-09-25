@@ -4,9 +4,29 @@ package lock
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"syscall"
 )
+
+// openLockFile opens the lock file at path for reading and writing, creating it
+// when nothing is there, without following a symbolic link: O_NOFOLLOW makes
+// the open fail on a link instead of opening what it names, so the check and
+// the open are one step with no window for the link to be swapped in between.
+// O_CREATE without O_TRUNC, because the lock is not held yet and the contents
+// are not ours to discard. O_NONBLOCK keeps the open itself from waiting on a
+// FIFO or a device; it has no effect on a regular file, the only kind Acquire
+// goes on to use.
+func openLockFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+}
+
+// soleName reports whether the open file f, described by info, has exactly one
+// name, so writing into it cannot change a file known by another.
+func soleName(_ *os.File, info fs.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Nlink == 1
+}
 
 // tryLock takes an exclusive advisory lock on f without blocking.
 //

@@ -3,7 +3,7 @@
 A small command-line tool written in Go that parses a file, finds a version
 value inside it, and increments it (increment + commit).
 
-## Version: 0.3.3
+## Version: 0.3.4
 
 ## Overview
 
@@ -64,7 +64,7 @@ checksum file from the same release and comparing hashes (replace `X.Y.Z` with
 the release version):
 
 ```bash
-VERSION=0.3.3
+VERSION=0.3.4
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
 
 # Linux: verify only the assets you downloaded (ignores missing entries)
@@ -89,7 +89,7 @@ grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums-macos.txt
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.3.3
+VERSION=0.3.4
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -98,7 +98,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 **Debian or Ubuntu** — download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.3.3
+VERSION=0.3.4
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 man incrmit
@@ -108,7 +108,7 @@ man incrmit
 release page, then install:
 
 ```bash
-VERSION=0.3.3
+VERSION=0.3.4
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 man incrmit
@@ -119,7 +119,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.3.3
+VERSION=0.3.4
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -145,7 +145,7 @@ see [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) (`make deb` / `make rpm` require
 Requires Go 1.27 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.3.3
+go install github.com/sasmaq/incrmit@v0.3.4
 ```
 
 ### Build from source
@@ -203,7 +203,7 @@ A prerelease or build section is recorded in its own key rather than inside
 ```toml
 [[files]]
   path = "VERSION"
-  version = "0.3.3"
+  version = "0.3.4"
   prerelease = "rc.1"   # the file holds 0.3.1-rc.1
 ```
 
@@ -608,7 +608,7 @@ with the `version` subcommand or the `--version` / `-version` / `-v` flag:
 incrmit version
 incrmit --version
 incrmit -v
-# incrmit 0.3.3
+# incrmit 0.3.4
 ```
 
 The version is baked into the binary and can be overridden at build time
@@ -920,6 +920,22 @@ partly updated tree.
 filesystems — `incrmit` prints a warning and carries on unlocked rather than
 refusing to run, since a tool that cannot bump at all is worse than one that
 cannot detect a second run.
+
+**The lock file is never opened through a symbolic link.** A repository can
+commit `.incrmit.lock` as a link to a file somewhere else, and following it
+would write the lock into that file. If the path holds a link, a directory, a
+named pipe, or anything else that is not a regular file, `incrmit` leaves it as
+it is, warns, and carries on unlocked:
+
+```console
+$ incrmit
+incrmit: warning: cannot lock .incrmit.lock: is a symbolic link, not a regular file
+incrmit: warning: continuing unlocked; a concurrent incrmit run could erase this one's work.
+```
+
+Remove it to lock again. A regular file already at that name is used as the
+lock but never rewritten: the explanatory note goes only into a lock file that
+is empty.
 
 ## Exit codes
 
