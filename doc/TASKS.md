@@ -1148,10 +1148,11 @@ stays git-free exactly as it is today.
 
 - [ ] Record the decision in `doc/DEVELOPMENT.md`: incrmit never starts a
       subprocess, and `depguard` denies the `os/exec` import. A Go git library
-      such as `go-git` was rejected too: v5.19.2 adds 20 modules to a project
-      that has had one since `BurntSushi/toml` (a minimal program using it
-      builds to 9.1 MB against incrmit's 4.0 MB), and its push ignores
-      credential helpers, reads only `Hostname` and `Port` from
+      such as `go-git` was rejected too: v5.19.2 adds 20 modules (19 new) to a
+      project whose only dependencies are `BurntSushi/toml` and
+      `golang.org/x/sys` (a minimal program using it builds to 9.1 MB against
+      incrmit's 4.0 MB), and its push ignores credential helpers, reads only
+      `Hostname` and `Port` from
       `~/.ssh/config` (no `IdentityFile`, no `ProxyJump`), and signs only with
       an OpenPGP key loaded in-process (no gpg-agent, no SSH signing). Printing
       the commands keeps all of those working. Replace the "Optional git

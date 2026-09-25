@@ -567,8 +567,12 @@ The rule is now **one writer per project at a time, readers unsynchronized**:
   the same target have in common.
 - **Mechanism.** One exclusive advisory lock (`syscall.Flock` on Unix,
   `LockFileEx` on Windows, in build-tagged files mirroring the
-  `internal/testutil/fifo_unix.go` / `fifo_windows.go` split, so it costs no new
-  module). An OS advisory lock is used rather than an `O_EXCL` PID file
+  `internal/testutil/fifo_unix.go` / `fifo_windows.go` split). The standard
+  library's `syscall` package has no `LockFileEx`, so the Windows side calls
+  the typed wrapper in `golang.org/x/sys/windows` rather than loading
+  `kernel32.dll` by hand, which would need `unsafe` to pass the `OVERLAPPED`
+  pointer. `x/sys` is maintained by the Go team and has no dependencies of its
+  own. An OS advisory lock is used rather than an `O_EXCL` PID file
   specifically because of stale locks: the kernel releases the lock when the
   process exits for any reason, `SIGKILL` and panics included, so there is never
   a leftover lock to clear by hand. A PID file outlives the crash and forces the
@@ -1171,9 +1175,10 @@ Supply-chain measures in both workflows:
 
   Recording those tool hashes in this repo's own `go.sum` (via a Go `tool`
   directive) was considered and rejected: it would pull the tools' dependency
-  trees into `go.mod` as requirements, and keeping the module at exactly one
-  dependency with no transitive ones is worth more than re-pinning something the
-  checksum database already pins.
+  trees into `go.mod` as requirements, and keeping the module at two
+  dependencies (`BurntSushi/toml` and `golang.org/x/sys`) with no transitive
+  ones is worth more than re-pinning something the checksum database already
+  pins.
 
 Release checklist:
 
