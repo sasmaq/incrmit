@@ -466,3 +466,14 @@ setgid, and sticky bits are dropped, a hard link is broken
 .Pq other names keep the old contents ,
 a symlink becomes a regular file, and ownership, extended attributes, and ACLs
 are those of a new file created by the running user.
+.Pp
+Names and lines read from files are escaped before they are printed, so a file
+cannot send escape sequences to the terminal.
+A name holding a control character, a bidirectional override, or a byte that is
+not UTF-8 is shown Go-quoted; in dry-run context such characters are shown as
+escapes in place.
+Only the display is escaped: files are opened and recorded under their real
+names.
+.Cm discover
+skips a file whose name is not valid UTF-8, with a warning, because a TOML
+config cannot hold it.

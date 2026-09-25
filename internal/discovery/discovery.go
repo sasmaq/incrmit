@@ -166,12 +166,19 @@ func DiscoverWithLimit(root string, maxBytes int64, ignore ...string) ([]Result,
 // ignore entries. A description of the ignore option is always written above
 // them; when no patterns are carried over, a commented-out example is emitted in
 // their place so the feature is discoverable without reading the docs.
+//
+// A path that is not valid UTF-8 is an error: a TOML string cannot hold it, and
+// writing it anyway would produce a config that nothing can load. Callers drop
+// such results first (the discover command warns about each one).
 func Generate(results []Result, ignore ...string) ([]byte, error) {
 	cfg := config.Config{
 		Ignore: ignore,
 		Files:  make([]config.FileEntry, 0, len(results)),
 	}
 	for _, r := range results {
+		if !utf8.ValidString(r.Path) {
+			return nil, fmt.Errorf("discovery: %q cannot be listed in a config: its name is not valid UTF-8", r.Path)
+		}
 		seen := make(map[string]struct{}, len(r.Occurrences))
 		for _, o := range r.Occurrences {
 			v := o.Version.String()

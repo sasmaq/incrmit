@@ -163,7 +163,9 @@ func renderPreview(rows []previewRow, common version.Version, drifted bool) stri
 	}
 	table = append(table, header)
 	for _, r := range rows {
-		cells := []string{r.path, r.current.String(), r.patch.String(), r.minor.String(), r.major.String()}
+		// The path is rendered before the widths are measured, so a name that
+		// needs escaping still lines up with the rest of its column.
+		cells := []string{displayName(r.path), r.current.String(), r.patch.String(), r.minor.String(), r.major.String()}
 		if drifted {
 			mark := ""
 			if !r.inSync {

@@ -398,3 +398,15 @@ func TestDiscoverAwkwardNames(t *testing.T) {
 		}
 	}
 }
+
+// Generate refuses a path that is not UTF-8 instead of writing a config that
+// cannot be loaded: TOML strings must be UTF-8 and cannot escape a raw byte.
+func TestGenerateRefusesNonUTF8Path(t *testing.T) {
+	results := []Result{{
+		Path:        "caf\xe9.txt",
+		Occurrences: []Occurrence{{Version: version.Version{Major: 1, Minor: 2, Patch: 3}}},
+	}}
+	if data, err := Generate(results); err == nil || !strings.Contains(err.Error(), "not valid UTF-8") {
+		t.Errorf("Generate = %q, %v; want an error naming the UTF-8 problem", data, err)
+	}
+}

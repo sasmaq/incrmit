@@ -1209,20 +1209,36 @@ output, retitle the window, plant a fake hyperlink, or — on terminals that
 honor OSC 52 — write to the clipboard. The same bytes also reach CI logs, which
 render ANSI.
 
-- [ ] Add one function in `internal/cli` that renders untrusted text for the
+- [x] Add one function in `internal/cli` that renders untrusted text for the
       terminal, so that every character printed is either printable or a
       visible escape. Escape the C0 controls (`ESC`, `CR`, `BS`, `BEL`, ...),
       `DEL`, the C1 controls (U+0080–U+009F, and the raw byte `0x9B`, which some
       terminals read as a one-byte CSI), invalid UTF-8, and the bidirectional
       overrides and isolates (U+202A–U+202E, U+2066–U+2069) that make a line
       display in a different order than its bytes. Printable non-ASCII (`é`,
-      `版本`) passes through unchanged. Use Go-style escapes (`\x1b`, `‮`)
+      `版本`) passes through unchanged. Use Go-style escapes (`\x1b`, `\u202e`)
       so the output matches what the `%q` sites already print. Two decisions
       to make and record: whether a backslash is escaped (unambiguous output
       wants `\\`, but Windows paths would print doubled; escaping it only in a
       string that needed another escape is one answer), and whether a tab in
       context text is shown as a space rather than as `\t`.
-- [ ] Apply it at every site that prints bytes `incrmit` did not produce: the
+      It became two layers in `internal/cli/display.go` rather than one
+      function, because names and text want different things. `displayName`
+      renders a name unchanged when every character is printable
+      (`strconv.IsPrint`) and Go-quoted otherwise — the same predicate and
+      escapes `%q` already uses, so bidi and zero-width characters are covered
+      with no hand-kept list. `terminalWriter` wraps stdout and stderr in
+      `Main` and escapes in place whatever still arrives, and it is the actual
+      guarantee: it also catches the `flag` package, which echoes an unknown
+      flag raw, and any print site written later. The backslash question was
+      settled by the leading quote: a quoted rendering always starts with `"`,
+      an unquoted one never does (a printable name beginning with `"` is
+      quoted too), so Windows paths print as typed and the rendering is still
+      injective. Tabs are kept rather than turned into spaces: a tab only moves
+      the cursor forward, and it is how Makefile context is indented. A tab in
+      a name is still quoted. Escaping is always on, TTY or not, because CI
+      logs are not a terminal and render ANSI all the same.
+- [x] Apply it at every site that prints bytes `incrmit` did not produce: the
       `discover --dry-run` context, every path (discovered, listed in the
       config, recorded in the journal for `undo`, and the `--path`, `--output`,
       and `--file` values), the `(ignoring: …)` echo, the `preview` table, and
@@ -1230,12 +1246,27 @@ render ANSI.
       path, and `fsErrorMessage` prints its default branch with `%v`. The `%q`
       sites escape through `strconv` already and need no change. In `preview`,
       measure column widths on the escaped text so the table still lines up.
-- [ ] Escape for display only. The name used to open, lock, and rename a file,
+      Every name argument in `cli.go`, `preview.go`, and `projectlock.go` goes
+      through `displayName`, and `fsErrorMessage` renders the name itself, so
+      its callers pass the raw path. It also drops an `*fs.PathError`'s own
+      path, wrapped or not, which repeated the name raw ahead of the reason
+      (`reading X: stat X: file name too long`). Context lines and wrapped error text are left to
+      the writer, which escapes in place without quoting.
+- [x] Escape for display only. The name used to open, lock, and rename a file,
       and the name written to the config and the journal, must stay the raw
       bytes. TOML already escapes control characters in a string, so a name
       holding `ESC` round-trips exactly. Test that such a file is bumped, is
       shown escaped, and is still recorded under its real name.
-- [ ] Add an end-to-end regression test over a hostile tree: file names and
+      True for control characters, tabs, newlines, and bidi characters, and
+      checked in the config and the journal. It is false for a name that is not
+      UTF-8, which Linux allows: TOML strings must be UTF-8 with no escape for
+      a raw byte, and the encoder wrote the byte as-is, so `discover` produced
+      a config every later command refused to load. `discover` now skips such
+      a file with a warning (`excludeUnlistable`), and `discovery.Generate`
+      refuses one as a backstop. The end-to-end case runs only where the file
+      system accepts such a name, so on Linux (CI) but not macOS; unit tests
+      cover both functions everywhere.
+- [x] Add an end-to-end regression test over a hostile tree: file names and
       contents holding `\x1b[2J`, `\x1b]0;title\x07`, an OSC 8 link, `CR`,
       `BS`, `BEL`, `0x9B`, UTF-8 C1 controls, bidi overrides, and invalid
       UTF-8. Run every command against it — `discover` with and without
@@ -1244,14 +1275,32 @@ render ANSI.
       undo). Assert that nothing on stdout or stderr holds a control character
       other than `\n`, or a bidi control. This test, rather than a review, is
       what catches a print site added later without the escaping.
-- [ ] Add a fuzz target for the escaping function: for arbitrary bytes, the
+      `internal/cli/hostile_test.go`, with tab allowed as well as `\n` per the
+      decision above. With the writer in place a forgotten site is still safe,
+      so the test also asserts that every hostile name appears only in its
+      quoted form, which is what actually finds the site: dropping
+      `displayName` from undo's summary fails it, and so does removing the
+      writer. Text that `incrmit` does not format (the `flag` package's
+      message, an OS error for a `--path` it cannot walk) is checked for safety
+      only.
+- [x] Add a fuzz target for the escaping function: for arbitrary bytes, the
       output is valid UTF-8 with no control or bidi character, printable input
       comes back unchanged, and distinct inputs never render the same (so the
       escaping cannot make two different names look alike).
-- [ ] Document the behavior in `README.md` (discovery and the dry run: names
+      Two targets, one per layer. `FuzzDisplayName` proves injectivity by
+      giving it a left inverse: an unquoted rendering is the name itself, and
+      a quoted one reads back with `strconv.Unquote` to exactly the name.
+      `FuzzTerminalText` checks that the output is valid UTF-8 holding only
+      printable characters, newlines, and tabs, and that it is unchanged
+      exactly when the input was already safe. About 6M inputs between them,
+      nothing found.
+- [x] Document the behavior in `README.md` (discovery and the dry run: names
       and context are shown with control characters escaped), in
       `doc/DEVELOPMENT.md` next to the scan boundaries, in the man page, and in
       `CHANGELOG.md`.
+      `README.md` (Discovery, plus the UTF-8 skip among the scan boundaries),
+      `doc/DEVELOPMENT.md` §9.5 Terminal output with the decisions above, the
+      man page's CAVEATS, and a Security entry in `CHANGELOG.md`.
 
 ## Milestone 32 — Release Tagging Helper (the `tag` command)
 

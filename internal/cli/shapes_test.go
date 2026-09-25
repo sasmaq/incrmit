@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/sasmaq/incrmit/internal/discovery"
 )
 
 // The tests in this file drive the pathological file shapes of
@@ -289,5 +291,22 @@ func TestBumpHardLinkedNamesInConfig(t *testing.T) {
 		if got, _ := os.ReadFile(filepath.Join(dir, name)); string(got) != "1.2.4\n" {
 			t.Errorf("%s = %q, want 1.2.4", name, got)
 		}
+	}
+}
+
+// A discovered name that is not UTF-8 cannot be written into a TOML config, so
+// discover drops it with a warning that names it, escaped, and keeps the rest.
+// (Linux allows such names; the end-to-end case is in hostile_test.go, which
+// skips it where the file system refuses one.)
+func TestExcludeUnlistableWarnsAndKeepsTheRest(t *testing.T) {
+	results := []discovery.Result{{Path: "VERSION"}, {Path: "caf\xe9.txt"}, {Path: "docs/版本.md"}}
+	var stderr bytes.Buffer
+	kept := excludeUnlistable(results, &stderr)
+
+	if len(kept) != 2 || kept[0].Path != "VERSION" || kept[1].Path != "docs/版本.md" {
+		t.Errorf("kept %v, want VERSION and docs/版本.md", kept)
+	}
+	if want := `incrmit: warning: skipping "caf\xe9.txt": its name is not valid UTF-8`; !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr.String(), want)
 	}
 }

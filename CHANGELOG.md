@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Names and file contents no longer reach the terminal raw. A file in a scanned
+  tree could carry escape sequences in its name or on its version line, and
+  `discover --dry-run` — the command meant for trees you do not own — printed
+  them as they were, letting the file clear the screen, retitle the window,
+  plant a hyperlink, or write to the clipboard on terminals that allow it. All
+  output now passes through an escaping layer: a name with a control character,
+  a bidirectional override, or a byte that is not UTF-8 is shown Go-quoted
+  (`"invoice\u202efdp.exe"`), and such characters in a context line appear as
+  escapes (`\x1b[2J`). Ordinary names and text print unchanged, and files are
+  still read, written, and recorded under their real names.
+
 ### Fixed
+
+- `incrmit discover` on Linux no longer writes a config that cannot be loaded
+  when a file name is not valid UTF-8. TOML cannot hold such a name, so the file
+  is now skipped with a warning.
+- A filesystem error names the file once, rather than repeating its raw path
+  after the name (`reading X: stat X: file name too long`).
 
 - `incrmit discover` no longer slows to a crawl on minified files. Each
   occurrence kept a copy of its whole line and recounted lines from the top of

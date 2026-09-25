@@ -49,7 +49,7 @@ func acquireProject(dir string, wait bool, stderr io.Writer) (*lock.Lock, int) {
 	}
 
 	if errors.Is(err, lock.ErrContended) {
-		fprintf(stderr, "incrmit: another incrmit run is already writing in %s\n", dir)
+		fprintf(stderr, "incrmit: another incrmit run is already writing in %s\n", displayName(dir))
 		fprintln(stderr, "Wait for it to finish and run again, or pass --wait to queue behind it.")
 		return nil, ExitError
 	}
@@ -64,7 +64,7 @@ func acquireProject(dir string, wait bool, stderr io.Writer) (*lock.Lock, int) {
 	// written. Warn and carry on: a tool that cannot bump at all is worse than
 	// one that cannot detect a second run.
 	if lk.Degraded() {
-		fprintf(stderr, "incrmit: warning: cannot lock %s: %v\n", lk.Path(), lk.Reason())
+		fprintf(stderr, "incrmit: warning: cannot lock %s: %v\n", displayName(lk.Path()), lk.Reason())
 		fprintln(stderr, "incrmit: warning: continuing unlocked; a concurrent incrmit run could erase this one's work.")
 	}
 	return lk, ExitOK

@@ -376,6 +376,9 @@ reads ordinary files:
   files, so this bounds how much a scan reads no matter what the tree contains.
   Use [`--max-file-size`](#limiting-how-much-is-read) to raise, lower, or remove
   the cap. Files listed in the config by hand are not subject to it.
+- **A name that is not valid UTF-8 is skipped, with a warning.** Linux allows
+  any bytes in a file name, but a TOML config can only hold UTF-8, so listing
+  such a file would produce a config that nothing could load.
 
 ```bash
 incrmit discover
@@ -419,6 +422,17 @@ Line numbers count `\n`, `\r\n`, and a lone `\r` as line breaks, so they match
 what an editor shows whatever the file's line endings. A long line — a minified
 bundle is one line from start to finish — is clipped to 80 bytes on each side of
 the version, with `...` marking each cut.
+
+Whatever `incrmit` prints from the files it reads — names and context lines, in
+every command, on stdout and stderr — is escaped before it reaches the
+terminal, so a file in the tree cannot use escape sequences to clear the
+screen, retitle the window, plant a link, or write to the clipboard. A name
+holding a control character, a bidirectional override, or a byte that is not
+UTF-8 is shown Go-quoted (`"invoice\u202efdp.exe"`); an ordinary name, spaces
+and non-ASCII included, is shown exactly as it is. In a context line such
+characters appear as escapes in place (`\x1b[2J`), and tabs are kept. Only the
+display changes: the file is read, written, and recorded in `incrmit.toml`
+under its real name.
 
 When the config has an `ignore` list, `--dry-run` notes the applied rules on a
 `(ignoring: …)` line and, like a normal run, never lists any skipped path as a

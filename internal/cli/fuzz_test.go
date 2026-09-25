@@ -2,7 +2,10 @@ package cli
 
 import (
 	"math"
+	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzParseSize checks the --max-file-size parser against arbitrary strings:
@@ -74,6 +77,67 @@ func FuzzFormatSize(f *testing.F) {
 		}
 		if back != n {
 			t.Errorf("formatSize(%d) = %q, which reads back as %d", n, s, back)
+		}
+	})
+}
+
+// displaySeeds are the characters terminals act on, the ones that make text
+// display out of order, and the look-alikes that must stay distinguishable.
+var displaySeeds = []string{
+	"VERSION", "versión-版本.txt", `C:\src\VERSION`, "",
+	"\x1b[2J", "\x1b]0;title\x07", "\x1b]8;;http://x\x1b\\y\x1b]8;;\x1b\\",
+	"a\rb", "a\bb", "\x7f", "\x9b31m", "\u009b31m", "caf\xe9", "\xff\xfe",
+	"invoice\u202efdp.exe", "\u2066x\u2069", "VER\u200bSION", "a\u00a0b",
+	`"quoted"`, `\x1b`, "a\tb", "a\nb",
+}
+
+// FuzzDisplayName checks the two properties a rendered name must have: nothing
+// in it is a character a terminal would act on, and it can always be read back
+// to the one name it came from. The second is what stops a hostile file from
+// being named to look like another: a function with a left inverse is
+// injective, so no two names render alike.
+func FuzzDisplayName(f *testing.F) {
+	for _, s := range displaySeeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		out := displayName(name)
+		if !isPrintable(out) {
+			t.Fatalf("displayName(%q) = %q holds a character that is not printable", name, out)
+		}
+		if strings.HasPrefix(out, `"`) {
+			back, err := strconv.Unquote(out)
+			if err != nil || back != name {
+				t.Fatalf("displayName(%q) = %s, which reads back as %q (%v)", name, out, back, err)
+			}
+		} else if out != name {
+			t.Fatalf("displayName(%q) = %q: an unquoted rendering must be the name itself", name, out)
+		}
+		if isPrintable(name) && !strings.HasPrefix(name, `"`) && out != name {
+			t.Fatalf("displayName changed the printable name %q to %q", name, out)
+		}
+	})
+}
+
+// FuzzTerminalText checks what terminalWriter guarantees for every byte incrmit
+// prints: the result is valid UTF-8 holding nothing but printable characters,
+// newlines, and tabs, and text that was already safe passes through unchanged.
+func FuzzTerminalText(f *testing.F) {
+	for _, s := range displaySeeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		out := terminalText(s)
+		if !utf8.ValidString(out) {
+			t.Fatalf("terminalText(%q) = %q is not valid UTF-8", s, out)
+		}
+		for _, r := range out {
+			if r != '\n' && r != '\t' && !strconv.IsPrint(r) {
+				t.Fatalf("terminalText(%q) = %q still holds %U", s, out, r)
+			}
+		}
+		if isTerminalSafe(s) != (out == s) {
+			t.Fatalf("terminalText(%q) = %q, but isTerminalSafe says %v", s, out, isTerminalSafe(s))
 		}
 	})
 }

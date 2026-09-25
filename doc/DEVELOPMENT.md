@@ -903,6 +903,66 @@ place those characters are patterns; bracketing a metacharacter (`[*]`) is the
 way to match it literally, since backslashes there are normalized to slashes
 and cannot escape anything.
 
+### 9.5 Terminal output
+
+`incrmit` prints bytes it did not write: file names from the tree it scanned,
+lines of those files as dry-run context, paths recorded in the config and the
+journal, and OS errors that embed them. `discover` is meant for trees the user
+does not own, so any of these can carry an escape sequence that clears the
+screen, retitles the window, plants an OSC 8 hyperlink, or — on terminals that
+honor OSC 52 — writes to the clipboard, and CI logs render ANSI as well.
+`internal/cli/display.go` keeps all of it off the terminal in two layers:
+
+- **`terminalWriter` is the guarantee.** `cli.Main` wraps stdout and stderr in
+  it, so every byte printed passes through `terminalText`, which replaces each
+  character that is not printable (`strconv.IsPrint`), a newline, or a tab with
+  its Go escape: `\x1b`, `\u202e`, and `\xff` for a byte that is not UTF-8. That
+  covers the C0 and C1 controls, `DEL`, the raw one-byte CSI `0x9B`, and every
+  format character, the bidirectional overrides and isolates among them. It
+  also covers output `incrmit` does not format itself, such as the `flag`
+  package echoing an unknown flag, and any print site written later.
+- **`displayName` makes a name readable under it.** Paths, flag values, and
+  ignore patterns are rendered unchanged when every character is printable,
+  and as a Go-quoted string otherwise, which is also how the messages that
+  format a path with `%q` already show one. The rendering is injective: a
+  quoted rendering always starts with `"`, an unquoted one never does (a
+  printable name that begins with `"` is quoted too), and a quoted one reads
+  back with `strconv.Unquote`, so no hostile file can be named to look like
+  another one. The writer alone would be safe but ambiguous, since a literal
+  `\x1b` in a name reads the same as an escape character.
+
+Decisions recorded with it:
+
+- **Tabs pass through the writer** but are quoted in a name. A tab only moves
+  the cursor forward, so it cannot overprint or hide anything, and it is how
+  Makefiles and Go files indent — exactly the context lines it appears in. In a
+  name it would make two names look alike.
+- **A backslash is escaped only inside a quoted name.** Windows paths print as
+  typed, and injectivity comes from the leading quote rather than from
+  escaping every backslash.
+- **Escaping is always on**, not only when stdout is a terminal: CI logs are
+  not a terminal and render escape sequences anyway, and output that does not
+  depend on where it goes is easier to test and to diff.
+- **Only the display is escaped.** The name used to open, lock, and rename a
+  file, and the one written to the config and the journal, stay the raw bytes;
+  TOML escapes control characters in a string itself, so such a name
+  round-trips exactly.
+- **`fsErrorMessage` drops an `*fs.PathError`'s own path**, wrapped or not,
+  which repeats the name raw ahead of the reason, and keeps only the reason
+  after the name it has already rendered.
+- **A discovered name that is not UTF-8 is skipped with a warning**
+  (`excludeUnlistable`). Linux allows any bytes in a name, but a TOML string
+  must be UTF-8 and has no escape for a raw byte, so the encoder wrote such a
+  name as-is and produced a config every later command refused to load.
+  `discovery.Generate` refuses one as well, as a backstop.
+
+`internal/cli/hostile_test.go` runs every command over a tree of hostile names
+and contents, the failure paths that name a file included, and asserts that
+nothing printed holds a character other than a printable one, a newline, or a
+tab. It also asserts that every hostile name appears only in its quoted form,
+which is how a print site that forgot `displayName` is found: the writer would
+have kept the output safe, so only that check notices the ambiguity.
+
 ## 10. Error Handling
 
 - Missing config file: clear message; suggest running `incrmit discover`.
@@ -997,7 +1057,11 @@ incrmit/
   as LF, and `TestShapeFixturesKeepTheirShape` fails if a fixture loses the
   shape it is there to test, rather than letting its golden test pass while
   proving nothing.
-- Fuzz targets over the parsers, the rewriter, and discovery's scan (§12.1).
+- Terminal output (`internal/cli/hostile_test.go`, `display_test.go`): every
+  command over a tree of hostile names and contents prints nothing a terminal
+  would act on, and names each file only in its quoted form (§9.5).
+- Fuzz targets over the parsers, the rewriter, discovery's scan, and the
+  terminal escaping (§12.1).
 
 ### 12.1 Fuzzing
 
@@ -1045,6 +1109,11 @@ What each target proves:
   and its context holds the token, no line terminator, and no more than the
   context window. The scan finds lines with a forward-only cursor to stay linear
   on minified files, and a cursor has state for `\r\n` to be counted twice in.
+- `cli.FuzzDisplayName` / `cli.FuzzTerminalText` — a rendered name is
+  printable and reads back, with `strconv.Unquote` when quoted, to the one name
+  it came from, which is what makes the rendering injective; and escaped text
+  is valid UTF-8 holding only printable characters, newlines, and tabs, with
+  text that was already safe passed through unchanged.
 - `config.FuzzLoad` — the config is trusted input, but a truncated or
   hand-mangled file is not a hostile one: arbitrary bytes must produce a
   `config: ...` error, never a panic, and never a config that loaded into a

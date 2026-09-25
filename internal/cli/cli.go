@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sasmaq/incrmit/internal/buildinfo"
 	"github.com/sasmaq/incrmit/internal/config"
@@ -41,8 +42,18 @@ func fprint(w io.Writer, s string) {
 // fsErrorMessage renders a clear, consistent message for a filesystem error,
 // calling out permission and missing-file cases explicitly rather than relying
 // on the (often path-duplicated) raw OS error text. action is a verb such as
-// "reading" or "writing"; display is the path as the user knows it.
+// "reading" or "writing"; display is the path as the user knows it, rendered
+// with displayName.
 func fsErrorMessage(action, display string, err error) string {
+	display = displayName(display)
+	// An *fs.PathError, wrapped or not, repeats the path raw ahead of the reason
+	// ("stat <path>: file name too long"). The name has already been given,
+	// rendered safely, so keep only the reason: which file and why is the
+	// message, and which step of reading or writing it failed at is not.
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		err = pathErr.Err
+	}
 	var tooLarge *files.TooLargeError
 	switch {
 	case errors.Is(err, fs.ErrPermission):
@@ -72,6 +83,9 @@ const (
 // selected command, and returns a process exit code. All human-readable output
 // goes to stdout; errors go to stderr.
 func Main(args []string, stdout, stderr io.Writer) int {
+	// Everything printed from here on may carry bytes from the files and names
+	// incrmit was pointed at; see display.go.
+	stdout, stderr = terminalWriter{stdout}, terminalWriter{stderr}
 	if len(args) > 0 {
 		switch args[0] {
 		case "discover":
@@ -203,7 +217,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		fprintf(stdout, "Dry run: would apply a %s (no files changed)\n", label)
 		for _, g := range groups {
 			for _, e := range g.entries {
-				fprintf(stdout, "  %s: %s -> %s\n", g.display, e.oldVer, e.newVer)
+				fprintf(stdout, "  %s: %s -> %s\n", displayName(g.display), e.oldVer, e.newVer)
 			}
 		}
 		return ExitOK
@@ -219,7 +233,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		updated, counts := files.SetKnownVersions(g.data, repl)
 		for _, e := range g.entries {
 			if counts[e.oldVer.String()] == 0 {
-				fprintf(stderr, "incrmit: %s: %v\n", g.display, fmt.Errorf("%w: %s", files.ErrVersionNotFound, e.oldVer))
+				fprintf(stderr, "incrmit: %s: %v\n", displayName(g.display), fmt.Errorf("%w: %s", files.ErrVersionNotFound, e.oldVer))
 				return ExitNoVersion
 			}
 		}
@@ -263,7 +277,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	fprintf(stdout, "Applied a %s to %d file(s):\n", label, len(groups))
 	for _, g := range groups {
 		for _, e := range g.entries {
-			fprintf(stdout, "  %s: %s -> %s\n", g.display, e.oldVer, e.newVer)
+			fprintf(stdout, "  %s: %s -> %s\n", displayName(g.display), e.oldVer, e.newVer)
 		}
 	}
 	return ExitOK
@@ -302,7 +316,7 @@ func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Write
 			e := &groups[i].entries[j]
 			newVer, err := bump(e.oldVer)
 			if err != nil {
-				fprintf(stderr, "incrmit: %s: %v\n", groups[i].display, err)
+				fprintf(stderr, "incrmit: %s: %v\n", displayName(groups[i].display), err)
 				return nil, classify(err)
 			}
 			e.newVer = newVer
@@ -340,13 +354,13 @@ func readGroups(targets []target, maxBytes int64, stderr io.Writer) ([]fileGroup
 		if tgt.knownVer != "" {
 			oldVer, err = version.Parse(tgt.knownVer)
 			if err != nil {
-				fprintf(stderr, "incrmit: %s: invalid version %q in config: %v\n", tgt.display, tgt.knownVer, err)
+				fprintf(stderr, "incrmit: %s: invalid version %q in config: %v\n", displayName(tgt.display), tgt.knownVer, err)
 				return nil, ExitNoVersion
 			}
 		} else {
 			oldVer, err = files.FindVersion(groups[gi].data)
 			if err != nil {
-				fprintf(stderr, "incrmit: %s: %v\n", tgt.display, err)
+				fprintf(stderr, "incrmit: %s: %v\n", displayName(tgt.display), err)
 				return nil, classify(err)
 			}
 		}
@@ -586,18 +600,19 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return classify(err)
 	}
 	results = excludeOutput(results, opts.path, opts.output)
+	results = excludeUnlistable(results, stderr)
 	if len(results) == 0 {
-		fprintf(stderr, "incrmit: no version-bearing files found under %s\n", opts.path)
+		fprintf(stderr, "incrmit: no version-bearing files found under %s\n", displayName(opts.path))
 		return ExitNoVersion
 	}
 
 	if opts.dryRun {
-		fprintf(stdout, "Discovered %d file(s) under %s (no config written):\n", len(results), opts.path)
+		fprintf(stdout, "Discovered %d file(s) under %s (no config written):\n", len(results), displayName(opts.path))
 		if len(ignore) > 0 {
-			fprintf(stdout, "  (ignoring: %s)\n", strings.Join(ignore, ", "))
+			fprintf(stdout, "  (ignoring: %s)\n", strings.Join(displayNames(ignore), ", "))
 		}
 		for _, r := range results {
-			fprintf(stdout, "  %s:\n", r.Path)
+			fprintf(stdout, "  %s:\n", displayName(r.Path))
 			for _, o := range r.Occurrences {
 				fprintf(stdout, "    L%d: %s\n", o.Line, o.Text)
 			}
@@ -615,10 +630,10 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return classify(err)
 	}
 
-	fprintf(stdout, "Wrote %s with %d file(s):\n", opts.output, len(results))
+	fprintf(stdout, "Wrote %s with %d file(s):\n", displayName(opts.output), len(results))
 	for _, r := range results {
 		for _, v := range distinctVersions(r.Occurrences) {
-			fprintf(stdout, "  %s: %s\n", r.Path, v)
+			fprintf(stdout, "  %s: %s\n", displayName(r.Path), v)
 		}
 	}
 	return ExitOK
@@ -673,6 +688,24 @@ func parseDiscoverFlags(args []string, stdout, stderr io.Writer) (discoverOption
 		return opts, ExitUsage
 	}
 	return opts, ExitOK
+}
+
+// excludeUnlistable drops, with a warning, any discovered result whose path is
+// not valid UTF-8. Such names exist on Linux, where a file name is any bytes,
+// but a TOML string must be UTF-8 and has no escape for a raw byte: writing one
+// into the config produces a file that every later command refuses to load.
+// Skipping it, and saying so, keeps the rest of the tree discoverable; the dry
+// run skips it too, so it shows what the config would hold.
+func excludeUnlistable(results []discovery.Result, stderr io.Writer) []discovery.Result {
+	kept := results[:0]
+	for _, r := range results {
+		if !utf8.ValidString(r.Path) {
+			fprintf(stderr, "incrmit: warning: skipping %s: its name is not valid UTF-8, which a TOML config cannot hold\n", displayName(r.Path))
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept
 }
 
 // excludeOutput drops any discovered result that refers to the config file the
@@ -804,7 +837,7 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 		fprintln(stdout, "Dry run: would undo the most recent bump (no files changed)")
 		for _, g := range groups {
 			for _, c := range g.changes {
-				fprintf(stdout, "  %s: %s -> %s\n", c.Path, c.New, c.Old)
+				fprintf(stdout, "  %s: %s -> %s\n", displayName(c.Path), c.New, c.Old)
 			}
 		}
 		return ExitOK
@@ -861,7 +894,7 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	fprintf(stdout, "Undid the most recent bump in %d file(s):\n", len(groups))
 	for _, g := range groups {
 		for _, c := range g.changes {
-			fprintf(stdout, "  %s: %s -> %s\n", c.Path, c.New, c.Old)
+			fprintf(stdout, "  %s: %s -> %s\n", displayName(c.Path), c.New, c.Old)
 		}
 	}
 	return ExitOK
@@ -908,7 +941,7 @@ func planReverts(entry history.Entry, stderr io.Writer) ([]revertGroup, int) {
 			oldVer, oldErr := version.Parse(c.Old)
 			newVer, newErr := version.Parse(c.New)
 			if oldErr != nil || newErr != nil {
-				fprintf(stderr, "incrmit: %s: recorded versions %q -> %q are not valid (refusing to undo)\n", g.display, c.Old, c.New)
+				fprintf(stderr, "incrmit: %s: recorded versions %q -> %q are not valid (refusing to undo)\n", displayName(g.display), c.Old, c.New)
 				return nil, ExitNoVersion
 			}
 			repl = append(repl, files.Replacement{Old: newVer, New: oldVer})
@@ -916,7 +949,7 @@ func planReverts(entry history.Entry, stderr io.Writer) ([]revertGroup, int) {
 		updated, counts := files.SetKnownVersions(g.updated, repl)
 		for _, c := range g.changes {
 			if counts[c.New] == 0 {
-				fprintf(stderr, "incrmit: %s: expected version %s from the last bump is no longer present; the file was changed since (refusing to undo)\n", g.display, c.New)
+				fprintf(stderr, "incrmit: %s: expected version %s from the last bump is no longer present; the file was changed since (refusing to undo)\n", displayName(g.display), c.New)
 				return nil, ExitError
 			}
 		}
