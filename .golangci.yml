@@ -4,6 +4,7 @@ linters:
   default: standard
   enable:
     - bodyclose
+    - depguard
     - errcheck
     - errorlint
     - govet
@@ -14,6 +15,16 @@ linters:
     - unconvert
     - unparam
     - unused
+  settings:
+    depguard:
+      rules:
+        no-os-exec:
+          list-mode: lax
+          files:
+            - $all
+          deny:
+            - pkg: os/exec
+              desc: incrmit does not spawn subprocesses; call cli.Main in-process instead
 
 formatters:
   enable:

@@ -2,59 +2,23 @@ package main
 
 import (
 	"bytes"
-	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sasmaq/incrmit/internal/cli"
 )
 
-// binPath is the compiled incrmit binary used by the end-to-end tests. It is
-// built once in TestMain so the tests exercise the real program (flag parsing,
-// dispatch, and process exit codes) rather than calling into the cli package
-// in-process.
-var binPath string
-
-func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "incrmit-e2e")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "e2e: temp dir:", err)
-		os.Exit(1)
-	}
-	binPath = filepath.Join(dir, "incrmit")
-	if out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "e2e: build failed: %v\n%s", err, out)
-		_ = os.RemoveAll(dir)
-		os.Exit(1)
-	}
-
-	code := m.Run()
-	_ = os.RemoveAll(dir)
-	os.Exit(code)
-}
-
-// runBin runs the compiled binary in workDir and returns its exit code plus
-// captured stdout/stderr.
-func runBin(t *testing.T, workDir string, args ...string) (int, string, string) {
+// runMain runs the program's entry point, cli.Main, in workDir and returns its
+// exit code plus captured stdout/stderr. It calls cli.Main in-process with
+// the same arguments main passes, so the tests still cover flag parsing,
+// dispatch, and exit codes without building or spawning a binary.
+func runMain(t *testing.T, workDir string, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.Command(binPath, args...)
-	cmd.Dir = workDir
+	t.Chdir(workDir)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	code := 0
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			code = ee.ExitCode()
-		} else {
-			t.Fatalf("running binary: %v", err)
-		}
-	}
+	code := cli.Main(args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -74,7 +38,7 @@ func TestE2EDefaultBump(t *testing.T) {
 	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\n")
 	writeFile(t, dir, "VERSION", "1.2.3\n")
 
-	code, stdout, stderr := runBin(t, dir)
+	code, stdout, stderr := runMain(t, dir)
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -91,7 +55,7 @@ func TestE2EMinorAndDryRun(t *testing.T) {
 	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\n")
 	writeFile(t, dir, "VERSION", "1.2.3\n")
 
-	code, stdout, _ := runBin(t, dir, "--minor", "--dry-run")
+	code, stdout, _ := runMain(t, dir, "--minor", "--dry-run")
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -106,7 +70,7 @@ func TestE2EMinorAndDryRun(t *testing.T) {
 func TestE2ESingleFileMajor(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "V", "0.9.0\n")
-	code, stdout, stderr := runBin(t, dir, "--file", "V", "--major")
+	code, stdout, stderr := runMain(t, dir, "--file", "V", "--major")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -123,7 +87,7 @@ func TestE2EDiscover(t *testing.T) {
 	writeFile(t, dir, "VERSION", "1.2.3\n")
 	writeFile(t, dir, "package.json", `{"version":"2.0.1"}`)
 
-	code, stdout, stderr := runBin(t, dir, "discover")
+	code, stdout, stderr := runMain(t, dir, "discover")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -140,7 +104,7 @@ func TestE2EPreview(t *testing.T) {
 	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n")
 	writeFile(t, dir, "VERSION", "1.2.3\n")
 
-	code, stdout, stderr := runBin(t, dir, "preview")
+	code, stdout, stderr := runMain(t, dir, "preview")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -164,14 +128,14 @@ func TestE2EUndo(t *testing.T) {
 	writeFile(t, dir, "incrmit.toml", "[[files]]\npath = \"VERSION\"\nversion = \"1.2.3\"\n")
 	writeFile(t, dir, "VERSION", "1.2.3\n")
 
-	if code, _, stderr := runBin(t, dir, "--minor"); code != 0 {
+	if code, _, stderr := runMain(t, dir, "--minor"); code != 0 {
 		t.Fatalf("bump exit = %d, stderr = %q", code, stderr)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "VERSION")); string(got) != "1.3.0\n" {
 		t.Fatalf("VERSION after bump = %q, want 1.3.0", got)
 	}
 
-	code, stdout, stderr := runBin(t, dir, "undo")
+	code, stdout, stderr := runMain(t, dir, "undo")
 	if code != 0 {
 		t.Fatalf("undo exit = %d, stderr = %q", code, stderr)
 	}
@@ -183,7 +147,7 @@ func TestE2EUndo(t *testing.T) {
 	}
 
 	// A second undo has nothing left and exits 0 with a friendly message.
-	code, stdout, stderr = runBin(t, dir, "undo")
+	code, stdout, stderr = runMain(t, dir, "undo")
 	if code != 0 {
 		t.Fatalf("second undo exit = %d, stderr = %q", code, stderr)
 	}
@@ -193,7 +157,7 @@ func TestE2EUndo(t *testing.T) {
 }
 
 func TestE2EVersion(t *testing.T) {
-	code, stdout, stderr := runBin(t, t.TempDir(), "version")
+	code, stdout, stderr := runMain(t, t.TempDir(), "version")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -218,7 +182,7 @@ func TestE2EHelp(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, stdout, stderr := runBin(t, t.TempDir(), tt.args...)
+			code, stdout, stderr := runMain(t, t.TempDir(), tt.args...)
 			if code != 0 {
 				t.Fatalf("exit = %d, stderr = %q", code, stderr)
 			}
@@ -230,7 +194,7 @@ func TestE2EHelp(t *testing.T) {
 }
 
 func TestE2EUnknownCommand(t *testing.T) {
-	code, _, stderr := runBin(t, t.TempDir(), "bogus")
+	code, _, stderr := runMain(t, t.TempDir(), "bogus")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
@@ -256,7 +220,7 @@ func TestE2EExitCodes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, _, _ := runBin(t, tt.workDir, tt.args...)
+			code, _, _ := runMain(t, tt.workDir, tt.args...)
 			if code != tt.want {
 				t.Errorf("exit = %d, want %d", code, tt.want)
 			}

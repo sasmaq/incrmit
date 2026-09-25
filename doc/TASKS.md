@@ -1131,45 +1131,39 @@ read-only file. Those need fixtures.
       and `doc/DEVELOPMENT.md` — a documented limit is a feature, an undocumented
       one is a bug report waiting to be filed.
 
-## Milestone 32 — Git Integration (the `push` command)
+## Milestone 32 — Release Tagging Helper (the `tag` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
-no tag, no push. The gap is closed by one interactive command rather than a set
-of bump flags: `incrmit push` lists the versions recorded in `incrmit.toml`,
+no tag, no push. The gap is closed without incrmit ever running git: `os/exec`
+is banned in this repo (a `depguard` rule in `.golangci.yml`), so `incrmit tag`
+does the part only incrmit knows — which version to release — and hands the git
+part back as commands to run. It lists the versions recorded in `incrmit.toml`,
 the user picks one with the arrow keys and Enter (or quits without touching
-anything), and the tool tags that version and pushes the tag. Bump itself stays
-git-free — no `--commit`, no implicit tagging — so the default bump keeps
-working in a non-git directory exactly as it does today, and committing the
-bump is left to the user (or to a later milestone). Git access goes through the
-`git` binary rather than a Go git library: `push` does not reimplement git, it
-tags `HEAD` and pushes one ref through the user's own remotes, credential
-helpers, SSH config, and signing setup — exactly the parts an in-process
-library does not inherit. Shelling out also keeps the dependency list at one
-module, and makes `incrmit push` succeed wherever `git push` already does.
+anything), and it prints the `git tag` and `git push` commands for that
+version. incrmit never reads or writes the repository and never touches the
+network. Because the user's own `git` runs the commands, their remotes,
+credential helpers, SSH config, `insteadOf` rewrites, and signing setup all
+apply unchanged, and incrmit itself gains no runtime dependency on git. Bump
+stays git-free exactly as it is today.
 
-- [ ] Add an `internal/git` package that wraps the `git` binary with
-      `os/exec` (never a shell), and record the decision in
-      `doc/DEVELOPMENT.md`: a library such as `go-git` was rejected because it
-      ignores credential helpers, `~/.ssh/config`, `insteadOf`, and `gpg`
-      signing, and would add a large dependency tree to a project that has had
-      one module since `BurntSushi/toml`. Expose a narrow surface (locate repo,
-      HEAD hash and subject, tree status, list tags, create annotated tag, push
-      one ref) behind an interface the CLI tests can fake, and return typed
-      errors for "git not installed", "not a repository", "tag already exists",
-      "dirty tree", "no such remote", and "authentication failed".
-- [ ] Make the subprocess calls predictable: resolve the binary once with
-      `exec.LookPath("git")` and fail with a clear "git is required by
-      `incrmit push`" message (exit `1`) when it is absent; run every command
-      with `-C <repo root>` from `git rev-parse --show-toplevel`; pass
-      arguments as a slice with `--` before user-supplied values so a tag name
-      can never be read as a flag; and set `GIT_TERMINAL_PROMPT=0` so a missing
-      credential fails instead of blocking on an invisible prompt. Capture
-      stdout and stderr separately, and give every call a timeout so a hung
-      remote cannot wedge the command.
-- [ ] Add the `push` subcommand: dispatch it in `cli.Main` alongside `discover`,
+- [ ] Record the decision in `doc/DEVELOPMENT.md`: incrmit never starts a
+      subprocess, and `depguard` denies the `os/exec` import. A Go git library
+      such as `go-git` was rejected too: v5.19.2 adds 20 modules to a project
+      that has had one since `BurntSushi/toml` (a minimal program using it
+      builds to 9.1 MB against incrmit's 4.0 MB), and its push ignores
+      credential helpers, reads only `Hostname` and `Port` from
+      `~/.ssh/config` (no `IdentityFile`, no `ProxyJump`), and signs only with
+      an OpenPGP key loaded in-process (no gpg-agent, no SSH signing). Printing
+      the commands keeps all of those working. Replace the "Optional git
+      integration" bullet under Future Work with a pointer to this design.
+- [ ] Add the `tag` subcommand: dispatch it in `cli.Main` alongside `discover`,
       `preview`, and `undo`, add it to the top-level overview and to
-      `incrmit help push` via the centralized text in `internal/cli/help.go`,
+      `incrmit help tag` via the centralized text in `internal/cli/help.go`,
       and reject unknown arguments with exit `2` the way the other commands do.
+      The command is read-only, so it takes no `--dry-run`: the printed
+      commands are the preview. Thread stdin through `cli.Main` as an
+      `io.Reader`, with a way to ask whether it is a terminal, so the picker
+      (and Milestone 33's `--auto`) can be tested in-process.
 - [ ] Build the candidate list from `incrmit.toml`: collect the distinct tokens
       the `[[files]]` entries pin (`FileEntry.Token()`, so a prerelease is
       offered as `1.2.4-rc.1`, not `1.2.4`), order them by `version.Compare`
@@ -1186,13 +1180,14 @@ module, and makes `incrmit push` succeed wherever `git push` already does.
       and stdlib-adjacent; a full TUI framework would dwarf the tool and
       hand-rolled termios syscalls would mean per-platform code. Restore the
       terminal on every exit path, including a `SIGINT` handler, so a cancelled
-      prompt never leaves the shell without echo.
+      prompt never leaves the shell without echo. Draw the picker on stderr,
+      never stdout, so stdout carries only the final commands.
 - [ ] Define the key map and the redraw, and keep both testable: arrows arrive
       as `ESC [ A` / `ESC [ B`, so decode key events from a byte stream in a
       pure function that tests feed fixed sequences; accept `k`/`j` as aliases,
       wrap at the ends of the list, confirm on Enter, and cancel on `q`, Esc, or
-      Ctrl-C — a cancel exits `0` having written nothing and says so. Redraw by
-      moving up the N rows just written and clearing each line
+      Ctrl-C — a cancel exits `0` having printed no commands and says so on
+      stderr. Redraw by moving up the N rows just written and clearing each line
       (`ESC [ A`, `ESC [ 2 K`) rather than clearing the screen, so scrollback
       survives, and render frames to an `io.Writer` so they can be golden-tested
       the way `preview` output is in `internal/cli/testdata`.
@@ -1203,103 +1198,94 @@ module, and makes `incrmit push` succeed wherever `git push` already does.
       arrow-key prompt cannot run at all, so never attempt raw mode there: fail
       with exit `2` and the usage hint naming `--version` instead of blocking on
       a prompt that no one can answer.
-- [ ] Create the tag: an annotated tag on the current `HEAD`, named with a
-      configurable prefix (default `v`, so `v1.2.4`) settable as `--prefix` or
-      `[git] tag_prefix` in `incrmit.toml`, with a `--tag-message` whose default
-      template is `Release {{.Version}}`. Refuse to overwrite an existing local
-      or remote tag — exit `1` naming the tag; no `--force` is offered.
-- [ ] Guard against tagging something that does not exist: refuse when the
-      worktree is dirty (unless `--allow-dirty`), and refuse when the files at
-      `HEAD` do not actually hold the selected token, so a version that was
-      bumped but never committed cannot be tagged. Both messages name the
-      offending files; document the check and its escape hatch.
-- [ ] Push the tag: `--remote` (default `origin`), pushing exactly the one tag
-      refspec (`refs/tags/<name>`) — never a branch, never a bulk `--tags`.
-      Report the remote and ref that were pushed, and map a rejected push
-      (remote tag exists, no such remote, authentication refused) onto the typed
-      errors above by matching git's exit status and stderr, rather than dumping
-      git's raw output as the user-facing message. Keep the underlying stderr
-      available for a `--verbose`-style path so a genuinely unusual failure is
-      still diagnosable. `--no-push` creates the tag locally and stops.
-- [ ] Let credentials stay the user's: because the push runs through `git`, the
-      credential helper, `~/.ssh/config` (including `IdentityFile`, `Host`
-      aliases, and `ProxyJump`), `insteadOf` rewrites, and the SSH agent all
-      apply unchanged, so `incrmit push` authenticates wherever `git push`
-      already does — no token flags or key-loading logic of our own. Document
-      that, and that `GIT_TERMINAL_PROMPT=0` turns a missing credential into a
-      clear failure instead of a hidden prompt.
-- [ ] Support signed tags by delegating: `--sign` runs `git tag -s`, so
-      `user.signingkey` and `gpg.format` (OpenPGP or SSH signing) are honored
-      as configured, and `tag.gpgSign = true` in the user's config is respected
-      without a flag. A signing failure aborts rather than falling back to an
-      unsigned tag; document that the key must already be usable by `git tag -s`.
-- [ ] Support `--dry-run`/`-d`: print the selected version, the tag name and
-      message, the target commit (short SHA and subject), the remote, and the
-      refspec that would be pushed — touching neither the repository nor the
-      network.
-- [ ] Add hermetic tests: build a repository with `git init` in `t.TempDir()`
-      (fixed author/committer identity, signing off, `HOME` and `GIT_CONFIG_*`
-      pointed at the temp dir so the developer's own git config cannot leak in),
-      commit fixture files and an `incrmit.toml`, and `git init --bare` a
-      repository on disk as `origin` so a real push is exercised over a
-      `file://` remote with no network. Skip these tests with a clear message
-      when `git` is not on `PATH` rather than failing, and keep the CLI-level
-      tests on the fake interface so only `internal/git` needs a real binary.
-      Drive the selector through the decoder rather than a real terminal —
-      fixed byte sequences for down-down-Enter, wrap-around at both ends, `q`,
-      Esc, and Ctrl-C — with golden frames for the rendered list. Cover the
-      single-candidate and `--version` paths, an unknown token, tag collision,
-      dirty tree, a version not present at `HEAD`, not-a-repository, git missing
-      from `PATH`, a missing remote, a non-TTY stdin refusing to prompt, and
-      `--dry-run` writing nothing.
-- [ ] Declare the new runtime dependency where users meet it: note that `push`
-      (and only `push`) needs `git` on `PATH` in `README.md` and the man page,
-      and add `recommends: [git]` to `packaging/nfpm.yaml` so both the `.deb`
-      and the `.rpm` carry a weak dependency. `Recommends` is the right strength
-      here: it is installed by default by `apt` and `dnf`, so `push` works out
-      of the box, but it stays removable and never blocks installing `incrmit`
-      on a machine without git — which a hard `Depends` would, for a tool whose
-      every other command needs no git at all. (`Suggests` is too weak: it
-      installs nothing, so the common case silently lacks git.) Verify the
-      field lands in both formats — `dpkg -I` shows the `Recommends:` line and
-      `rpm -qp --recommends` reports `git` — and that `dpkg -i` on a
-      git-less system still succeeds.
+- [ ] Build the commands: an annotated tag named with a configurable prefix
+      (default `v`, so `v1.2.4`) settable as `--prefix` or `[git] tag_prefix`
+      in `incrmit.toml`, with a `--tag-message` whose default template is
+      `Release {{.Version}}`, pushed to `--remote` (default `origin`). The
+      default output is one line:
+      `git tag -a v1.2.4 -m 'Release 1.2.4' && git push origin refs/tags/v1.2.4`.
+      Push exactly the one tag refspec — never a branch, never a bulk `--tags`.
+      `--no-push` prints only the `git tag` command. `--sign` prints `git tag
+      -s`, so git applies `user.signingkey` and `gpg.format` (OpenPGP or SSH)
+      as configured, and `tag.gpgSign = true` works with no flag at all. No
+      `--force` is offered: git refuses an existing local tag and the remote
+      rejects an existing remote one.
+- [ ] Make the output safe to paste or pipe: stdout is exactly the command
+      line, joined with `&&` so a failed `git tag` never reaches the push, and
+      everything else (the picker, notes, reminders) goes to stderr, so
+      `incrmit tag --version 1.2.4 | sh` runs exactly what was shown. Validate
+      the prefix against git's ref-name rules (no leading `-`, whitespace,
+      `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`, or trailing `.lock`) and exit
+      `2` naming the rule, so the tag name never needs quoting and can never be
+      read as a flag. Quote the message with POSIX single quotes (`'` becomes
+      `'\''`) and document that the output targets POSIX shells.
+- [ ] Say what incrmit cannot check: with no repository access it cannot
+      confirm the worktree is clean or that `HEAD` holds the selected version,
+      and the printed `git tag` tags `HEAD`. Print a one-line reminder on
+      stderr ("this tags HEAD — commit the bump first") and document the
+      release order (bump, commit, `incrmit tag`) so a version that was bumped
+      but never committed is not tagged. The drift marking above still catches
+      a half-finished bump in the working tree.
+- [ ] Add tests that run in-process through `cli.Main` with no git and no
+      repository: golden output for the printed commands (defaults, `--prefix`,
+      `[git] tag_prefix`, `--remote`, `--no-push`, `--sign`, and a message
+      template containing `'`); the stdout/stderr split, with stdout exactly
+      the command line; prefix validation, one case per rejected form. Drive
+      the selector through the decoder rather than a real terminal — fixed byte
+      sequences for down-down-Enter, wrap-around at both ends, `q`, Esc, and
+      Ctrl-C — with golden frames for the rendered list. Cover the
+      single-candidate and `--version` paths, an unknown token, drift marking,
+      a missing config, and a non-TTY stdin refusing to prompt.
 - [ ] Document the command in `README.md`, the `incrmit(1)` man page, and
       `doc/DEVELOPMENT.md` — including a release recipe (bump, commit by hand,
-      `incrmit push`), the selector's keys, the fact that authentication and
-      signing are the user's existing git setup, the `--version` flag CI needs
-      because the prompt requires a TTY, and a note that nothing is ever pushed
-      without running `push` — and add a `CHANGELOG.md` entry under `Added`.
+      `incrmit tag`, then run the printed line or pipe it to `sh`), the
+      selector's keys, the `--version` flag CI needs because the prompt
+      requires a TTY, the stdout/stderr contract, and the fact that
+      authentication and signing are whatever the user's `git` does because
+      incrmit never runs it — and add a `CHANGELOG.md` entry under `Added`.
       Confirm the `govulncheck` gate from Milestone 26 still passes with the
       `x/term` tree in `go.sum`.
 
 ## Milestone 33 — Conventional-Commit Bump Inference (`--auto`)
 
-Depends on Milestone 32. Reading the commits since the last tag and inferring
-the bump component turns `discover` + language-agnostic + single-binary from a
-narrow story into a real one: no other tool does automatic inference *and*
-arbitrary-file rewriting without a per-ecosystem plugin.
+Reading the commits since the last tag and inferring the bump component turns
+`discover` + language-agnostic + single-binary from a narrow story into a real
+one: no other tool does automatic inference *and* arbitrary-file rewriting
+without a per-ecosystem plugin. As in Milestone 32, incrmit does not run git:
+`--auto` reads commit messages from stdin, and the user's own `git log`
+supplies them.
 
-- [ ] Add `--auto` to the bump command: resolve the most recent tag reachable
-      from `HEAD` (respecting the Milestone 32 tag prefix), read the commit
-      subjects and bodies since it, and infer the component.
+- [ ] Add `--auto` to the bump command: read commit messages from stdin,
+      separated by NUL bytes, as produced by
+      `git log --format=%B%x00 "$(git describe --tags --abbrev=0)..HEAD"`,
+      and infer the component. When stdin is a terminal, refuse with exit `2`
+      and a usage hint showing that pipeline instead of waiting for input.
 - [ ] Implement the inference rules and document them: a `feat:` commit implies
       minor, a `fix:`/`perf:` commit implies patch, and `BREAKING CHANGE:` in a
       trailer or a `!` before the colon implies major. The highest match wins.
       Non-conforming commits are ignored, not errors.
-- [ ] Decide and document what happens when nothing is inferable (no tags yet,
-      or no conforming commits since the last tag): recommend exiting `0` with
-      "no version-relevant commits; nothing to bump" and writing nothing, with
+- [ ] Decide and document what happens when nothing is inferable (empty input,
+      or no conforming commits): recommend exiting `0` with "no
+      version-relevant commits; nothing to bump" and writing nothing, with
       `--auto --fallback patch` available for CI that wants a bump regardless.
+      Before the first tag, `git describe` fails and the pipeline above feeds
+      no commits, so document the first-release form that logs from the root
+      (`git log --format=%B%x00 | incrmit --auto`).
 - [ ] Reject `--auto` combined with an explicit `--major`/`--minor`/`--patch`
       with exit code `2` rather than silently letting one win.
 - [ ] Make `--auto --dry-run` explain the decision: print the inferred component
-      and the specific commits that drove it, so the inference is auditable.
-- [ ] Add tests over a scripted temporary repo covering each rule, the highest-
-      wins precedence, the `!` and trailer forms of a breaking change, no-tags,
-      no-conforming-commits, and the `--fallback` path.
+      and the subject line of each commit that drove it, so the inference is
+      auditable.
+- [ ] Add tests that feed fixed stdin byte streams through `cli.Main` — no git
+      and no scripted repository — covering each rule, the highest-wins
+      precedence, the `!` and trailer forms of a breaking change, CRLF line
+      endings, empty input, no conforming commits, the `--fallback` path, and a
+      terminal stdin refusing to wait.
 - [ ] Document the rules and a full CI recipe in `README.md`, the man page, and
-      `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Added`.
+      `doc/DEVELOPMENT.md` — the `git log | incrmit --auto` pipeline, matching
+      the Milestone 32 tag prefix with `git describe --match 'v*'`, and
+      `fetch-depth: 0` on `actions/checkout` so the tags and history are there
+      to read; add a `CHANGELOG.md` entry under `Added`.
 
 ## Milestone 34 — Crash-Safe Multi-File Writes
 
