@@ -19,7 +19,7 @@ DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg checksums pkg-checksums release release-macos test cover vet fmt fmt-check lint check clean fuzz
+.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg release release-macos test cover vet fmt fmt-check lint check clean fuzz
 
 build:
 	go build $(BUILDFLAGS) -o $(BINARY) .
@@ -38,7 +38,7 @@ dist:
 	@echo "binaries written to $(DIST)/"
 
 # dist-archives packages each cross-compiled binary into a per-platform archive
-# (.tar.gz on Unix, .zip on Windows) and writes dist/checksums.txt (SHA-256).
+# (.tar.gz on Unix, .zip on Windows).
 dist-archives: dist
 	@for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; ext=""; \
@@ -122,45 +122,11 @@ pkg: darwin-binaries
 	done
 	@echo "pkgs written to $(DIST)/"
 
-checksums:
-	@cd $(DIST) && { \
-		rm -f checksums.txt; \
-		for f in $(BINARY)-$(VERSION)-*.tar.gz $(BINARY)-$(VERSION)-*.zip \
-			$(BINARY)_$(VERSION)-*.deb $(BINARY)_$(VERSION)_*.deb \
-			$(BINARY)-$(VERSION)-*.rpm; do \
-			[ -f "$$f" ] || continue; \
-			if command -v sha256sum >/dev/null 2>&1; then \
-				sha256sum "$$f"; \
-			else \
-				shasum -a 256 "$$f"; \
-			fi; \
-		done > checksums.txt; \
-	}
-	@echo "checksums written to $(DIST)/checksums.txt"
+# release builds cross-compiled binaries, archives, and Linux packages for CI.
+release: dist-archives deb rpm
 
-# pkg-checksums records SHA-256 hashes of the macOS .pkg installers so they can
-# be verified like every other published artifact. They get their own file
-# because they are built on a macOS runner, separately from the artifacts in
-# checksums.txt, and two runners cannot append to one file.
-pkg-checksums: pkg
-	@cd $(DIST) && { \
-		rm -f checksums-macos.txt; \
-		for f in $(BINARY)-$(VERSION)-darwin-*.pkg; do \
-			[ -f "$$f" ] || continue; \
-			if command -v sha256sum >/dev/null 2>&1; then \
-				sha256sum "$$f"; \
-			else \
-				shasum -a 256 "$$f"; \
-			fi; \
-		done > checksums-macos.txt; \
-	}
-	@echo "checksums written to $(DIST)/checksums-macos.txt"
-
-# release builds cross-compiled binaries, archives, Linux packages, and checksums for CI.
-release: dist-archives deb rpm checksums
-
-# release-macos builds the macOS installers and their checksum file for CI.
-release-macos: pkg pkg-checksums
+# release-macos builds the macOS installers for CI.
+release-macos: pkg
 
 test:
 	go test ./...

@@ -37,37 +37,13 @@ directly (replace `X.Y.Z` with the release version):
 | Fedora / RHEL x86_64 | `incrmit-X.Y.Z-1.x86_64.rpm` |
 | Fedora / RHEL aarch64 | `incrmit-X.Y.Z-1.aarch64.rpm` |
 
-Every artifact has a published SHA-256 hash, split across two files because the
-macOS installers are built on a separate machine from everything else:
-
-- `checksums.txt` — the tarballs, zips, `.deb`, and `.rpm` packages.
-- `checksums-macos.txt` — the macOS `.pkg` installers.
-
-After downloading an asset, verify its integrity by fetching the matching
-checksum file from the same release and comparing hashes (replace `X.Y.Z` with
-the release version):
+GitHub records a SHA-256 digest for every release asset and shows it next to
+the download on the release page. To verify a download, recompute its hash and
+compare it with the one listed there:
 
 ```bash
 VERSION=0.3.5
-curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums.txt"
-
-# Linux: verify only the assets you downloaded (ignores missing entries)
-sha256sum --ignore-missing -c checksums.txt
-
-# macOS: verify a single asset against its recorded hash
-shasum -a 256 -c checksums.txt --ignore-missing
-```
-
-A successful check prints `OK` next to each verified file. Each file holds one
-`<sha256>␣␣<filename>` line per artifact, so you can also compare a single hash
-by hand — here for a `.pkg`, whose hashes live in `checksums-macos.txt`:
-
-```bash
-curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/checksums-macos.txt"
-
-# Recompute the hash and eyeball it against the matching line
-shasum -a 256 "incrmit-${VERSION}-darwin-arm64.pkg"   # sha256sum on Linux
-grep "incrmit-${VERSION}-darwin-arm64.pkg" checksums-macos.txt
+shasum -a 256 "incrmit-${VERSION}-linux-amd64.tar.gz"   # sha256sum on Linux
 ```
 
 **Tarball or zip** — extract the binary and place it on your `PATH`:

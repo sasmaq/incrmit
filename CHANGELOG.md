@@ -5,6 +5,15 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- Releases no longer publish `checksums.txt` and `checksums-macos.txt`. GitHub
+  records a SHA-256 digest for every release asset and shows it on the release
+  page, so the files duplicated what is already there. The `checksums` and
+  `pkg-checksums` make targets are gone with them.
+
 ## [0.3.5] - 2026-09-27
 
 ### Security

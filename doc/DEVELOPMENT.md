@@ -1247,8 +1247,9 @@ tool could write or accept but never find again:
   `windows/amd64`, and `windows/arm64` into `dist/`, named
   `incrmit-<version>-<os>-<arch>`.
 - Release packages: `make release VERSION=X.Y.Z` runs `dist`, then creates
-  per-platform archives (`.tar.gz` on Unix, `.zip` on Windows), Linux `.deb`
-  and `.rpm` packages, and `dist/checksums.txt` (SHA-256 of each artifact).
+  per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) and Linux `.deb`
+  and `.rpm` packages. No checksum file is published: GitHub records a SHA-256
+  digest for every release asset itself.
 - Debian packages: `make deb VERSION=X.Y.Z` builds `incrmit_<version>-1_<arch>.deb`
   files under `dist/` using [nFPM](https://nfpm.goreleaser.com/) and
   `packaging/nfpm.yaml`. Requires `nfpm` on `PATH` (install with
@@ -1261,11 +1262,8 @@ tool could write or accept but never find again:
   `dist/` with `pkgbuild` (see `scripts/build-pkg.sh`). Requires the macOS
   toolchain, so this target must run on macOS. The package installs
   `/usr/local/bin/incrmit` and `/usr/local/share/man/man1/incrmit.1`.
-- macOS release: `make release-macos VERSION=X.Y.Z` runs `pkg` and then
-  `pkg-checksums`, writing `dist/checksums-macos.txt`. The `.pkg` installers need
-  their own checksum file because they are built on a macOS runner while
-  `checksums.txt` is produced on the Linux runner, and two machines cannot append
-  to one file. Together the two files cover every published artifact.
+- macOS release: `make release-macos VERSION=X.Y.Z` runs `pkg`, the target the
+  macOS job in the release workflow builds with.
 
 ### Debian packaging (`.deb`)
 
@@ -1371,12 +1369,12 @@ pushed (not on branch pushes). It:
    passes it to `make release VERSION=…`.
 3. Extracts the matching `CHANGELOG.md` section with `scripts/changelog-notes.sh`.
 4. Creates a GitHub Release via `softprops/action-gh-release`, uploading the
-   archives, `.deb` and `.rpm` packages, and `checksums.txt`.
+   archives and the `.deb` and `.rpm` packages.
 
 A separate `release-macos` job runs on a `macos-latest` runner, builds the
-`.pkg` installers and their checksum file with `make release-macos`, and uploads
-both to the same release (the macOS toolchain needed by `pkgbuild` is unavailable
-on the Linux runner).
+`.pkg` installers with `make release-macos`, and uploads them to the same
+release (the macOS toolchain needed by `pkgbuild` is unavailable on the Linux
+runner).
 
 Supply-chain measures in both workflows:
 
