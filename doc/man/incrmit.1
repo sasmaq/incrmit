@@ -336,6 +336,8 @@ Bump-history state file written next to the config after a bump, used by
 .Cm undo .
 It is local, tool-maintained working state and is not meant to be committed
 .Pq add it to Pa .gitignore .
+A bump reads it before writing anything, so one that cannot be read stops the
+bump with nothing changed; it is safe to delete.
 .It Pa .incrmit.lock
 Project lock file kept next to the config, or next to the file being bumped
 under
@@ -478,6 +480,24 @@ setgid, and sticky bits are dropped, a hard link is broken
 .Pq other names keep the old contents ,
 a symlink becomes a regular file, and ownership, extended attributes, and ACLs
 are those of a new file created by the running user.
+.Pp
+The files
+.Nm
+reads for itself get the same check as a target: the config, the
+.Fl -output
+that
+.Cm discover
+reads an ignore list from, and
+.Pa .incrmit.state.toml .
+One that is a named pipe or a device, or a link to one such as
+.Pa incrmit.toml No -> Pa /dev/zero ,
+is reported as not a regular file, and the command exits 1 before writing
+anything.
+A link to a regular file is still followed.
+Each of these files is also capped at 16 MiB, whatever
+.Fl -max-file-size
+says, and the state file keeps fewer than its 20 bumps rather than grow past
+that.
 .Pp
 Names and lines read from files are escaped before they are printed, so a file
 cannot send escape sequences to the terminal.

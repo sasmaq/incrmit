@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/sasmaq/incrmit/internal/files"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -167,10 +168,15 @@ func ResolvePath(path string) string {
 // Load reads and parses the config at path. A missing file is reported with a
 // dedicated, actionable error (see IsNotExist) so callers can suggest running
 // `incrmit discover`. The parsed config is validated before being returned.
+//
+// The file is read with files.ReadOwnFile, so a config that is not a regular
+// file (a named pipe, or a link to a device) is refused rather than opened, and
+// one over files.MaxOwnFileBytes is refused rather than read. A link to a
+// regular file is followed: a symlinked config is a legitimate setup.
 func Load(path string) (*Config, error) {
 	path = ResolvePath(path)
 
-	data, err := os.ReadFile(path)
+	data, err := files.ReadOwnFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, &NotExistError{Path: path}
@@ -234,12 +240,17 @@ func (c *Config) normalizeVersions() error {
 // --output path is a file discover overwrites (and may not currently be a valid
 // config at all), this is deliberately lenient: a missing or unparseable file
 // yields a nil list and no error, so discovery simply falls back to the built-in
-// ignores. Only an unexpected read error (e.g. a permission problem) is
-// surfaced.
+// ignores.
+//
+// The leniency covers a stale config, not a file that is no config at all. A
+// read error (a permission problem, say) is surfaced, and so is a path that is
+// not a regular file or is over files.MaxOwnFileBytes: the read goes through
+// files.ReadOwnFile like Load's, and a named pipe or a device is not something
+// for discover to go on and replace.
 func LoadIgnore(path string) ([]string, error) {
 	path = ResolvePath(path)
 
-	data, err := os.ReadFile(path)
+	data, err := files.ReadOwnFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil

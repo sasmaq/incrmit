@@ -187,11 +187,10 @@ func TestUndoMissingConfigLeavesFilesUntouched(t *testing.T) {
 // A journal that cannot be read must stop the bump rather than let it report
 // success with no way to undo it.
 //
-// This test also pins the gap tracked by Milestone 31: the failure happens
-// after phase 2, so the target file is already rewritten when the command
-// exits non-zero. Update the assertion below when the journal moves ahead of
-// the writes.
-func TestBumpUnreadableStateFileFailsAfterWriting(t *testing.T) {
+// It stops the bump before anything is written: the journal is read in phase
+// 1 (Milestone 33). It used to be read after phase 2, which left the target
+// rewritten when the command exited non-zero.
+func TestBumpUnreadableStateFileWritesNothing(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: file permissions are not enforced")
 	}
@@ -217,8 +216,8 @@ func TestBumpUnreadableStateFileFailsAfterWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "1.2.4\n" {
-		t.Errorf("VERSION = %q, want 1.2.4 (see Milestone 31: the write lands before the journal)", got)
+	if string(got) != "1.2.3\n" {
+		t.Errorf("VERSION = %q, want 1.2.3: nothing is written when the journal cannot be read", got)
 	}
 }
 

@@ -9,8 +9,9 @@
 // The state file is local, machine-specific working state, not something meant
 // to be committed: undo restores files in the working copy, so the journal
 // belongs alongside them (git-ignore it). Only the most recent MaxEntries bumps
-// are retained so the file cannot grow without bound; at minimum the last bump
-// is always available to undo.
+// are retained so the file cannot grow without bound, and fewer when that many
+// would not fit under files.MaxOwnFileBytes, the cap the journal is read with;
+// at minimum the last bump is always available to undo.
 package history
 
 import (
@@ -18,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -70,9 +70,11 @@ func ResolvePath(configPath string) string {
 
 // Load reads the journal at path. A missing state file is not an error: it
 // yields an empty history so a first `undo` has a well-defined "nothing to
-// undo" result.
+// undo" result. The read goes through files.ReadOwnFile, so a state file that
+// is not a regular file, or is over files.MaxOwnFileBytes, is an error rather
+// than a hang or an unbounded read.
 func Load(path string) (*History, error) {
-	data, err := os.ReadFile(path)
+	data, err := files.ReadOwnFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return &History{}, nil
@@ -89,15 +91,44 @@ func Load(path string) (*History, error) {
 // Save writes the journal to path atomically, reusing the same write path as
 // bumped files so a crash never leaves a half-written journal. A short header
 // documents that the file is tool-maintained local state.
+//
+// The journal is kept under files.MaxOwnFileBytes, so incrmit never writes one
+// that Load would refuse to read back: when the encoding is over the cap, the
+// oldest entries are left out until it fits. A project with a few thousand
+// targets keeps fewer than MaxEntries bumps this way instead of failing its
+// next bump. A newest entry that does not fit on its own is an error.
 func Save(path string, h *History) error {
+	return saveWithin(path, h, files.MaxOwnFileBytes)
+}
+
+// saveWithin is Save with the cap as a parameter, so tests can reach it
+// without writing tens of megabytes.
+func saveWithin(path string, h *History, maxBytes int) error {
+	entries := h.Entries
+	data, err := encode(entries)
+	for err == nil && len(data) > maxBytes && len(entries) > 1 {
+		entries = entries[1:]
+		data, err = encode(entries)
+	}
+	if err != nil {
+		return err
+	}
+	if len(data) > maxBytes {
+		return fmt.Errorf("history: the newest entry alone encodes to %d bytes, over the %d byte limit", len(data), maxBytes)
+	}
+	return files.WriteAtomic(path, data)
+}
+
+// encode renders entries as the journal's on-disk form, header included.
+func encode(entries []Entry) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString("# incrmit bump history (maintained by incrmit; safe to delete).\n")
 	buf.WriteString("# Records recent bumps so `incrmit undo` can revert them. This is local\n")
 	buf.WriteString("# working state, not meant to be committed — add it to .gitignore.\n\n")
-	if err := toml.NewEncoder(&buf).Encode(h); err != nil {
-		return fmt.Errorf("history: encoding: %w", err)
+	if err := toml.NewEncoder(&buf).Encode(History{Entries: entries}); err != nil {
+		return nil, fmt.Errorf("history: encoding: %w", err)
 	}
-	return files.WriteAtomic(path, buf.Bytes())
+	return buf.Bytes(), nil
 }
 
 // Push appends e as the newest entry, trimming the journal to the most recent

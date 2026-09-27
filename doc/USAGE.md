@@ -81,6 +81,16 @@ A target must be an ordinary file. A named pipe, device, or socket is reported a
 `reading <path>: not a regular file` (exit `1`) rather than opened, since reading
 one could block forever.
 
+The same goes for the files `incrmit` reads for itself: the config (including
+the [`--output`](#discovery-flags) that `discover` reads an `ignore` list from)
+and the [state file](#undo). One that is a named pipe or a device, or a link to
+one such as `incrmit.toml -> /dev/zero`, is reported as
+`config: reading "incrmit.toml": not a regular file` (or
+`history: reading ".incrmit.state.toml": ...`) with exit `1`, before anything is
+written. A link to an ordinary file is still followed, so a symlinked config
+works. Each of these files is also capped at 16 MiB, whatever `--max-file-size`
+says; that flag is about targets.
+
 A `path`, like a `--file` argument, names one file literally: spaces, a leading
 dash, non-ASCII characters, and glob characters such as `*`, `?`, and `[` are
 just part of the name, so `path = "[ab].txt"` bumps the file called `[ab].txt`
@@ -623,7 +633,12 @@ A few details worth knowing:
 
 - **Repeated undos walk back through history.** Each `undo` reverts one bump and
   removes its entry, so undoing twice reverts the two most recent bumps. The
-  journal retains the last several bumps (older ones are dropped).
+  journal retains the last 20 bumps (older ones are dropped), or fewer in a
+  project with thousands of files, so the state file stays under its 16 MiB
+  cap.
+- **A state file that cannot be read stops a bump before it writes.** The bump
+  fails with nothing changed rather than leave a bump `undo` cannot see, and
+  `--dry-run` reports the same failure. The file is safe to delete.
 - **Your edits are never clobbered.** If a file was changed after the bump so it
   no longer contains the version the bump wrote, `undo` refuses that revert and
   writes nothing, exiting with an error instead — naming the file that diverged.

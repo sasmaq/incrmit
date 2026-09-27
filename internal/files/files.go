@@ -250,6 +250,9 @@ func ReadTarget(path string) ([]byte, error) {
 // real file is still read (a write later replaces the link rather than
 // following it).
 //
+// This is the one function that decides a file is safe to open: every target
+// is read through it, and so are incrmit's own files, through ReadOwnFile.
+//
 // A file that grows past the cap between the size check and the read is
 // reported as too large rather than returned truncated: the caller writes the
 // bumped contents back over the file, so short data would silently discard the
@@ -287,6 +290,23 @@ func ReadTargetWithLimit(path string, maxBytes int64) ([]byte, error) {
 		return nil, &TooLargeError{Size: size, Limit: maxBytes}
 	}
 	return data, nil
+}
+
+// MaxOwnFileBytes caps how much of one of incrmit's own files ReadOwnFile
+// reads. Both are small: the config holds one short entry per target, and the
+// journal holds at most history.MaxEntries bumps, which history.Save keeps
+// under this cap. Parsing TOML allocates about twenty times the file's size, so
+// the cap is what bounds the memory a planted file can cost. It is fixed rather
+// than tied to --max-file-size, which is about targets.
+const MaxOwnFileBytes = 16 << 20
+
+// ReadOwnFile reads a file incrmit keeps for itself rather than one it bumps:
+// the config (including the --output discover reads its ignore list from) and
+// the bump journal. It makes the same type check as a target read, since a
+// repository can commit `incrmit.toml -> /dev/zero` as easily as a target, and
+// refuses a file over MaxOwnFileBytes with a *TooLargeError.
+func ReadOwnFile(path string) ([]byte, error) {
+	return ReadTargetWithLimit(path, MaxOwnFileBytes)
 }
 
 // ReadVersion reads path and returns the semantic version it contains.

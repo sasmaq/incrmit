@@ -192,6 +192,13 @@ entry to a **state file** so the bump can be reverted by `incrmit undo`.
   `history.MaxEntries` (20) bumps are retained so the file cannot grow without
   bound — at minimum the last bump is always undoable, and successive undos walk
   back through history.
+- **Size:** the journal is read with a 16 MiB cap (`files.MaxOwnFileBytes`, see
+  [section 9.1](#91-scan-boundaries)), and `history.Save` keeps it under the same
+  cap so incrmit never writes a journal it would refuse to read back. A change
+  costs about 200 bytes, so twenty full entries reach the cap at around four
+  thousand targets; past that, `Save` drops the oldest entries until the
+  encoding fits, and the project keeps fewer than twenty bumps instead of
+  failing its next one. A newest entry over the cap on its own is an error.
 - **Committed vs. ignored:** it is **local working state**, not meant to be
   committed. `undo` restores files in the working copy, so the journal belongs
   beside them; the file header recommends adding it to `.gitignore`. (In this
@@ -458,23 +465,29 @@ list every flag without duplicating the flag text.
    [section 9.1](#91-scan-boundaries)). For every entry, determine the old
    version (from the config `version`, or by scanning the file when none is
    recorded) and apply the bump to get the new version.
-5. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
-6. Otherwise rewrite each file once, replacing all of its known version tokens
+5. In config mode, load the journal beside the config (`history.Load`). It is
+   read here, with everything else in phase 1, so a state file that cannot be
+   read fails the bump before anything is written. It used to be read last,
+   after the targets and the config already held the new version, which left a
+   bump with no entry for `undo` to find. A `--dry-run` reads it too, so it
+   predicts that failure.
+6. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
+7. Otherwise rewrite each file once, replacing all of its known version tokens
    in a single pass (`files.SetKnownVersions`). A single pass over the original
    bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4` alongside
    `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering another's when two
    versions live in the same file.
-7. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
+8. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
    `version` records the new value (one entry per distinct version per file),
    keeping the config in sync for the next run. The file is regenerated through
    `config.Marshal`, so the `[[files]]` entries and `ignore` list survive but
    user-authored comments and formatting do not. The output is deterministic:
    the same config bumped twice produces byte-identical layout.
-8. In config mode, append a history entry (each file's path, resolved path, and
-   `old`/`new` tokens, plus a timestamp and the config path) to the state file
-   beside the config so the bump can be undone (see
+9. In config mode, push a history entry (each file's path, resolved path, and
+   `old`/`new` tokens, plus a timestamp and the config path) onto the journal
+   read in step 5 and save it beside the config so the bump can be undone (see
    [section 6.2](#62-bump-history--state-file-internalhistory)).
-9. Report results (files bumped, and each `old -> new`).
+10. Report results (files bumped, and each `old -> new`).
 
 ### 8.2 Discover
 
@@ -485,6 +498,9 @@ list every flag without duplicating the flag text.
    write are one read-modify-write like a bump's.
 2. Read the `ignore` list from any config already at `--output`
    (`config.LoadIgnore`); an absent/unparseable file just yields no patterns.
+   A path that is not a regular file (a named pipe, a device, or a link to
+   one) or is over 16 MiB is an error with exit `1` instead, before the scan:
+   it is not a stale config, and discover would go on to replace it.
 3. Walk the tree from `--path`, skipping the built-in ignored directories
    (e.g. `.git`, `node_modules`, `vendor`, build outputs), incrmit's own files
    (`incrmit.toml` by name plus the resolved `--output` path, the state file,
@@ -715,6 +731,22 @@ only what it was aimed at and only what it can read in bounded time and memory:
   nothing is written. Unlike the scan, a capped read never returns truncated
   data: the bumped bytes are written back over the file, so a file that grew
   past the cap mid-read is rejected rather than shortened.
+- **incrmit's own files get the same type check, and a fixed cap.** The config
+  (`config.Load`, and `config.LoadIgnore` for discover's `--output`) and the
+  journal (`history.Load`) are read through `files.ReadOwnFile`, which is
+  `ReadTargetWithLimit` at `files.MaxOwnFileBytes` (16 MiB), so one function
+  decides that any file is safe to open. They were read with `os.ReadFile`
+  before Milestone 33: a named pipe at the config hung `preview` and
+  `discover --dry-run`, the two commands meant for an unfamiliar tree, and one
+  at the state file hung a bump after it had rewritten the targets. A
+  repository cannot commit a FIFO, but it can commit `incrmit.toml ->
+  /dev/zero`, which read without end. A link to a regular file is still
+  followed, since a symlinked config is a legitimate setup. The cap is fixed
+  rather than `--max-file-size`, which is about targets, and is sized for the
+  parse: decoding TOML allocates about twenty times the file's size, so 16 MiB
+  holds a planted file to a few hundred MiB while leaving room for a config of
+  some two hundred thousand entries. The journal is kept under it on write
+  (see [section 6.2](#62-bump-history--state-file-internalhistory)).
 - **A scan is linear in the file, however many tokens it holds.** Each
   occurrence records its line number and the text around it, and both come from
   a cursor (`lineCursor`) that only moves forward as the tokens are visited in
@@ -1009,6 +1041,11 @@ have kept the output safe, so only that check notices the ambiguity.
   `reading <path>: not a regular file` and exit `1`. `files.ReadTarget` checks the
   type before opening, because opening a pipe blocks until a writer appears and
   would otherwise leave incrmit hanging with no output at all.
+- A config, `--output`, or state file that is not an ordinary file (the same
+  kinds, directly or through a symlink): report
+  `config: reading <path>: not a regular file` (`history: reading ...` for the
+  state file) and exit `1`, before anything is written. One over 16 MiB is
+  reported the same way with its size and the limit.
 - Undo with nothing to revert (no journal or an emptied one): print a friendly
   message and exit `0` — it is not an error.
 - Undo conflict (a file edited since the bump — or bumped past by another run —

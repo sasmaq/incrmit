@@ -213,6 +213,21 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
+	// The journal is read in phase 1 too, so a state file that cannot be read
+	// fails the bump before anything is written. Read after the writes, it left
+	// the targets and the config at the new version with no entry for `undo` to
+	// find. A dry run reads it as well, so it predicts that failure. Only config
+	// mode keeps a journal.
+	var journal *history.History
+	statePath := ""
+	if cfgPath != "" {
+		statePath = history.ResolvePath(cfgPath)
+		if journal, err = history.Load(statePath); err != nil {
+			fprintln(stderr, "incrmit:", err)
+			return classify(err)
+		}
+	}
+
 	if opts.dryRun {
 		fprintf(stdout, "Dry run: would apply a %s (no files changed)\n", label)
 		for _, g := range groups {
@@ -269,7 +284,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		// Record the bump in the journal next to the config so `incrmit undo`
 		// can revert it. Only in config mode: an --file bump has no
 		// config-anchored location to keep (or find) the state file.
-		if code := recordHistory(cfgPath, groups, stderr); code != ExitOK {
+		if code := recordHistory(cfgPath, statePath, journal, groups, stderr); code != ExitOK {
 			return code
 		}
 	}
@@ -729,11 +744,12 @@ func excludeOutput(results []discovery.Result, root, output string) []discovery.
 }
 
 // recordHistory appends a journal entry for a successful config-mode bump to
-// the state file next to the config, so `incrmit undo` can revert it. Paths are
-// stored resolved (absolute) so undo can locate the files and config regardless
-// of the working directory it is later run from. On failure it reports to
-// stderr and returns a non-OK exit code.
-func recordHistory(cfgPath string, groups []fileGroup, stderr io.Writer) int {
+// h, the journal read from statePath during planning, and saves it there so
+// `incrmit undo` can revert the bump. Paths are stored resolved (absolute) so
+// undo can locate the files and config regardless of the working directory it
+// is later run from. On failure it reports to stderr and returns a non-OK exit
+// code.
+func recordHistory(cfgPath, statePath string, h *history.History, groups []fileGroup, stderr io.Writer) int {
 	absCfg, err := filepath.Abs(cfgPath)
 	if err != nil {
 		absCfg = cfgPath
@@ -754,12 +770,6 @@ func recordHistory(cfgPath string, groups []fileGroup, stderr io.Writer) int {
 		}
 	}
 
-	statePath := history.ResolvePath(cfgPath)
-	h, err := history.Load(statePath)
-	if err != nil {
-		fprintln(stderr, "incrmit:", err)
-		return classify(err)
-	}
 	h.Push(entry)
 	if err := history.Save(statePath, h); err != nil {
 		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", statePath, err))

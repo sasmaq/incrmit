@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -56,7 +58,9 @@ func lockSandbox(t *testing.T) (root, dir, cfgPath string) {
 }
 
 // snapshotOutside records every path under root that is not inside dir: its
-// type and permission bits, and its contents or, for a link, its target. Two
+// type and permission bits, and its contents or, for a link, its target. A
+// file over snapshotInline bytes is recorded by size and digest instead, so a
+// test can plant one at a size cap without holding it in memory twice. Two
 // snapshots that compare equal mean nothing outside the project was created,
 // removed, or changed.
 func snapshotOutside(t *testing.T, root, dir string) map[string]string {
@@ -77,6 +81,8 @@ func snapshotOutside(t *testing.T, root, dir string) map[string]string {
 		switch {
 		case info.Mode()&fs.ModeSymlink != 0:
 			body, err = os.Readlink(path)
+		case info.Mode().IsRegular() && info.Size() > snapshotInline:
+			body, err = digestFile(path)
 		case info.Mode().IsRegular():
 			var b []byte
 			b, err = os.ReadFile(path)
@@ -94,6 +100,24 @@ func snapshotOutside(t *testing.T, root, dir string) map[string]string {
 	return snap
 }
 
+// snapshotInline is the largest file snapshotOutside records by its contents.
+const snapshotInline = 64 << 10
+
+// digestFile describes a large file by its size and SHA-256.
+func digestFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d bytes, sha256 %x", n, h.Sum(nil)), nil
+}
+
 // assertSnapshotEqual reports every difference between two snapshots.
 func assertSnapshotEqual(t *testing.T, before, after map[string]string) {
 	t.Helper()
@@ -102,18 +126,19 @@ func assertSnapshotEqual(t *testing.T, before, after map[string]string) {
 		case !ok:
 			t.Errorf("%s was removed (it was %s)", p, before[p])
 		case a != before[p]:
-			t.Errorf("%s changed outside the project:\n  before %s\n  after  %s", p, before[p], a)
+			t.Errorf("%s changed:\n  before %s\n  after  %s", p, before[p], a)
 		}
 	}
 	for _, p := range slices.Sorted(maps.Keys(after)) {
 		if _, ok := before[p]; !ok {
-			t.Errorf("%s was created outside the project: %s", p, after[p])
+			t.Errorf("%s was created: %s", p, after[p])
 		}
 	}
 }
 
-// runMainWithin is runMain under a deadline, so a lock path that blocks the open
-// (a FIFO, say) fails the test instead of hanging the suite.
+// runMainWithin is runMain under a deadline, so a path that blocks the open (a
+// FIFO at the lock file or the config, say) fails the test instead of hanging
+// the suite.
 func runMainWithin(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	type outcome struct {
@@ -129,7 +154,7 @@ func runMainWithin(t *testing.T, args ...string) (int, string, string) {
 	case got := <-done:
 		return got.code, got.stdout, got.stderr
 	case <-time.After(10 * time.Second):
-		t.Fatalf("incrmit %s blocked on the lock file instead of finishing", strings.Join(args, " "))
+		t.Fatalf("incrmit %s blocked instead of finishing", strings.Join(args, " "))
 		return 0, "", ""
 	}
 }

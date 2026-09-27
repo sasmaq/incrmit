@@ -1416,36 +1416,90 @@ killing it leaves a bump that `undo` has no record of. A repository cannot
 commit a FIFO, but it can commit `incrmit.toml -> /dev/zero`, which reads
 without end.
 
-- [ ] Write the failing tests first, each under a deadline so a regression
+- [x] Write the failing tests first, each under a deadline so a regression
       fails rather than hanging the suite (the pattern
       `TestBumpNonRegularFileTarget` already uses): a FIFO at the config for a
       bump, `--dry-run`, `preview`, and `undo`; at the `--output` path for
       `discover` with and without `--dry-run`; and at the state file for a
       bump and `undo`. Create them with `testutil.Mkfifo`.
-- [ ] Route all three reads through one checked helper, `files.ReadTarget` or
+      `TestOwnFilesNotRegular` in `internal/cli/ownfiles_test.go` runs eleven
+      commands under `runMainWithin`: those listed, plus `undo --dry-run` at
+      the config and `--dry-run` and `undo --dry-run` at the state file. Each
+      asserts exit `1`, a message naming the file, and an unchanged snapshot
+      of the project. Before the fix ten hung for the full 10 seconds, and
+      `--dry-run` over a FIFO journal exited `0` because it never read it.
+      `TestBumpReadsJournalBeforeWriting` needs no FIFO: over a corrupt
+      journal the old bump left `VERSION` at `1.0.1`, the config rewritten,
+      and no entry to undo.
+- [x] Route all three reads through one checked helper, `files.ReadTarget` or
       a sibling for tool-maintained files, so one function decides that a
       file is safe to open. A symlink to a regular file is still followed, as
       it is for targets, since a symlinked config is a legitimate setup; a
       link to a device or a pipe fails the same type check.
-- [ ] Cap the size of these reads. The config and the journal are small, and
+      `files.ReadOwnFile` is `ReadTargetWithLimit` at a fixed cap, so
+      `ReadTargetWithLimit` stays the one function that decides.
+      `config.Load`, `config.LoadIgnore`, and `history.Load` call it. Links
+      to a regular file are followed (tests in `files`, `config`, and `cli`
+      through `preview`, `--dry-run`, and `discover --dry-run`). The unit
+      tests share a new `testutil.Within` deadline. Separately, a bump still
+      replaces a symlinked config with a regular file when it rewrites it,
+      as `WriteAtomic` does for every path; this item is only the read.
+- [x] Cap the size of these reads. The config and the journal are small, and
       the journal holds at most `history.MaxEntries` entries, so a fixed cap
       in a named constant is enough; `--max-file-size` is about targets and
       stays that way. Report an oversized file as an error that names it.
-- [ ] Decide what `LoadIgnore` does with a `--output` that is not a regular
+      `files.MaxOwnFileBytes` is 16 MiB, reported as
+      `config: reading "incrmit.toml": files: file is 16777217 bytes, over the
+      16777216 byte limit` (`history: ...` for the state file), exit `1`.
+      Sized by measurement: decoding TOML allocates about 20 times the file,
+      so the cap bounds a planted file at about 330 MiB. But a journal change
+      costs about 196 bytes, so twenty full entries reach 16 MiB at about
+      4,300 targets, and a fixed read cap alone would have failed such a
+      project's seventeenth bump. `history.Save` therefore drops the oldest
+      entries until the encoding fits (an entry over the cap on its own is an
+      error), so incrmit never writes a journal it would refuse to read.
+      Tested through `saveWithin` with a small cap.
+- [x] Decide what `LoadIgnore` does with a `--output` that is not a regular
       file. It is lenient today (a missing or unparseable file yields no
       patterns), but a FIFO or a device is not a stale config, and `discover`
       would go on to replace it. Recommend an error with exit `1`, decided
       together with Milestone 36's rule for what `--output` may overwrite.
-- [ ] Read the journal before phase 2 of a bump instead of after the writes,
+      An error with exit `1`, as recommended, before the scan and with nothing
+      written; `--dry-run` refuses the same way. The leniency now covers only
+      a missing or unparseable file (Milestone 36 retires the second). This
+      fits Milestone 36's rule: `--output` may replace a missing file, an
+      empty file, or an incrmit config, and a FIFO or a device is none of
+      those. Its check can sit behind the same `ReadOwnFile` read.
+- [x] Read the journal before phase 2 of a bump instead of after the writes,
       so a state file that cannot be read fails the bump with nothing
       written. Milestone 40 moves the journal *write* ahead of phase 2 too;
       this item is only the read.
-- [ ] Add a symlink to `/dev/zero` as the config and as the state file (Unix
+      `runBump` loads it right after planning, and `recordHistory` pushes
+      onto that copy instead of reading the file again. `--dry-run` reads it
+      too, so the dry run predicts the failure the real run would hit.
+      `TestBumpUnreadableStateFileFailsAfterWriting`, which pinned the old
+      order and said to update it when the read moved, is now
+      `TestBumpUnreadableStateFileWritesNothing`.
+- [x] Add a symlink to `/dev/zero` as the config and as the state file (Unix
       only), and assert each command fails promptly with a "not a regular
       file" message and exit `1`.
-- [ ] Document the checks next to the other read boundaries in `README.md`,
+      `TestOwnFilesNotRegular` runs the same eleven commands with the link in
+      place of the FIFO, skipped on Windows. This half was not run against the
+      old code, which reads `/dev/zero` until memory runs out rather than
+      until the deadline. `TestOwnFilesOverSizeCap` runs the table again over
+      a sparse file one byte over the cap; `snapshotOutside` now records a
+      file over 64 KiB by size and SHA-256 so the snapshot holds no copy of
+      it. Suite passes under `-race` and `make check`; coverage 96.5% ->
+      96.4%, the gap being `history.encode`'s unreachable encoder error.
+- [x] Document the checks next to the other read boundaries in `README.md`,
       `doc/DEVELOPMENT.md`, and the man page's CAVEATS, and add a Security
       entry to `CHANGELOG.md`.
+      The README's reference material moved to `doc/USAGE.md` in 0.3.4, so
+      the checks are there, beside "A target must be an ordinary file", and
+      in its Undo section. `doc/DEVELOPMENT.md` covers them in §6.2 (journal
+      size), §8.1 and §8.2 (the flows), §9.1, and §10; the man page in CAVEATS
+      and FILES. `CHANGELOG.md` opens `[Unreleased]` with two Security
+      entries and a Fixed one for the journal read.
 
 ## Milestone 34 — Undo from Config-Relative Paths
 

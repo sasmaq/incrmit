@@ -5,6 +5,30 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-27
+
+### Security
+
+- The config and the state file are no longer opened when they are not ordinary
+  files. `incrmit.toml`, the `--output` that `discover` reads an `ignore` list
+  from, and `.incrmit.state.toml` skipped the check that bump targets get, so a
+  named pipe at any of them hung the command with no output. That included
+  `preview` and `discover --dry-run`, the commands meant for a tree you do not
+  own. A repository can also commit `incrmit.toml -> /dev/zero`, which was read
+  without end. Each is now reported as `not a regular file` with exit `1` before
+  anything is written. A link to an ordinary file is still followed.
+- The config and the state file are capped at 16 MiB. The state file drops its
+  oldest entries rather than grow past the cap, so a project with thousands of
+  files keeps fewer than 20 bumps to undo instead of failing to read its own
+  history.
+
+### Fixed
+
+- A bump whose state file cannot be read now fails before writing anything. The
+  state file used to be read last, so a bump could rewrite every target and the
+  config and then fail, leaving no entry for `undo` to find. `--dry-run` reads
+  it too and reports the same failure.
+
 ## [0.3.4] - 2026-09-26
 
 ### Security
