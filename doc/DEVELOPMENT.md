@@ -204,6 +204,12 @@ entry to a **state file** so the bump can be reverted by `incrmit undo`.
   beside them; the file header recommends adding it to `.gitignore`. (In this
   repo `*.toml` is already git-ignored, which covers it.) Discovery never treats
   it (or `incrmit.toml`) as a target.
+- **Not trusted like the config:** a repository can still commit one, so
+  `undo` treats it as a list of changes to check, not as locations to write.
+  It reverts an entry only when every change's `path` is listed in the config
+  at the change's `new` version (see
+  [section 8.4](#84-undo)), which limits the journal to what a bump of that
+  config could already reach.
 - **`--file` mode records nothing:** a single-file bump has no config-anchored
   location to keep or later find the state file, so no history is written and
   `undo` is a config-mode operation only.
@@ -212,15 +218,13 @@ The schema (TOML), encoded with the same `github.com/BurntSushi/toml` library:
 
 ```go
 type Change struct {
-    Path string `toml:"path"` // display path, as listed in the config
-    FS   string `toml:"fs"`   // resolved (absolute) filesystem path
+    Path string `toml:"path"` // the path exactly as the config lists it
     Old  string `toml:"old"`  // version token before the bump
     New  string `toml:"new"`  // version token after the bump
 }
 
 type Entry struct {
     Timestamp time.Time `toml:"timestamp"`
-    Config    string    `toml:"config,omitempty"` // resolved config path
     Changes   []Change  `toml:"changes"`
 }
 
@@ -229,9 +233,17 @@ type History struct {
 }
 ```
 
-Paths are stored **resolved (absolute)** so `undo` can locate the files and the
-config regardless of the working directory it is later run from. The file is
-written atomically via `files.WriteAtomic`, the same path used for target files.
+Paths are stored **as the config lists them**, never resolved. `undo` resolves
+each against the directory of the config it was given (`-c`, or `incrmit.toml`),
+through the same `config.TargetPath` a bump uses, and rewrites that config. The
+journal therefore belongs to the project rather than to the directory the bump
+ran in: a copied or moved project undoes its own files, and `undo` still works
+from any working directory because it finds the state file through the config.
+Before Milestone 34 each entry also stored the config's absolute path
+(`config`) and each change the file's (`fs`), and `undo` acted on those, so undo
+in a copy reverted the original. Both keys are ignored on read, and the next
+save drops them. The file is written atomically via `files.WriteAtomic`, the
+same path used for target files.
 
 ### 6.3 Version
 
@@ -483,8 +495,8 @@ list every flag without duplicating the flag text.
    `config.Marshal`, so the `[[files]]` entries and `ignore` list survive but
    user-authored comments and formatting do not. The output is deterministic:
    the same config bumped twice produces byte-identical layout.
-9. In config mode, push a history entry (each file's path, resolved path, and
-   `old`/`new` tokens, plus a timestamp and the config path) onto the journal
+9. In config mode, push a history entry (each file's path as the config lists
+   it and its `old`/`new` tokens, plus a timestamp) onto the journal
    read in step 5 and save it beside the config so the bump can be undone (see
    [section 6.2](#62-bump-history--state-file-internalhistory)).
 10. Report results (files bumped, and each `old -> new`).
@@ -557,22 +569,34 @@ configured pattern matches.
    the journal; a missing file is an empty history.
 2. Take the most recent entry. If there is none, print a friendly
    "nothing to undo" message and exit `0`.
-3. In config mode load the config up front so a config problem aborts before any
-   write (fail-fast, mirroring bump).
-4. Read every recorded file once, group its changes, and build the reverse
+3. Load that config up front so a config problem aborts before any write
+   (fail-fast, mirroring bump). It is the config undo was given, not a location
+   the journal records, so the lock, the journal, the config, and every target
+   all derive from one path.
+4. Check that every change in the entry names a `[[files]]` entry of that config
+   by its `path` as written, at the change's `new` version. Otherwise report the
+   first change that does not and abort without writing anything, `--dry-run`
+   included. The config is trusted input and the journal is not, so this keeps
+   what a journal can reach to what the config could already bump: an absolute
+   `path`, or one with `../`, is allowed exactly when the config lists it. It
+   also catches a config edited since the bump, which is refused rather than
+   partly undone.
+5. Resolve each recorded `path` against the config's directory
+   (`config.TargetPath`, as `resolveTargets` does for a bump). Read every
+   recorded file once, group its changes, and build the reverse
    (`new -> old`) replacement in a single pass (`files.SetKnownVersions`), so
    overlapping reverts do not cascade. If a file no longer contains the recorded
    `new` token, it was edited since the bump — or another run bumped past it,
    since a lock only serializes the runs that take it: report which file
    diverged and abort without writing anything, rather than putting an older
    version back over newer work.
-5. If `--dry-run`, print `new -> old` for each change and exit (no writes).
-6. Otherwise rewrite each reverted file once, then restore the config by setting
-   each `(path, new)` entry back to its `old` version and rewriting
-   `incrmit.toml` (the bump's self-update in reverse).
-7. Pop the entry and save the journal so a repeated `undo` does not re-apply the
+6. If `--dry-run`, print `new -> old` for each change and exit (no writes).
+7. Otherwise rewrite each reverted file once, then restore the config by setting
+   each `(path, new)` entry back to its `old` version and rewriting the config
+   at the path undo was given (the bump's self-update in reverse).
+8. Pop the entry and save the journal so a repeated `undo` does not re-apply the
    same revert (and instead reverts the previous bump, if any).
-8. Report the reverted files (each `new -> old`).
+9. Report the reverted files (each `new -> old`).
 
 ### 8.5 Preview
 
@@ -763,7 +787,8 @@ only what it was aimed at and only what it can read in bounded time and memory:
 
 Config target paths are a separate matter: they are trusted input (see
 [section 6.1](#61-config-schema-toml)) and may be absolute or reach outside the
-config's directory.
+config's directory. The journal is not trusted input, and `undo` reverts only
+the paths the config lists (see [section 8.4](#84-undo)).
 
 ### Consequences of the atomic write
 
@@ -1051,6 +1076,10 @@ have kept the output safe, so only that check notices the ambiguity.
 - Undo conflict (a file edited since the bump — or bumped past by another run —
   no longer holds the recorded `new` token): report which file diverged, write
   nothing, and exit `1` (generic error).
+- Undo of a change the config does not list (the config was edited since the
+  bump, or the state file names a path of its own): report
+  `<path>: not listed in <config> at <new>, the version the last bump recorded
+  (refusing to undo)`, write nothing, and exit `1`.
 - A project already held by another `incrmit` run: report it, name `--wait`,
   write nothing, and exit `1` (generic error). See
   [section 8.6](#86-concurrency-one-writer-per-project) for why this fails fast
@@ -1130,6 +1159,12 @@ incrmit/
 - Terminal output (`internal/cli/hostile_test.go`, `display_test.go`): every
   command over a tree of hostile names and contents prints nothing a terminal
   would act on, and names each file only in its quoted form (§9.5).
+- Undo away from where the bump ran (`internal/cli/undopaths_test.go`): in a
+  copied project, a moved one, a subdirectory with `-c ../incrmit.toml`, over a
+  config that lists a `../` path, and from a state file an earlier version
+  wrote. A hand-written journal whose `fs` or `config` names somewhere else, or
+  whose `path` the config does not list, must leave everything outside the
+  project unchanged, compared by snapshot as in the lock tests.
 - Fuzz targets over the parsers, the rewriter, discovery's scan, and the
   terminal escaping (§12.1).
 

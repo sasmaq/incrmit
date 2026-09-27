@@ -6,12 +6,23 @@
 // reads the most recent entry and reverts it, then pops the entry so repeated
 // undos walk back through history rather than re-applying the same revert.
 //
-// The state file is local, machine-specific working state, not something meant
-// to be committed: undo restores files in the working copy, so the journal
-// belongs alongside them (git-ignore it). Only the most recent MaxEntries bumps
-// are retained so the file cannot grow without bound, and fewer when that many
-// would not fit under files.MaxOwnFileBytes, the cap the journal is read with;
-// at minimum the last bump is always available to undo.
+// Each change records the file's path as the config lists it, never a resolved
+// location: undo resolves it against the directory of the config it is given,
+// as a bump does, so the journal belongs to the project rather than to the
+// directory the bump ran in, and a copied or moved project undoes its own
+// files. Entries written before this carried the config's absolute path
+// (`config`) and each file's (`fs`); both keys are ignored on read.
+//
+// The state file is local working state, not something meant to be committed:
+// undo restores files in the working copy, so the journal belongs alongside
+// them (git-ignore it). It is still not trusted the way the config is, since a
+// repository can commit one, so undo reverts only changes whose path the
+// config lists at the version the bump wrote.
+//
+// Only the most recent MaxEntries bumps are retained so the file cannot grow
+// without bound, and fewer when that many would not fit under
+// files.MaxOwnFileBytes, the cap the journal is read with; at minimum the last
+// bump is always available to undo.
 package history
 
 import (
@@ -34,20 +45,17 @@ import (
 const MaxEntries = 20
 
 // Change is a single version-token rewrite within one file during a bump: the
-// display path (as listed in the config), the resolved filesystem path used to
-// locate the file on undo, and the old and new version tokens.
+// path exactly as the config lists it, and the old and new version tokens.
 type Change struct {
 	Path string `toml:"path"`
-	FS   string `toml:"fs"`
 	Old  string `toml:"old"`
 	New  string `toml:"new"`
 }
 
-// Entry is one recorded bump: when it happened, the resolved path of the config
-// that was rewritten (so undo can restore it), and every file change applied.
+// Entry is one recorded bump: when it happened and every file change applied.
+// The config it belongs to is the one next to the state file.
 type Entry struct {
 	Timestamp time.Time `toml:"timestamp"`
-	Config    string    `toml:"config,omitempty"`
 	Changes   []Change  `toml:"changes"`
 }
 

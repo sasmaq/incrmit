@@ -62,7 +62,7 @@ func journalOf(n int) *History {
 		p := fmt.Sprintf("file-%02d", i)
 		h.Push(Entry{
 			Timestamp: start.Add(time.Duration(i) * time.Minute),
-			Changes:   []Change{{Path: p, FS: "/project/" + p, Old: "1.0.0", New: "1.0.1"}},
+			Changes:   []Change{{Path: p, Old: "1.0.0", New: "1.0.1"}},
 		})
 	}
 	return h

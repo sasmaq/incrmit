@@ -70,7 +70,9 @@ A `path` is resolved relative to the directory holding the config, and may also
 be absolute or reach outside that directory with `../`. `incrmit.toml` is
 therefore treated as trusted input, on a par with a `Makefile`: whatever it lists
 is what gets rewritten. Review the config before running `incrmit` in a checkout
-you do not control, and prefer paths inside the project.
+you do not control, and prefer paths inside the project. The
+[state file](#undo) is not trusted the same way: `undo` reverts only files the
+config lists.
 
 If a listed `path` happens to be a symlink, `incrmit` writes the new version *in
 place of the link* rather than through it: the link becomes an ordinary file and
@@ -645,6 +647,21 @@ A few details worth knowing:
   This covers a second `incrmit` that bumped past the recorded version as well
   as an edit of your own, so an older version is never written back over newer
   work.
+- **Undo acts on the project it is given.** The state file records each path
+  as `incrmit.toml` lists it, and `undo` resolves it against the config it is
+  pointed at (`-c`, or `incrmit.toml` in the current directory), so it works
+  from a subdirectory with `-c ../incrmit.toml`, and a project that was copied
+  or moved undoes its own files. A state file written by an earlier version
+  also records absolute paths (`fs` and `config`); those are ignored, so an old
+  entry is undone in the project where it now sits.
+- **Undo reverts only what the config lists.** Every file in the entry must
+  still be listed in `incrmit.toml` at the version the bump wrote. If one is
+  not, because the config was edited since the bump or the state file names a
+  file of its own, `undo` refuses, naming it
+  (`VERSION: not listed in incrmit.toml at 1.2.4, ...`), writes nothing, and
+  exits `1`. Unlike the config, a state file is not trusted input: a repository
+  can commit one, and this check is what keeps it from reaching any file the
+  config could not already bump.
 - **Nothing to undo is not an error.** With no recorded history, `undo` prints a
   friendly message and exits `0`.
 - **`--dry-run` previews the revert** (`new -> old`) without writing anything.

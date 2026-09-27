@@ -284,7 +284,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		// Record the bump in the journal next to the config so `incrmit undo`
 		// can revert it. Only in config mode: an --file bump has no
 		// config-anchored location to keep (or find) the state file.
-		if code := recordHistory(cfgPath, statePath, journal, groups, stderr); code != ExitOK {
+		if code := recordHistory(statePath, journal, groups, stderr); code != ExitOK {
 			return code
 		}
 	}
@@ -559,13 +559,9 @@ func resolveTargets(configPath, file string) ([]target, string, []string, error)
 	baseDir := filepath.Dir(cfgPath)
 	targets := make([]target, 0, len(cfg.Files))
 	for _, f := range cfg.Files {
-		fsPath := f.Path
-		if !filepath.IsAbs(fsPath) {
-			fsPath = filepath.Join(baseDir, fsPath)
-		}
 		targets = append(targets, target{
 			display:  f.Path,
-			fsPath:   fsPath,
+			fsPath:   config.TargetPath(baseDir, f.Path),
 			knownVer: f.Token(),
 		})
 	}
@@ -745,25 +741,17 @@ func excludeOutput(results []discovery.Result, root, output string) []discovery.
 
 // recordHistory appends a journal entry for a successful config-mode bump to
 // h, the journal read from statePath during planning, and saves it there so
-// `incrmit undo` can revert the bump. Paths are stored resolved (absolute) so
-// undo can locate the files and config regardless of the working directory it
-// is later run from. On failure it reports to stderr and returns a non-OK exit
-// code.
-func recordHistory(cfgPath, statePath string, h *history.History, groups []fileGroup, stderr io.Writer) int {
-	absCfg, err := filepath.Abs(cfgPath)
-	if err != nil {
-		absCfg = cfgPath
-	}
-	entry := history.Entry{Timestamp: time.Now().UTC(), Config: absCfg}
+// `incrmit undo` can revert the bump. Each change records the path as the
+// config lists it, the same value the config rewrite just wrote, and undo
+// resolves it against the config it is given. Nothing absolute is stored, so
+// the journal follows the project when it is copied or moved. On failure it
+// reports to stderr and returns a non-OK exit code.
+func recordHistory(statePath string, h *history.History, groups []fileGroup, stderr io.Writer) int {
+	entry := history.Entry{Timestamp: time.Now().UTC()}
 	for _, g := range groups {
-		absFS, err := filepath.Abs(g.fsPath)
-		if err != nil {
-			absFS = g.fsPath
-		}
 		for _, e := range g.entries {
 			entry.Changes = append(entry.Changes, history.Change{
 				Path: g.display,
-				FS:   absFS,
 				Old:  e.oldVer.String(),
 				New:  e.newVer.String(),
 			})
@@ -797,6 +785,10 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
+	// Every path undo touches derives from this one: the lock and the journal
+	// sit beside it, it is the config rewritten, and each recorded file is
+	// resolved against its directory. Nothing the journal records can name
+	// another location.
 	cfgPath := config.ResolvePath(opts.configPath)
 
 	// undo is the same read-modify-write as bump, in reverse: it reads the
@@ -825,12 +817,26 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 
 	// Load the config up front (before writing anything) so a config problem
 	// aborts the undo before any file is touched, mirroring bump's fail-fast.
-	var cfg *config.Config
-	if entry.Config != "" {
-		cfg, err = config.Load(entry.Config)
-		if err != nil {
-			fprintln(stderr, "incrmit:", err)
-			return classify(err)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return classify(err)
+	}
+	listed := make(map[listing]bool, len(cfg.Files))
+	for _, f := range cfg.Files {
+		listed[listing{f.Path, f.Token()}] = true
+	}
+
+	// The config is trusted input and the journal is not: a repository can
+	// commit a state file. So undo reverts only what a bump of this config
+	// could have written, each recorded file listed at the version the bump
+	// left it at, and refuses the whole entry otherwise. A path the config
+	// lists as absolute or with ../ is allowed exactly because it lists it.
+	for _, c := range entry.Changes {
+		if !listed[listing{c.Path, c.New}] {
+			fprintf(stderr, "incrmit: %s: not listed in %s at %s, the version the last bump recorded (refusing to undo)\n",
+				displayName(c.Path), displayName(cfgPath), c.New)
+			return ExitError
 		}
 	}
 
@@ -838,7 +844,7 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	// the reverse (new -> old) replacement, verifying the recorded "new" token
 	// is still present so a file edited since the bump is caught before any
 	// write happens.
-	groups, code := planReverts(entry, stderr)
+	groups, code := planReverts(entry, filepath.Dir(cfgPath), stderr)
 	if code != ExitOK {
 		return code
 	}
@@ -871,27 +877,26 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 
 	// Restore the config's recorded versions to their pre-bump values so the
 	// config stays in sync with the reverted files (mirroring the bump's
-	// self-update in reverse).
-	if cfg != nil {
-		revert := make(map[string]string, len(entry.Changes))
-		for _, c := range entry.Changes {
-			revert[c.Path+"\x00"+c.New] = c.Old
+	// self-update in reverse). It is the config undo was given, whatever
+	// location an older journal recorded.
+	revert := make(map[listing]string, len(entry.Changes))
+	for _, c := range entry.Changes {
+		revert[listing{c.Path, c.New}] = c.Old
+	}
+	for i := range cfg.Files {
+		f := &cfg.Files[i]
+		if old, ok := revert[listing{f.Path, f.Token()}]; ok {
+			f.SetToken(old)
 		}
-		for i := range cfg.Files {
-			f := &cfg.Files[i]
-			if old, ok := revert[f.Path+"\x00"+f.Token()]; ok {
-				f.SetToken(old)
-			}
-		}
-		data, err := config.Marshal(cfg)
-		if err != nil {
-			fprintln(stderr, "incrmit:", err)
-			return ExitError
-		}
-		if err := files.WriteAtomic(entry.Config, data); err != nil {
-			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", entry.Config, err))
-			return classify(err)
-		}
+	}
+	data, err := config.Marshal(cfg)
+	if err != nil {
+		fprintln(stderr, "incrmit:", err)
+		return ExitError
+	}
+	if err := files.WriteAtomic(cfgPath, data); err != nil {
+		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", cfgPath, err))
+		return classify(err)
 	}
 
 	// Pop the reverted entry so a repeated undo does not re-apply it.
@@ -910,6 +915,10 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
+// listing is a config entry as undo matches it against the journal: the path
+// as written and the full version token.
+type listing struct{ path, version string }
+
 // revertGroup is one file plus every recorded change to undo in it, along with
 // the reverted bytes computed during planning (written verbatim in phase 2).
 type revertGroup struct {
@@ -921,23 +930,26 @@ type revertGroup struct {
 
 // planReverts reads each recorded file once, groups the entry's changes by
 // file, and computes the reverse (new -> old) rewrite in a single pass so
-// overlapping reverts do not cascade (matching the bump write path). It fails
-// fast if a file no longer contains the "new" token the bump wrote, which means
-// the file was edited since the bump and undoing would clobber that change.
-func planReverts(entry history.Entry, stderr io.Writer) ([]revertGroup, int) {
+// overlapping reverts do not cascade (matching the bump write path). Recorded
+// paths are resolved against baseDir, the directory of the config undo was
+// given, exactly as resolveTargets resolves them for a bump. It fails fast if a
+// file no longer contains the "new" token the bump wrote, which means the file
+// was edited since the bump and undoing would clobber that change.
+func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]revertGroup, int) {
 	var groups []revertGroup
 	index := make(map[string]int, len(entry.Changes))
 	for _, c := range entry.Changes {
-		gi, ok := index[c.FS]
+		fsPath := config.TargetPath(baseDir, c.Path)
+		gi, ok := index[fsPath]
 		if !ok {
-			data, err := files.ReadTarget(c.FS)
+			data, err := files.ReadTarget(fsPath)
 			if err != nil {
 				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", c.Path, err))
 				return nil, classify(err)
 			}
-			groups = append(groups, revertGroup{display: c.Path, fsPath: c.FS, updated: data})
+			groups = append(groups, revertGroup{display: c.Path, fsPath: fsPath, updated: data})
 			gi = len(groups) - 1
-			index[c.FS] = gi
+			index[fsPath] = gi
 		}
 		groups[gi].changes = append(groups[gi].changes, c)
 	}

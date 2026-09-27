@@ -60,7 +60,7 @@ func TestSaveToMissingDirectory(t *testing.T) {
 func TestPushAtLimitKeepsNewest(t *testing.T) {
 	h := &History{}
 	for i := 0; i < MaxEntries+5; i++ {
-		h.Push(Entry{Config: string(rune('a' + i%26)), Changes: []Change{{New: "1.0." + string(rune('0'+i%10))}}})
+		h.Push(Entry{Changes: []Change{{Path: string(rune('a' + i%26)), New: "1.0." + string(rune('0'+i%10))}}})
 	}
 	if len(h.Entries) != MaxEntries {
 		t.Fatalf("len(Entries) = %d, want %d", len(h.Entries), MaxEntries)
@@ -70,7 +70,7 @@ func TestPushAtLimitKeepsNewest(t *testing.T) {
 		t.Fatal("Latest() reported an empty journal")
 	}
 	want := MaxEntries + 4
-	if got := last.Config; got != string(rune('a'+want%26)) {
+	if got := label(last); got != string(rune('a'+want%26)) {
 		t.Errorf("newest entry = %q, want the last one pushed", got)
 	}
 }

@@ -172,6 +172,12 @@ changed and in
 .Pa incrmit.toml .
 The bump history is read from a state file kept next to the config
 .Pq Pa .incrmit.state.toml .
+It records each path as the config lists it, and
+.Cm undo
+resolves those paths against the config it is given, so a project that was
+copied or moved undoes its own files.
+Every recorded file must still be listed in the config at the version the bump
+wrote; otherwise the undo is refused and nothing is written.
 A file edited since the bump is left untouched and the undo is refused.
 Repeated undos walk back through successive bumps.
 .It Cm version
@@ -338,6 +344,10 @@ It is local, tool-maintained working state and is not meant to be committed
 .Pq add it to Pa .gitignore .
 A bump reads it before writing anything, so one that cannot be read stops the
 bump with nothing changed; it is safe to delete.
+Unlike the config it is not trusted input:
+.Cm undo
+writes only to files the config lists and to the config itself, whatever the
+state file records.
 .It Pa .incrmit.lock
 Project lock file kept next to the config, or next to the file being bumped
 under

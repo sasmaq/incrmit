@@ -181,8 +181,9 @@ const undoHelp = `usage: incrmit undo [flags]
 
 Revert the most recent bump, restoring the previous version in every file it
 changed (and the version recorded in incrmit.toml). The bump history is read
-from a state file kept next to the config. A file that was edited since the
-bump is left untouched and the undo is refused, so your changes are never
+from a state file kept next to the config, and only files the config still
+lists at the version the bump wrote are reverted. A file that was edited since
+the bump is left untouched and the undo is refused, so your changes are never
 clobbered. Repeated undos walk back through successive bumps.
 
 Flags:

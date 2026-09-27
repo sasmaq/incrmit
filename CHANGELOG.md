@@ -5,7 +5,32 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.6] - 2026-09-28
+
+### Security
+
+- A state file can no longer point `undo` at a file outside the project. It was
+  the one way incrmit wrote to a path no trusted input named: the config is
+  trusted like a Makefile, but a repository can commit `.incrmit.state.toml`,
+  and its recorded absolute paths sent `undo` to any file you can write that
+  held the recorded version. `undo` now writes only to files the config lists
+  and to that config. An absolute or `../` path is still undone when the config
+  lists it.
+
+### Changed
+
+- `undo` works on the project whose config it is given, not the directory the
+  bump ran in. The state file recorded every file's absolute path and the
+  config's, and `undo` acted on those, so undo in a copy of a project reverted
+  the original, reported the change as though it were local, and popped the
+  copy's entry, and undo in a moved project failed looking for the config where
+  it used to be. Entries now record each path as `incrmit.toml` lists it,
+  resolved against the config `undo` is given. Older state files still load,
+  with the absolute paths ignored.
+- `undo` reverts only files the config lists at the version the bump wrote, and
+  otherwise refuses, naming the file, with nothing written. This also stops an
+  undo after the config was edited since the bump, which used to revert the
+  files and leave the edited config entries as they were.
 
 ### Removed
 

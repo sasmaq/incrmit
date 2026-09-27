@@ -159,7 +159,8 @@ func TestHostileTreeNeverReachesTheTerminal(t *testing.T) {
 		}
 	}
 
-	// The journal records the raw names too, so undo finds the files again.
+	// The journal records the raw names too, as the config lists them, so undo
+	// finds the files again.
 	h, err := history.Load(history.ResolvePath(filepath.Join(dir, "incrmit.toml")))
 	if err != nil {
 		t.Fatal(err)
@@ -169,8 +170,8 @@ func TestHostileTreeNeverReachesTheTerminal(t *testing.T) {
 		t.Fatal("the bump recorded no journal entry")
 	}
 	for _, c := range entry.Changes {
-		if !stored[c.Path] || filepath.Base(c.FS) != c.Path {
-			t.Errorf("journal records %q (%q), not a real name", c.Path, c.FS)
+		if !stored[c.Path] {
+			t.Errorf("journal records %q, not a real name", c.Path)
 		}
 	}
 

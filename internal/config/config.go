@@ -165,6 +165,17 @@ func ResolvePath(path string) string {
 	return path
 }
 
+// TargetPath returns the file a `[[files]]` path names for a config in
+// baseDir: an absolute path as written, a relative one joined to baseDir.
+// Validate, the bump, and undo all resolve entries through it, so a path
+// recorded in the journal reaches the same file the config entry does.
+func TargetPath(baseDir, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(baseDir, path)
+}
+
 // Load reads and parses the config at path. A missing file is reported with a
 // dedicated, actionable error (see IsNotExist) so callers can suggest running
 // `incrmit discover`. The parsed config is validated before being returned.
@@ -326,11 +337,7 @@ func (c *Config) Validate(baseDir string) error {
 		seen[key] = struct{}{}
 		pathsSeen[f.Path] = struct{}{}
 
-		resolved := f.Path
-		if !filepath.IsAbs(resolved) {
-			resolved = filepath.Join(baseDir, resolved)
-		}
-		info, err := os.Stat(resolved)
+		info, err := os.Stat(TargetPath(baseDir, f.Path))
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("config: target %q does not exist", f.Path)

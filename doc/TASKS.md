@@ -1516,39 +1516,96 @@ input named: `incrmit.toml` is documented as trusted, like a Makefile, but a
 committed `.incrmit.state.toml` is not, and its `fs` values can point `undo`
 at any file the user can write.
 
-- [ ] Reproduce first: the copied project (assert `orig` is untouched), the
+- [x] Reproduce first: the copied project (assert `orig` is untouched), the
       moved project (today `undo` fails with "reading VERSION: file does not
       exist" beside a `VERSION` that exists), and a hand-written state file
       whose `fs` names a file outside the project.
-- [ ] Resolve every journal path against the directory of the config `undo`
+      Reproduced with a built binary and then in
+      `internal/cli/undopaths_test.go`, which snapshots everything outside the
+      project with `snapshotOutside` from the lock tests. Copied: `orig`'s
+      `VERSION` and config went to `1.0.0` and the copy stayed at `1.0.1`, as
+      reported. Moved: the failure came earlier than the item says, since
+      undo loads the recorded config first, and read
+      `config: ".../before/incrmit.toml" not found; run incrmit discover`
+      beside a config that exists. Planted: `fs` naming `../victim.txt`
+      reverted that file, and a planted `config` naming another project's
+      config rewrote it. `TestUndoConfigListsParentPath` passed before the
+      fix and stays as a guard.
+- [x] Resolve every journal path against the directory of the config `undo`
       was given (`-c`, or `incrmit.toml` by default), the same way
       `resolveTargets` resolves config entries for a bump, and write the
       reverted config back to that path rather than to the recorded `config`.
       `undo` still works from any working directory, because it finds the
       state file through the config.
-- [ ] Stop writing `fs` and `config` into new entries. `path` is already the
+      "The same way" is one function: `config.TargetPath(baseDir, path)`,
+      now called by `Validate`, `resolveTargets`, and `planReverts`, which
+      also groups by the resolved path instead of `fs`. `runUndo` always
+      loads and rewrites the config at `cfgPath`; the `entry.Config != ""`
+      branch is gone.
+- [x] Stop writing `fs` and `config` into new entries. `path` is already the
       config-relative path, so no new field is needed. Old state files keep
       loading: both keys are ignored on read, so an entry written by an
       earlier version is undone against the current project rather than its
       old location.
-- [ ] Only undo what the current config names. Before planning, check that
+      `history.Change.FS` and `history.Entry.Config` are removed, and
+      `recordHistory` no longer takes the config path. The TOML decoder
+      ignores unknown keys, so no migration code is needed, and the next
+      `Save` drops them (`TestLoadIgnoresRetiredKeys`).
+- [x] Only undo what the current config names. Before planning, check that
       every change's `path` matches a `[[files]]` entry in the config being
       undone whose version is the change's `new`, and refuse otherwise,
       naming the path, with nothing written. The config is the trusted input,
       so this limits what a journal can reach to what the config could
       already bump. An absolute `path`, or one with `../`, stays allowed
       exactly when the config lists it.
-- [ ] Confirm the lock, the state file, and every write now belong to one
+      Refused with exit `1` and
+      `VERSION: not listed in incrmit.toml at 1.0.1, the version the last bump
+      recorded (refusing to undo)`, `--dry-run` included, before any target
+      is read. Paths match as written, the same rule the config rewrite
+      uses, so `./VERSION` does not match `VERSION`; a bump writes the
+      config and the journal from the same value, so only a hand edit can
+      split them. Both lookups key on a `listing` struct rather than the old
+      `path + "\x00" + version` string. This also changes one legitimate
+      case: a config edited since the bump used to get its files reverted
+      and its edited entries left alone, and is now refused.
+- [x] Confirm the lock, the state file, and every write now belong to one
       project. The lock is already taken beside the config `undo` was given;
       with the recorded `config` gone, `undo` can no longer rewrite a config
       in a directory it did not lock.
-- [ ] Update the tests that assert absolute journal paths, and add undo from
+      Confirmed by audit: the lock (`acquireProject(filepath.Dir(cfgPath))`),
+      the journal (`history.ResolvePath(cfgPath)`), the config write, and
+      every target (`config.TargetPath(filepath.Dir(cfgPath), c.Path)` for a
+      listed `c.Path`) derive from `cfgPath`, and nothing is read from the
+      journal as a location. A target the config lists outside its directory
+      is still written unlocked, exactly as a bump writes it.
+      `TestUndoPlantedJournal` covers a planted `config` naming another
+      project's config, which is left untouched.
+- [x] Update the tests that assert absolute journal paths, and add undo from
       a subdirectory with `-c ../incrmit.toml`, after the project was moved,
       after it was copied, with a config that lists a `../` path, and from an
       old state file that still carries `fs` and `config`.
-- [ ] Update the `internal/history` package doc, `doc/DEVELOPMENT.md` (the
+      `hostile_test.go` checked `filepath.Base(c.FS)`; the `history` tests
+      used `Entry.Config` as a label and now label by the change's path. The
+      new tests are in `undopaths_test.go`: the subdirectory test also bumps
+      from there and asserts the new entry has no `fs` or `config`; the
+      `../` test undoes from the parent directory with `-c project/...`; the
+      old-state-file test holds two entries naming a directory that is gone
+      and undoes both. `TestUndoRefusesWhatTheConfigDoesNotList` covers an
+      edited version, a removed entry, and a respelled path. Suite passes
+      under `-race` and `make check`, and all six release platforms vet;
+      coverage 96.4% -> 96.5%.
+- [x] Update the `internal/history` package doc, `doc/DEVELOPMENT.md` (the
       state file format, which says paths are stored absolute), `README.md`,
       and the man page, and add a `Changed` entry to `CHANGELOG.md`.
+      `doc/DEVELOPMENT.md` §6.2 (schema, the retired keys, and a "not trusted
+      like the config" bullet), §8.1 step 9, §8.4 (new check and resolve
+      steps), §9.1, §10, and §12. As in Milestone 33, the README's reference
+      material lives in `doc/USAGE.md`, so the change is there (Undo, and the
+      trusted-input paragraph); the README says nothing about the journal's
+      paths. The man page covers it under `undo` and FILES, and `undo -h`
+      gets one sentence. `CHANGELOG.md` has two Changed entries and, beyond
+      what the item asks, a Security entry for the planted state file, as
+      Milestones 32 and 33 filed theirs.
 
 ## Milestone 35 — Integer Overflow on Bump
 
