@@ -603,7 +603,11 @@ func TestEntryForSplitsVersion(t *testing.T) {
 	}
 
 	// Bumping past a prerelease clears both keys.
-	got.SetVersion(v.BumpPatch())
+	next, err := v.BumpPatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.SetVersion(next)
 	want = FileEntry{Path: "VERSION", Version: "v1.2.4"}
 	if got != want {
 		t.Errorf("after a patch bump = %+v, want %+v", got, want)

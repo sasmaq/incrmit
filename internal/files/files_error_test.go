@@ -218,6 +218,23 @@ func TestApplyBumpErrors(t *testing.T) {
 			t.Errorf("err = %v, want *AmbiguousError", err)
 		}
 	})
+
+	t.Run("overflow leaves the file alone", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "VERSION")
+		body := "1.2.9223372036854775807\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var overflow *version.OverflowError
+		if _, _, err := ApplyBump(path, version.Version.BumpPatch, false); !errors.As(err, &overflow) {
+			t.Fatalf("err = %v, want *version.OverflowError", err)
+		}
+		if got, err := os.ReadFile(path); err != nil {
+			t.Fatal(err)
+		} else if string(got) != body {
+			t.Errorf("file changed despite the failure: %q", got)
+		}
+	})
 }
 
 // A readable file in a directory that cannot be written to gets as far as the

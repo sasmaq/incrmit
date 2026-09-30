@@ -285,6 +285,17 @@ hyphen (`1.2.3+0-`), which the scanner reads back as `1.2.3+0`. Either one is
 reported as "no semantic version found" rather than bumped to something the
 file does not say.
 
+Every number `incrmit` counts stops at 9223372036854775807, the largest signed
+64-bit integer: each of the three components, and the counter at the end of a
+prerelease. A bump that would go past it exits `3`, naming the file and the
+component, and writes nothing. Adding one would wrap to a negative number,
+which is not a version, so the file would be left holding a token no later
+command could find. Only the number being incremented matters:
+`1.2.9223372036854775807` has no next patch, but `--minor` still takes it to
+`1.3.0`. `--pre rc` refuses a counter already past the limit
+(`1.2.3-rc.99999999999999999999`) the same way, and `--pre beta` still starts a
+new series there.
+
 The whole token is matched and rewritten as a unit, so `1.2.3-rc.1` is never
 confused with the `1.2.3` inside it — a config entry pinning one does not match
 the other, even in the same file.
@@ -572,6 +583,11 @@ history. A few details:
 - **A file listed once per version it contains** (see
   [Discovery](#discovery)) gets one row per version; an identical `path` and
   `version` is never printed twice.
+- **A bump past the limit shows `n/a`**: a component already at
+  9223372036854775807 cannot be bumped (see
+  [Prereleases and build metadata](#prereleases-and-build-metadata)), so its
+  column reads `n/a`, with a note under the table. The other columns still show
+  what a bump would write, and `preview` still exits `0`.
 - **`--file` previews a single target** without a config, with the same
   semantics as a `--file` bump.
 - **`--max-file-size` applies**, exactly as it does to a bump: no cap by
@@ -827,12 +843,12 @@ is empty.
 `incrmit` returns predictable exit codes so it can be used reliably in
 scripts and CI pipelines:
 
-| Code | Meaning                                                        |
-| ---- | -------------------------------------------------------------- |
-| 0    | Success.                                                       |
-| 1    | Generic runtime error (e.g. missing config, filesystem error). |
-| 2    | Invalid arguments or flags.                                    |
-| 3    | No version found, or an ambiguous/unparseable version.         |
+| Code | Meaning                                                                       |
+| ---- | ----------------------------------------------------------------------------- |
+| 0    | Success.                                                                      |
+| 1    | Generic runtime error (e.g. missing config, filesystem error).                |
+| 2    | Invalid arguments or flags.                                                   |
+| 3    | No version found, an ambiguous/unparseable version, or one too large to bump. |
 
 A run that finds the project already held by another `incrmit` also exits `1`,
 having written nothing — see [Concurrent runs](#concurrent-runs).

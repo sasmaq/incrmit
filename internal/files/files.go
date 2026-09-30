@@ -325,8 +325,10 @@ func ReadVersion(path string) (version.Version, error) {
 // ApplyBump reads path, transforms its version with bump, and (unless dryRun)
 // writes the result back in place atomically. It returns the old and new
 // versions. The selection of which component to bump is the caller's concern;
-// this function only applies the supplied transform.
-func ApplyBump(path string, bump func(version.Version) version.Version, dryRun bool) (oldVer, newVer version.Version, err error) {
+// this function only applies the supplied transform, and a transform that fails
+// (a *version.OverflowError from a component already at math.MaxInt) fails the
+// call before anything is written.
+func ApplyBump(path string, bump func(version.Version) (version.Version, error), dryRun bool) (oldVer, newVer version.Version, err error) {
 	data, err := ReadTarget(path)
 	if err != nil {
 		return version.Version{}, version.Version{}, fmt.Errorf("files: reading %q: %w", path, err)
@@ -336,7 +338,10 @@ func ApplyBump(path string, bump func(version.Version) version.Version, dryRun b
 	if err != nil {
 		return version.Version{}, version.Version{}, fmt.Errorf("files: %q: %w", path, err)
 	}
-	newVer = bump(oldVer)
+	newVer, err = bump(oldVer)
+	if err != nil {
+		return version.Version{}, version.Version{}, fmt.Errorf("files: %q: %w", path, err)
+	}
 
 	if dryRun {
 		return oldVer, newVer, nil

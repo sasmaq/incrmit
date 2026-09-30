@@ -264,7 +264,11 @@ func TestSetVersionPreservesPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindVersion: %v", err)
 	}
-	out, err := SetVersion(in, cur.BumpMinor())
+	next, err := cur.BumpMinor()
+	if err != nil {
+		t.Fatalf("BumpMinor: %v", err)
+	}
+	out, err := SetVersion(in, next)
 	if err != nil {
 		t.Fatalf("SetVersion: %v", err)
 	}
@@ -757,7 +761,11 @@ func TestSetVersionPreservesReleaseFilenames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FindVersion: %v", err)
 			}
-			got, err := SetVersion([]byte(tt.in), cur.BumpPatch())
+			next, err := cur.BumpPatch()
+			if err != nil {
+				t.Fatalf("BumpPatch: %v", err)
+			}
+			got, err := SetVersion([]byte(tt.in), next)
 			if err != nil {
 				t.Fatalf("SetVersion: %v", err)
 			}

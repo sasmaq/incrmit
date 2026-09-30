@@ -5,6 +5,23 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-10-01
+
+### Fixed
+
+- A bump past 9223372036854775807, the largest number incrmit can count to, is
+  refused instead of wrapping. `1.2.9223372036854775807` bumped to
+  `1.2.-9223372036854775808`, which was written to the file and the config as
+  a success, and after which every command found no version at all. The same
+  happened to the minor and major components and to a prerelease counter under
+  `--pre`. Such a bump now exits `3`, naming the file and the component, and
+  writes nothing, `--dry-run` included; `preview` shows that column as `n/a`.
+  Bumping a different component still works.
+- `--pre` refuses a prerelease counter too large for incrmit to count
+  (`rc.99999999999999999999`) instead of appending `.1` to it. The result
+  ranked higher, but the next `--pre rc` no longer saw it as part of the `rc`
+  series and restarted at `rc.1`, below both.
+
 ## [0.3.6] - 2026-09-28
 
 ### Security

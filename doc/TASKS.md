@@ -1621,11 +1621,24 @@ prints the wrapped values too. It is the defect Milestone 30 fixed three
 times, incrmit writing a token it cannot find again, reached through
 arithmetic instead of parsing.
 
-- [ ] Write table tests at the boundary against the intended behavior, so
+- [x] Write table tests at the boundary against the intended behavior, so
       they fail today and pass after the fix: each of major, minor, and patch
       at `math.MaxInt64`, and a prerelease counter at `math.MaxInt64`, through
       a bump, `--dry-run`, `preview`, and `--pre`.
-- [ ] Decide what an unbumpable version does. Recommend refusing: the command
+      `internal/cli/overflow_test.go`. `TestBumpRefusesToOverflow` runs twelve
+      cases as a bump and as `--dry-run`: each component, `--pre` opening a
+      line through each component, and a counter at the ceiling and past it.
+      Each asserts exit `3`, the file, component, and token named on stderr,
+      nothing on stdout, and the project's snapshot unchanged. With it are a
+      `--file` case, a two-file config where only the second overflows, and
+      `preview` per component plus a golden. All of them failed before the fix,
+      exiting `0` with the wrapped values. `TestBumpUpToTheCeiling` passed
+      before and after: one below the ceiling bumps to it and `undo` finds it,
+      and a full patch still bumps its minor, so the fix cannot refuse too
+      much. The version package has `TestBumpOverflow` and `TestBumpUpToMaxInt`.
+      Tests spell the boundary `math.MaxInt`, which is `math.MaxInt64` on all
+      six release platforms.
+- [x] Decide what an unbumpable version does. Recommend refusing: the command
       exits `3` naming the file and the component, and writes nothing, which
       is how incrmit treats every other version it cannot handle. Clamping
       and wrapping both write a version that is not greater than the one it
@@ -1633,22 +1646,72 @@ arithmetic instead of parsing.
       one or add checked variants for the CLI, and surface the error through
       `bumpFunc`, whose error path in `planGroups` already fails before any
       write.
-- [ ] Make `preview` show a projection that would overflow as unavailable
+      Refused. `BumpMajor`, `BumpMinor`, `BumpPatch`, `AdvancePrerelease`, and
+      `BumpPrerelease` now return `(Version, error)`; giving the methods the
+      error, rather than adding checked twins, leaves no wrapping version for
+      a caller to pick up, and `files.ApplyBump` takes the new signature too.
+      The error is `*version.OverflowError{Version, Part}`, which `classify`
+      maps to `ExitNoVersion`:
+      `incrmit: VERSION: version: cannot bump the patch component of
+      1.2.9223372036854775807: incrmit counts only up to 9223372036854775807`.
+      Only the incremented number is checked. `componentBump` now returns a
+      `bumpFunc`, and `prereleaseBump` picks the component to open a line with
+      and then starts the series, so both `--pre` paths share one error
+      check. The lock is still taken for a real run, but no file, config, or
+      journal is written.
+- [x] Make `preview` show a projection that would overflow as unavailable
       rather than as a wrapped number, with the table still aligned.
-- [ ] Settle the prerelease counter's other edge separately: a numeric
+      The cell reads `n/a`, and a footnote follows the drift one:
+      `n/a: that component is already 9223372036854775807, as high as incrmit
+      counts`. `previewRow`'s projections are `*version.Version`, nil when the
+      bump fails (`projectBump`); the widths are measured after rendering, as
+      for the path, so the column still lines up. `preview` still exits `0`,
+      since the other columns are real. `testdata/preview_overflow.golden` has
+      an `n/a` in every column beside a drifting row.
+- [x] Settle the prerelease counter's other edge separately: a numeric
       identifier too large for an `int` has `.1` appended today
       (`rc.99999999999999999999` -> `rc.99999999999999999999.1`) rather than
       being counted. Keep that (it does sort higher) or refuse it like the
       numeric core, and test whichever is chosen.
-- [ ] Add a fuzz target for the property all of this breaks: for any version
+      Refused, with the same `OverflowError` as a counter at `math.MaxInt`.
+      Keeping it only put the break off by one step: `PrereleaseID` of
+      `rc.99999999999999999999.1` is `rc.99999999999999999999`, so the next
+      `--pre rc` saw a different series and restarted at `rc.1`, below both.
+      Refusing also gives one rule for every counter rather than a cliff
+      between `rc.9223372036854775807` and `rc.9223372036854775808`. `Parse`
+      still accepts the token and `Compare` still orders it; only advancing it
+      is refused, and `--pre beta` still starts a new series there. Covered by
+      "counter past an int" in `TestBumpOverflow` and "pre counter past an int"
+      in the CLI table.
+- [x] Add a fuzz target for the property all of this breaks: for any version
       `Parse` accepts, every component bump and every same-series prerelease
       advance that succeeds yields a token that parses back to itself through
       `String()` and that `version.Compare` ranks above the input. Leave out
       switching series, since `rc` to `beta` may rank lower by design. Seed
       it with the `MaxInt64` boundaries.
-- [ ] Document the limit in `README.md` and in `doc/DEVELOPMENT.md` §12.1 next
+      `version.FuzzBump`, which also asserts the converse: a bump refuses only
+      with an `OverflowError`, and only when its number is at or past the
+      ceiling. The test decides that by comparing digit strings, not by
+      calling `Atoi` as the implementation does. The seeds are `seedTokens`
+      plus ten boundary tokens: each component at `math.MaxInt`, all three one
+      below it, a full core with a prerelease, and counters below, at, just
+      past, and far past the ceiling. With the check disabled, the seeds fail
+      on the first three boundaries; with it, a 60s run found nothing in 26
+      million executions.
+- [x] Document the limit in `README.md` and in `doc/DEVELOPMENT.md` §12.1 next
       to the other tokens incrmit refuses, and add a `Fixed` entry to
       `CHANGELOG.md`.
+      As in Milestones 33 and 34, the README's reference material lives in
+      `doc/USAGE.md`, so the limit is there, in a paragraph after the two
+      refused spellings, with a `preview` bullet and exit `3` in the table. The
+      README does not describe the grammar at all. The man page has the same
+      paragraph under VERSION GRAMMAR, plus the `preview` entry and EXIT
+      STATUS. `doc/DEVELOPMENT.md` has it in §12.1 after the three defects
+      the first fuzzing pass found, and in §7 (preview), §8.1 step 4, §8.5,
+      §9.2, §10 and its exit-code table, and §12. `CHANGELOG.md` has two
+      `Fixed` entries under `[Unreleased]`, one for the wrap and one for the
+      oversized counter. Suite passes under `-race` and `make check`, all six
+      release platforms vet, and coverage is 96.5% -> 96.6%.
 
 ## Milestone 36 — Discover Overwriting an Unrelated File
 

@@ -1,6 +1,9 @@
 package version
 
 import (
+	"errors"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -92,6 +95,113 @@ func FuzzParse(f *testing.F) {
 			t.Errorf("Parse accepts %q whole, but FindTokens reports %v, so the scanner cannot locate it", want, locs)
 		}
 	})
+}
+
+// FuzzBump pins the property Milestone 35 found broken: for any version Parse
+// accepts, every component bump and every same-series prerelease advance
+// either refuses with an *OverflowError, exactly when the number it increments
+// is already at the ceiling, or yields a token that parses back to itself
+// through String() and that Compare ranks above the input.
+//
+// Adding one to math.MaxInt wrapped to a negative number, which String()
+// writes as a token Parse rejects, so the bump wrote a version the next
+// command could not find. Switching prerelease series is left out: starting
+// beta on top of an rc ranks lower by design.
+func FuzzBump(f *testing.F) {
+	for _, s := range seedTokens {
+		f.Add(s)
+	}
+	maxN, below := strconv.Itoa(math.MaxInt), strconv.Itoa(math.MaxInt-1)
+	for _, s := range []string{
+		maxN + ".0.0",
+		"0." + maxN + ".0",
+		"0.0." + maxN,
+		below + "." + below + "." + below,
+		"v" + maxN + "." + maxN + "." + maxN + "-rc.1+build.7",
+		"1.2.3-rc." + maxN,
+		"1.2.3-rc." + below,
+		"1.2.3-" + maxN,
+		"1.2.3-rc.9223372036854775808",
+		"1.2.3-rc.99999999999999999999",
+	} {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, s string) {
+		v, err := Parse(s)
+		if err != nil {
+			return
+		}
+
+		type step struct {
+			name string
+			bump func(Version) (Version, error)
+			full bool // the number it increments is at or past math.MaxInt
+		}
+		steps := []step{
+			{"BumpMajor", Version.BumpMajor, v.Major == math.MaxInt},
+			{"BumpMinor", Version.BumpMinor, v.Minor == math.MaxInt},
+			{"BumpPatch", Version.BumpPatch, v.Patch == math.MaxInt},
+		}
+		if v.IsPrerelease() {
+			full := counterFull(v.Prerelease, maxN)
+			steps = append(steps, step{"AdvancePrerelease", Version.AdvancePrerelease, full})
+			// The path `--pre <series>` takes. A bare numeric prerelease has
+			// no series name, and the CLI refuses an empty --pre.
+			if id := v.PrereleaseID(); id != "" {
+				same := func(v Version) (Version, error) { return v.BumpPrerelease(id) }
+				steps = append(steps, step{"BumpPrerelease(" + id + ")", same, full})
+			}
+		}
+
+		for _, st := range steps {
+			next, err := st.bump(v)
+			var overflow *OverflowError
+			switch {
+			case err != nil && !errors.As(err, &overflow):
+				t.Errorf("%s(%q) failed with %v, want only an *OverflowError", st.name, s, err)
+				continue
+			case err != nil && !st.full:
+				t.Errorf("%s(%q) refused below the ceiling: %v", st.name, s, err)
+				continue
+			case err != nil:
+				continue
+			case st.full:
+				t.Errorf("%s(%q) = %q, want it refused at the ceiling", st.name, s, next)
+				continue
+			}
+
+			tok := next.String()
+			again, err := Parse(tok)
+			if err != nil {
+				t.Errorf("%s(%q) = %q, which Parse rejects: %v", st.name, s, tok, err)
+				continue
+			}
+			if again != next {
+				t.Errorf("%s(%q) = %#v, but reparsing its String() gives %#v", st.name, s, next, again)
+			}
+			if Compare(next, v) <= 0 {
+				t.Errorf("%s(%q) = %q, which does not rank above it", st.name, s, tok)
+			}
+		}
+	})
+}
+
+// counterFull reports whether prerelease ends in a numeric identifier at or
+// past maxN, the decimal spelling of math.MaxInt. It compares digit strings,
+// as numbers without leading zeros compare, rather than reusing Atoi the way
+// AdvancePrerelease does, so the fuzz target checks the implementation against
+// a second reading of the rule instead of a copy of it.
+func counterFull(prerelease, maxN string) bool {
+	ids := strings.Split(prerelease, ".")
+	last := ids[len(ids)-1]
+	if !isNumericID(last) {
+		return false
+	}
+	if len(last) != len(maxN) {
+		return len(last) > len(maxN)
+	}
+	return last >= maxN
 }
 
 // FuzzFindTokens checks the shape of the ranges FindTokens returns, which is

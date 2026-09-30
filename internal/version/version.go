@@ -5,6 +5,7 @@ package version
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -194,19 +195,54 @@ func ValidPrereleaseID(id string) error {
 	return checkIdentifiers(id, "prerelease", "-"+id, true)
 }
 
+// OverflowError reports a bump that would carry a number past math.MaxInt, the
+// largest value Parse can read into a component. Adding one to it wraps to a
+// negative number, and a token such as 1.2.-9223372036854775808 is not a
+// version: the bump would write it, and the next command would find no version
+// in the file at all. Clamping is no better, since it writes a version that is
+// not greater than the one it replaces, so the bump is refused instead.
+type OverflowError struct {
+	Version Version // the version the bump was asked of
+	Part    string  // "major component", "minor component", "patch component", or "prerelease counter"
+}
+
+func (e *OverflowError) Error() string {
+	return fmt.Sprintf("version: cannot bump the %s of %s: incrmit counts only up to %d", e.Part, e.Version, math.MaxInt)
+}
+
+// increment returns n+1, or an *OverflowError naming part when n is already
+// math.MaxInt.
+func (v Version) increment(n int, part string) (int, error) {
+	if n == math.MaxInt {
+		return 0, &OverflowError{Version: v, Part: part}
+	}
+	return n + 1, nil
+}
+
 // BumpMajor increments the major component and resets minor and patch to 0.
-// See BumpPatch for what happens to the prerelease and build sections.
-func (v Version) BumpMajor() Version {
-	return Version{Major: v.Major + 1, Minor: 0, Patch: 0, Prefix: v.Prefix}
+// See BumpPatch for what happens to the prerelease and build sections, and for
+// the error.
+func (v Version) BumpMajor() (Version, error) {
+	major, err := v.increment(v.Major, "major component")
+	if err != nil {
+		return Version{}, err
+	}
+	return Version{Major: major, Minor: 0, Patch: 0, Prefix: v.Prefix}, nil
 }
 
 // BumpMinor increments the minor component and resets patch to 0. See BumpPatch
-// for what happens to the prerelease and build sections.
-func (v Version) BumpMinor() Version {
-	return Version{Major: v.Major, Minor: v.Minor + 1, Patch: 0, Prefix: v.Prefix}
+// for what happens to the prerelease and build sections, and for the error.
+func (v Version) BumpMinor() (Version, error) {
+	minor, err := v.increment(v.Minor, "minor component")
+	if err != nil {
+		return Version{}, err
+	}
+	return Version{Major: v.Major, Minor: minor, Patch: 0, Prefix: v.Prefix}, nil
 }
 
-// BumpPatch increments the patch component.
+// BumpPatch increments the patch component. It returns an *OverflowError when
+// the patch is already math.MaxInt; only the component being incremented
+// matters, so 1.2.9223372036854775807 still bumps its minor to 1.3.0.
 //
 // Like BumpMajor and BumpMinor it preserves any prefix and drops both the
 // prerelease and the build metadata: 1.2.3-rc.1 bumps to 1.2.4, not to
@@ -214,8 +250,12 @@ func (v Version) BumpMinor() Version {
 // still a preview of a release it no longer names, and build metadata describes
 // one specific build, so it is never inherited. Use Release to promote a
 // prerelease in place (1.2.3-rc.1 -> 1.2.3) and BumpPrerelease to iterate on one.
-func (v Version) BumpPatch() Version {
-	return Version{Major: v.Major, Minor: v.Minor, Patch: v.Patch + 1, Prefix: v.Prefix}
+func (v Version) BumpPatch() (Version, error) {
+	patch, err := v.increment(v.Patch, "patch component")
+	if err != nil {
+		return Version{}, err
+	}
+	return Version{Major: v.Major, Minor: v.Minor, Patch: patch, Prefix: v.Prefix}, nil
 }
 
 // Release promotes a prerelease to the release it precedes, dropping both the
@@ -256,33 +296,48 @@ func (v Version) StartPrerelease(id string) Version {
 // 1.2.3-rc.1 -> 1.2.3-rc.2. A prerelease with no trailing number gains one
 // (1.2.3-rc -> 1.2.3-rc.1). Build metadata is dropped. A version with no
 // prerelease at all is returned unchanged; callers decide what to start.
-func (v Version) AdvancePrerelease() Version {
+//
+// A trailing counter at math.MaxInt, or too large for an int at all, is
+// refused with an *OverflowError, as a numeric component at the ceiling is.
+// Appending ".1" to the oversized one would rank higher, but PrereleaseID
+// would then keep the old counter as part of the series name, so the next
+// advance in that series would not recognize it and would restart at 1.
+func (v Version) AdvancePrerelease() (Version, error) {
 	if v.Prerelease == "" {
-		return v
+		return v, nil
 	}
 	next := v
 	next.Build = ""
 	ids := strings.Split(v.Prerelease, ".")
 	last := ids[len(ids)-1]
-	if n, err := strconv.Atoi(last); err == nil && isNumericID(last) {
-		ids[len(ids)-1] = strconv.Itoa(n + 1)
+	if isNumericID(last) {
+		// All digits, so Atoi can fail only by being out of range.
+		n, err := strconv.Atoi(last)
+		if err != nil {
+			return Version{}, &OverflowError{Version: v, Part: "prerelease counter"}
+		}
+		if n, err = v.increment(n, "prerelease counter"); err != nil {
+			return Version{}, err
+		}
+		ids[len(ids)-1] = strconv.Itoa(n)
 	} else {
 		ids = append(ids, "1")
 	}
 	next.Prerelease = strings.Join(ids, ".")
-	return next
+	return next, nil
 }
 
 // BumpPrerelease starts or advances a prerelease of the same numeric version:
 // it advances the counter when v is already in the id series
 // (1.2.4-rc.1 -> 1.2.4-rc.2) and otherwise starts that series at 1
 // (1.2.4 -> 1.2.4-rc.1, 1.2.4-beta.2 -> 1.2.4-rc.1). It never changes the
-// numeric components; callers that want a new release line bump first.
-func (v Version) BumpPrerelease(id string) Version {
+// numeric components; callers that want a new release line bump first. The
+// error is AdvancePrerelease's; starting a series cannot fail.
+func (v Version) BumpPrerelease(id string) (Version, error) {
 	if v.IsPrerelease() && v.PrereleaseID() == id {
 		return v.AdvancePrerelease()
 	}
-	return v.StartPrerelease(id)
+	return v.StartPrerelease(id), nil
 }
 
 // String formats the version back to [v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD],

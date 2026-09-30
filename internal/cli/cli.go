@@ -448,7 +448,10 @@ func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) 
 // today. It returns an error when the requested transform is meaningless for
 // that particular version — promoting a version that has no prerelease, say —
 // which is a usage error even though it can only be detected once the file (or
-// the config entry) has been read.
+// the config entry) has been read. It also returns a *version.OverflowError
+// when the number it would increment is already math.MaxInt, which classify
+// maps to ExitNoVersion. Either way planGroups fails before anything is
+// written.
 type bumpFunc func(version.Version) (version.Version, error)
 
 // usageError marks a failure caused by the flags the user chose rather than by
@@ -493,13 +496,14 @@ func resolveBump(opts bumpOptions) (bumpFunc, string, error) {
 		return prereleaseBump(opts, component), fmt.Sprintf("%s prerelease bump", opts.pre), nil
 
 	default:
-		return func(v version.Version) (version.Version, error) { return component(v), nil }, label, nil
+		return component, label, nil
 	}
 }
 
 // componentBump returns the plain numeric transform selected by the
-// major/minor/patch flags, along with its summary label.
-func componentBump(opts bumpOptions) (func(version.Version) version.Version, string) {
+// major/minor/patch flags, along with its summary label. The transform fails
+// with a *version.OverflowError when the component is already math.MaxInt.
+func componentBump(opts bumpOptions) (bumpFunc, string) {
 	switch {
 	case opts.major:
 		return version.Version.BumpMajor, "major bump"
@@ -517,16 +521,22 @@ func componentBump(opts bumpOptions) (func(version.Version) version.Version, str
 // (1.2.3 -> 1.2.4-rc.1), and a version already in a prerelease iterates on the
 // spot (1.2.4-rc.1 -> 1.2.4-rc.2, or 1.2.4-beta.2 -> 1.2.4-rc.1 for a different
 // series) rather than skipping a patch number for every preview.
-func prereleaseBump(opts bumpOptions, component func(version.Version) version.Version) bumpFunc {
+func prereleaseBump(opts bumpOptions, component bumpFunc) bumpFunc {
 	return func(v version.Version) (version.Version, error) {
+		var line bumpFunc
 		switch {
 		case opts.componentSet:
-			return component(v).StartPrerelease(opts.pre), nil
+			line = component
 		case !v.IsPrerelease():
-			return v.BumpPatch().StartPrerelease(opts.pre), nil
+			line = version.Version.BumpPatch
 		default:
-			return v.BumpPrerelease(opts.pre), nil
+			return v.BumpPrerelease(opts.pre)
 		}
+		next, err := line(v)
+		if err != nil {
+			return version.Version{}, err
+		}
+		return next.StartPrerelease(opts.pre), nil
 	}
 }
 
@@ -1018,13 +1028,15 @@ func parseUndoFlags(args []string, stdout, stderr io.Writer) (undoOptions, int) 
 // classify maps an error to the appropriate process exit code.
 func classify(err error) int {
 	var ambiguous *files.AmbiguousError
+	var overflow *version.OverflowError
 	var usage *usageError
 	switch {
 	case errors.As(err, &usage):
 		return ExitUsage
 	case errors.Is(err, files.ErrNoVersion),
 		errors.Is(err, files.ErrVersionNotFound),
-		errors.As(err, &ambiguous):
+		errors.As(err, &ambiguous),
+		errors.As(err, &overflow):
 		return ExitNoVersion
 	default:
 		return ExitError

@@ -375,6 +375,9 @@ padded to their widest value, and no line carries trailing whitespace. The
 projected versions come from `version.BumpPatch/BumpMinor/BumpMajor`, so the
 `v` prefix is carried through and a prerelease or build section is dropped
 exactly as a real bump would. An exact `(path, version)` repeat is printed once.
+A projection whose bump fails with `version.OverflowError` is printed as `n/a`,
+with a footnote saying why, rather than as the number it would wrap to; the
+other columns are still real, so the preview still exits `0`.
 
 Rows whose version differs from the one most entries hold are marked `*`, with a
 footnote naming that version. Drift is judged by semver precedence
@@ -476,7 +479,10 @@ list every flag without duplicating the flag text.
    `--max-file-size` when a cap is set (see
    [section 9.1](#91-scan-boundaries)). For every entry, determine the old
    version (from the config `version`, or by scanning the file when none is
-   recorded) and apply the bump to get the new version.
+   recorded) and apply the bump to get the new version. A bump that fails for
+   one entry (`--release` on a version with no prerelease, or a number already
+   at `math.MaxInt`; see [section 9.2](#92-prerelease-and-build-metadata))
+   fails the whole command here, before anything is written.
 5. In config mode, load the journal beside the config (`history.Load`). It is
    read here, with everything else in phase 1, so a state file that cannot be
    read fails the bump before anything is written. It used to be read last,
@@ -607,7 +613,8 @@ configured pattern matches.
    version found by scanning. This is steps 2–3 of the bump flow, shared rather
    than reimplemented, so a preview cannot disagree with the bump it previews.
 3. Project each version through all three component bumps and flatten the groups
-   into rows, dropping an exact `(path, version)` repeat (`previewRows`).
+   into rows, dropping an exact `(path, version)` repeat (`previewRows`). A bump
+   that would overflow projects to nothing, rendered `n/a` in step 5.
 4. Compare the rows by semver precedence and mark those that differ from the
    most common version (`markDrift`).
 5. Render the aligned table, plus the drift footnote when anything is marked.
@@ -661,8 +668,9 @@ The rule is now **one writer per project at a time, readers unsynchronized**:
   [section 6.4](#64-project-lock-file-internallock)), `lock.Acquire` returns a
   *degraded* lock rather than an error: the command warns and continues
   unlocked, because a tool that cannot bump at all is worse than one that
-  cannot detect a second run. Contention is therefore the only error `Acquire` reports, which is what
-  keeps "someone else holds it" distinguishable from "locking is not available".
+  cannot detect a second run. Contention is therefore the only error `Acquire`
+  reports, which is what keeps "someone else holds it" distinguishable from
+  "locking is not available".
 
 Because flock (like a Windows byte-range lock) is held by the open file
 description rather than by the process, two runs inside one test binary contend
@@ -854,6 +862,20 @@ Bump semantics:
   numeric identifier (`rc.1` -> `rc.2`, `rc` -> `rc.1`); `BumpPrerelease(id)`
   advances when the series matches and starts it otherwise. All three drop build
   metadata.
+- Every method that adds one returns `(Version, error)` and refuses with a
+  `*version.OverflowError` (naming the part and the version) when the number it
+  increments is already `math.MaxInt`, the largest component `Parse` reads.
+  Wrapping wrote `1.2.9223372036854775807` forward as
+  `1.2.-9223372036854775808`, which is not a version, so the next command found
+  nothing in the file (Milestone 35). Clamping would write a version no greater
+  than the one it replaced. Only the incremented number is checked, so a full
+  patch still bumps its minor. `AdvancePrerelease` also refuses a counter too
+  large for an int at all: it used to append `.1`, which ranks higher, but
+  `PrereleaseID` then read the old counter as part of the series name, so the
+  next `--pre rc` restarted at `rc.1`, below both. The methods return an error
+  rather than having checked twins beside them so that no caller, `ApplyBump`
+  included, can reach the wrapping arithmetic. `classify` maps the error to exit
+  `3`, as for every other version incrmit cannot handle.
 
 The CLI exposes these as `--release`/`-r` and `--pre`/`-e <id>` rather than
 overloading the component flags. `--pre` combines with them by rule: naming a
@@ -1060,6 +1082,11 @@ have kept the output safe, so only that check notices the ambiguity.
   (configurable; fail fast by default for bump).
 - Multiple versions found in a single file: report ambiguity and skip unless a
   format-specific rule resolves it.
+- A bump that would carry a number past `math.MaxInt` (a component, or the
+  prerelease counter `--pre` advances): report
+  `<path>: version: cannot bump the patch component of <version>: incrmit
+  counts only up to 9223372036854775807`, write nothing, and exit `3`.
+  `--dry-run` fails the same way; `preview` shows the projection as `n/a`.
 - Filesystem/permission errors: surface the underlying error and exit non-zero.
 - A target that is not an ordinary file (a named pipe, device, or socket, whether
   named directly or reached through a symlink): report
@@ -1090,12 +1117,12 @@ have kept the output safe, so only that check notices the ambiguity.
 
 ### Exit Codes
 
-| Code | Meaning                           |
-| ---- | --------------------------------- |
-| `0`  | Success.                          |
-| `1`  | Generic runtime error.            |
-| `2`  | Invalid arguments or flags.       |
-| `3`  | No version found / parse failure. |
+| Code | Meaning                                                        |
+| ---- | -------------------------------------------------------------- |
+| `0`  | Success.                                                       |
+| `1`  | Generic runtime error.                                         |
+| `2`  | Invalid arguments or flags.                                    |
+| `3`  | No version found / parse failure / a number too large to bump. |
 
 ## 11. Project Layout
 
@@ -1165,6 +1192,12 @@ incrmit/
   wrote. A hand-written journal whose `fs` or `config` names somewhere else, or
   whose `path` the config does not list, must leave everything outside the
   project unchanged, compared by snapshot as in the lock tests.
+- Bumps at the integer ceiling (`internal/cli/overflow_test.go`): each
+  component, and a prerelease counter, at `math.MaxInt`, through a bump,
+  `--dry-run`, `--pre`, and `preview`. A bump must exit `3` naming the file and
+  the component, with the project's snapshot unchanged; `preview` must show
+  `n/a` in that column, aligned (`testdata/preview_overflow.golden`). One below
+  the ceiling must bump to it, and `undo` must find the token it wrote.
 - Fuzz targets over the parsers, the rewriter, discovery's scan, and the
   terminal escaping (§12.1).
 
@@ -1192,6 +1225,14 @@ What each target proves:
   Not every range parses, by design: `FindTokens` reports candidates (an IPv4
   address, a two-component number) for `Parse` to reject. The property is that a
   range `Parse` *accepts* spans exactly the bytes `String()` produces.
+- `version.FuzzBump` — for any version `Parse` accepts, every component bump and
+  every same-series prerelease advance either refuses with a
+  `*version.OverflowError`, exactly when the number it increments is at or past
+  `math.MaxInt`, or yields a token that round-trips through `String()` and that
+  `Compare` ranks above the input. Switching series is left out, since `rc` to
+  `beta` may rank lower by design. The test decides "at or past" by comparing
+  digit strings rather than calling `Atoi`, so it checks the implementation
+  against a second reading of the rule, not a copy of it.
 - `files.FuzzSetKnownVersions` — the promise the whole tool rests on: for
   arbitrary bytes and a set of pins, every byte outside the replaced ranges is
   the input's, in the input's order. The check searches for an alignment of
@@ -1268,6 +1309,15 @@ tool could write or accept but never find again:
 - `formatSize` printed a size with no whole unit as `1234 bytes`, which
   `parseSize` refused — so the limit the flag showed as its default could not be
   pasted back. `parseSize` now accepts the spelling `formatSize` prints.
+
+Milestone 35 found a fourth defect of the same kind, reached through arithmetic
+rather than parsing. `Parse` reads a component up to `math.MaxInt`, and the bump
+methods added one without checking, so `1.2.9223372036854775807` bumped to
+`1.2.-9223372036854775808`. That was written to the file and the config, and
+then no command could find it. It is the limit that sits beside the two
+spellings `Parse` refuses: every number incrmit counts stops at
+9223372036854775807, and a bump past it is refused (§9.2). `FuzzBump`, seeded
+with each component and a prerelease counter at the boundary, now guards it.
 
 ## 13. Build and Release
 

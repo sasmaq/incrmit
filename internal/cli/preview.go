@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/sasmaq/incrmit/internal/version"
@@ -23,19 +24,24 @@ type previewOptions struct {
 }
 
 // previewRow is one line of the preview: a target, the version it holds today,
-// and the three versions the component bumps would produce. inSync is false when
-// the row's version differs from the one most entries hold (see markDrift).
+// and the three versions the component bumps would produce, each nil when that
+// bump would overflow (see projectBump). inSync is false when the row's version
+// differs from the one most entries hold (see markDrift).
 type previewRow struct {
 	path    string
 	current version.Version
-	patch   version.Version
-	minor   version.Version
-	major   version.Version
+	patch   *version.Version
+	minor   *version.Version
+	major   *version.Version
 	inSync  bool
 }
 
 // driftMarker flags a row whose version differs from the one most entries hold.
 const driftMarker = "*"
+
+// unavailable stands in for a projection whose bump would carry a component
+// past math.MaxInt, which a real bump refuses.
+const unavailable = "n/a"
 
 func runPreview(args []string, stdout, stderr io.Writer) int {
 	opts, code := parsePreviewFlags(args, stdout, stderr)
@@ -87,14 +93,27 @@ func previewRows(groups []fileGroup) []previewRow {
 			rows = append(rows, previewRow{
 				path:    g.display,
 				current: e.oldVer,
-				patch:   e.oldVer.BumpPatch(),
-				minor:   e.oldVer.BumpMinor(),
-				major:   e.oldVer.BumpMajor(),
+				patch:   projectBump(version.Version.BumpPatch, e.oldVer),
+				minor:   projectBump(version.Version.BumpMinor, e.oldVer),
+				major:   projectBump(version.Version.BumpMajor, e.oldVer),
 				inSync:  true,
 			})
 		}
 	}
 	return rows
+}
+
+// projectBump applies one component bump to v, returning nil when it fails. A
+// component bump fails only with a *version.OverflowError, when the component
+// is already math.MaxInt, and preview reports that projection as unavailable
+// rather than refusing the whole table: the other two still say what a bump
+// would write.
+func projectBump(bump bumpFunc, v version.Version) *version.Version {
+	next, err := bump(v)
+	if err != nil {
+		return nil
+	}
+	return &next
 }
 
 // markDrift flags every row whose version differs from the one most rows hold,
@@ -154,7 +173,8 @@ func precedenceKey(v version.Version) string {
 // renderPreview formats the rows as a table with columns padded to their widest
 // value, so the output lines up in a plain terminal with no tabs or escapes.
 // When some row is out of sync, a marker column and a footnote naming the common
-// version are added; otherwise the table stands alone.
+// version are added, and when some projection is unavailable, a footnote says
+// why; otherwise the table stands alone.
 func renderPreview(rows []previewRow, common version.Version, drifted bool) string {
 	table := make([][]string, 0, len(rows)+1)
 	header := []string{"PATH", "CURRENT", "PATCH", "MINOR", "MAJOR"}
@@ -162,10 +182,18 @@ func renderPreview(rows []previewRow, common version.Version, drifted bool) stri
 		header = append(header, "")
 	}
 	table = append(table, header)
+	overflowed := false
+	projection := func(v *version.Version) string {
+		if v == nil {
+			overflowed = true
+			return unavailable
+		}
+		return v.String()
+	}
 	for _, r := range rows {
 		// The path is rendered before the widths are measured, so a name that
 		// needs escaping still lines up with the rest of its column.
-		cells := []string{displayName(r.path), r.current.String(), r.patch.String(), r.minor.String(), r.major.String()}
+		cells := []string{displayName(r.path), r.current.String(), projection(r.patch), projection(r.minor), projection(r.major)}
 		if drifted {
 			mark := ""
 			if !r.inSync {
@@ -200,8 +228,14 @@ func renderPreview(rows []previewRow, common version.Version, drifted bool) stri
 		b.WriteString(strings.TrimRight(line.String(), " "))
 		b.WriteByte('\n')
 	}
+	if drifted || overflowed {
+		b.WriteByte('\n')
+	}
 	if drifted {
-		fmt.Fprintf(&b, "\n%s differs from %s, the version most entries hold\n", driftMarker, common)
+		fmt.Fprintf(&b, "%s differs from %s, the version most entries hold\n", driftMarker, common)
+	}
+	if overflowed {
+		fmt.Fprintf(&b, "%s: that component is already %d, as high as incrmit counts\n", unavailable, math.MaxInt)
 	}
 	return b.String()
 }
