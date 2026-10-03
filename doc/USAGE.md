@@ -176,11 +176,12 @@ root**, always using forward slashes, and matching is **case-sensitive**):
 
 The `ignore` list is preserved when `discover` regenerates the config and when a
 bump rewrites it, so hand-authored entries are never dropped. `discover` reads
-the list from the config already present at its `--output` path. Whenever
-`incrmit` writes a config that has no `ignore` list yet — either from `discover`
-or when a bump rewrites the file — it includes a short description of the option
-along with a **commented-out example**, so the feature is easy to find and
-enable: just uncomment the line and edit the patterns.
+the list from the config already present at its `--output` path; a file there
+that is not a config is [refused](#discovery-flags), not read as an empty list.
+Whenever `incrmit` writes a config that has no `ignore` list yet — either from
+`discover` or when a bump rewrites the file — it includes a short description of
+the option along with a **commented-out example**, so the feature is easy to
+find and enable: just uncomment the line and edit the patterns.
 
 ## Bumping
 
@@ -524,6 +525,24 @@ incrmit discover --path ./src --dry-run
 # Write the config to a custom location
 incrmit discover --output release/incrmit.toml
 ```
+
+`--output` may name a file that does not exist yet, an empty file, or an
+`incrmit` config, which is regenerated with its `ignore` list kept. A config
+here means TOML that sets only the keys `incrmit` uses (`ignore`, and `files`
+with its `path`, `version`, `prerelease`, and `build`), so every config
+`incrmit` writes qualifies, and so does a hand-written one. Anything else is
+refused with exit `1` before the scan, and left exactly as it was:
+
+```text
+incrmit: NOTES.md exists and is not an incrmit config (line 3 is not TOML); choose another --output or remove the file
+```
+
+That covers a README or other prose, a target such as `VERSION`, a manifest
+such as `package.json`, another tool's TOML such as `pyproject.toml` (`it sets
+"project", which incrmit does not use`), a file of nothing but comments, and a
+named pipe or a device. `--dry-run` refuses the same way, so it never shows a
+plan the real run will not carry out. There is no `--force`: if the file really
+should be replaced, remove it and run `discover` again.
 
 ### Limiting how much is read
 

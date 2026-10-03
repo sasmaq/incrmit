@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -410,25 +412,109 @@ func TestLoadIgnoreStandalone(t *testing.T) {
 	}
 }
 
-// A missing or unparseable file yields no patterns and no error, since discover
-// overwrites its --output and may point it at a non-config file.
-func TestLoadIgnoreLenient(t *testing.T) {
+// A missing, empty, or blank file yields no patterns and no error: discover
+// may write its config there.
+func TestLoadIgnoreMissingOrEmpty(t *testing.T) {
 	if got, err := LoadIgnore(filepath.Join(t.TempDir(), "nope.toml")); err != nil || got != nil {
 		t.Errorf("LoadIgnore(missing) = (%v, %v), want (nil, nil)", got, err)
 	}
-
-	bad := filepath.Join(t.TempDir(), "conf.cfg")
-	if err := os.WriteFile(bad, []byte("1.0.0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := LoadIgnore(bad); err != nil || got != nil {
-		t.Errorf("LoadIgnore(non-config) = (%v, %v), want (nil, nil)", got, err)
+	for _, body := range []string{"", "\n", " \t\r\n\n"} {
+		path := filepath.Join(t.TempDir(), DefaultPath)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := LoadIgnore(path); err != nil || got != nil {
+			t.Errorf("LoadIgnore(%q) = (%v, %v), want (nil, nil)", body, got, err)
+		}
 	}
 }
 
-// Being lenient about a missing or non-config file must not extend to a config
-// that exists and cannot be read: silently ignoring it would drop the user's
-// ignore list and scan the directories they asked to skip.
+// Anything else that is not an incrmit config is a *NotConfigError that says
+// why, so discover refuses to replace it. Before Milestone 36 each of these
+// yielded no patterns and no error, and discover overwrote it.
+func TestLoadIgnoreRefusesNonConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, reason string
+	}{
+		{"a version file", "1.0.0\n", "line 1 is not TOML"},
+		{"markdown", "# Notes\n\nShip it.\n", "line 3 is not TOML"},
+		{"json", "{\"version\": \"1.0.0\"}\n", "line 1 is not TOML"},
+		{"binary", "\x00\xff\xfe", "line 1 is not TOML"},
+		{"comments alone", "# Notes\n## 1.0.0\n", "it sets nothing, but is not empty"},
+		{"another tool's table", "[project]\nversion = \"1.0.0\"\n", `it sets "project", which incrmit does not use`},
+		{"an unknown top-level key", "ignroe = [\"docs/\"]\n", `it sets "ignroe", which incrmit does not use`},
+		{"an unknown key in an entry", "[[files]]\npath = \"VERSION\"\nowner = \"x\"\n", `it sets "files.owner", which incrmit does not use`},
+		{"a table inside an entry", "[[files]]\npath = \"VERSION\"\n[files.meta]\nk = 1\n", `it sets "files.meta", which incrmit does not use`},
+		{"files of the wrong type", "files = [\"VERSION\"]\n", "values of the wrong type"},
+		{"files as one table", "[files]\npath = \"VERSION\"\n", "values of the wrong type"},
+		{"ignore of the wrong type", "ignore = \"docs/\"\n", "values of the wrong type"},
+		{"a path of the wrong type", "[[files]]\npath = 3\n", "values of the wrong type"},
+		// A key from the file is quoted, so it cannot reach a terminal raw.
+		{"an escape in a key", "\"\\u001b]0;x\\u0007\" = 1\n", `\x1b`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultPath)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadIgnore(path)
+			var notConfig *NotConfigError
+			if !errors.As(err, &notConfig) {
+				t.Fatalf("LoadIgnore = (%v, %v), want a *NotConfigError", got, err)
+			}
+			if got != nil {
+				t.Errorf("patterns = %v, want nil alongside the error", got)
+			}
+			if notConfig.Path != path || !strings.Contains(notConfig.Reason, tc.reason) {
+				t.Errorf("error = %+v, want Path %q and a Reason containing %q", notConfig, path, tc.reason)
+			}
+			if strings.ContainsRune(notConfig.Reason, '\x1b') {
+				t.Errorf("Reason %q holds a raw escape", notConfig.Reason)
+			}
+		})
+	}
+}
+
+// Every config incrmit writes, and every hand-written one that sets only the
+// keys Config declares, is one discover may regenerate.
+func TestLoadIgnoreAcceptsConfigs(t *testing.T) {
+	marshaled, err := Marshal(&Config{
+		Ignore: []string{"docs/"},
+		Files:  []FileEntry{{Path: "VERSION", Version: "1.0.0", Prerelease: "rc.1", Build: "7"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, body string
+		want       []string
+	}{
+		{"marshaled", string(marshaled), []string{"docs/"}},
+		{"files alone", "[[files]]\npath = \"VERSION\"\n", nil},
+		{"ignore alone", "ignore = [\"*.lock\"]\n", []string{"*.lock"}},
+		{"empty arrays", "ignore = []\nfiles = []\n", []string{}},
+		{"inline version", "[[files]]\npath = \"VERSION\"\nversion = \"1.0.0-rc.1+7\"\n", nil},
+		{"comments and a key", "# hand-written\nignore = [\"docs\\\\gen\"] # windows\n", []string{"docs/gen"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DefaultPath)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadIgnore(path)
+			if err != nil {
+				t.Fatalf("LoadIgnore: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("LoadIgnore = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Refusing a file that is not a config must not extend to a config that exists
+// and cannot be read: that one may well be a config, and it is reported as the
+// read error it is, not as a file to choose another --output over.
 func TestLoadIgnoreReportsReadErrors(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: file permissions are not enforced")

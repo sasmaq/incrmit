@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -62,11 +63,15 @@ func FuzzLoad(f *testing.F) {
 			t.Fatalf("writing config: %v", err)
 		}
 
-		// LoadIgnore is deliberately lenient — discover calls it on a file it is
-		// about to overwrite — so garbage must come back as an empty list, not
-		// an error.
+		// LoadIgnore decides whether discover may replace the file. Over a small
+		// regular file the only error it may give is a *NotConfigError, which
+		// discover turns into a refusal; any other error would reach the user
+		// as a read failure for a file that read fine.
 		if _, err := LoadIgnore(path); err != nil {
-			t.Fatalf("LoadIgnore(%q) on %q: %v", path, data, err)
+			var notConfig *NotConfigError
+			if !errors.As(err, &notConfig) {
+				t.Fatalf("LoadIgnore(%q) on %q: %v, want nil or a *NotConfigError", path, data, err)
+			}
 		}
 
 		cfg, err := Load(path)
@@ -113,6 +118,17 @@ func FuzzLoad(f *testing.F) {
 		again, err := Load(rewritten)
 		if err != nil {
 			t.Fatalf("config marshaled from %q does not load again: %v\n--- marshaled ---\n%s", data, err, out)
+		}
+
+		// A config incrmit wrote is one discover may regenerate, keeping its
+		// ignore list; refusing it would leave the user to delete their own
+		// config before discover would run.
+		ignore, err := LoadIgnore(rewritten)
+		if err != nil {
+			t.Fatalf("LoadIgnore refuses the config marshaled from %q: %v\n--- marshaled ---\n%s", data, err, out)
+		}
+		if !reflect.DeepEqual(ignore, again.Ignore) {
+			t.Errorf("LoadIgnore = %#v, Load = %#v for the config marshaled from %q", ignore, again.Ignore, data)
 		}
 
 		// The targets must come back exactly: they are what every command acts

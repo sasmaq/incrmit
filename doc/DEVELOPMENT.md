@@ -173,10 +173,18 @@ type FileEntry struct {
 ```
 
 `config.LoadIgnore` reads only the `ignore` list, without validating the listed
-targets, so `discover` can honor a stale config's patterns. It is deliberately
-lenient: a missing or unparseable `--output` file yields no patterns and no
-error, since `discover` overwrites that path and it may not currently be a valid
-config.
+targets, so `discover` can honor a stale config's patterns. It is also where
+`discover` decides whether it may replace its `--output` at all. It may when
+nothing is there or the file is empty (only whitespace), which yield no
+patterns, and when the file is an incrmit config: TOML that sets at least one
+key and no key the `Config` and `FileEntry` structs do not declare, checked with
+the decoder's `MetaData.Undecoded`. The struct fields are the list of known
+keys, so a new table (Milestone 38's `[git]`) extends it by being declared.
+Anything else is a `*config.NotConfigError` whose `Reason` says why (`line 3 is
+not TOML`, `it sets "project", which incrmit does not use`, `it sets nothing,
+but is not empty`, `it is not a regular file`), and `discover` refuses. Before
+Milestone 36 it was lenient instead, reading any file that did not parse as "no
+patterns", so `discover -o NOTES.md` replaced the Markdown file and exited `0`.
 
 ### 6.2 Bump history / state file (`internal/history`)
 
@@ -330,7 +338,7 @@ incrmit discover [flags]
 | Flag              | Short | Description                                       | Default        |
 | ----------------- | ----- | ------------------------------------------------- | -------------- |
 | `--path`          | `-P`  | Root directory to scan                            | `.`            |
-| `--output`        | `-o`  | Path to write the generated config file           | `incrmit.toml` |
+| `--output`        | `-o`  | Path to write the generated config file (§8.2)    | `incrmit.toml` |
 | `--max-file-size` | `-s`  | Skip files larger than this size                  | `32MiB`        |
 | `--dry-run`       | `-d`  | Print discovered files without writing the config | `false`        |
 
@@ -515,10 +523,16 @@ list every flag without duplicating the flag text.
    rewrites the config it reads its `ignore` list from, so that read and the
    write are one read-modify-write like a bump's.
 2. Read the `ignore` list from any config already at `--output`
-   (`config.LoadIgnore`); an absent/unparseable file just yields no patterns.
-   A path that is not a regular file (a named pipe, a device, or a link to
-   one) or is over 16 MiB is an error with exit `1` instead, before the scan:
-   it is not a stale config, and discover would go on to replace it.
+   (`config.LoadIgnore`); an absent or empty file yields no patterns. Anything
+   at `--output` that is not an incrmit config (see
+   [section 6.1](#61-config-schema-toml)) is refused here with exit `1`, before
+   the scan and with nothing written: `<output> exists and is not an incrmit
+   config (<reason>); choose another --output or remove the file`. That covers
+   a file that is not TOML, TOML with a key incrmit does not use, a file of
+   comments alone, and, through the same `files.ReadOwnFile` check `Load`
+   makes, a named pipe, a device, or a file over 16 MiB. `--dry-run` takes the
+   same path, so it predicts the refusal. There is no `--force`; removing the
+   file is the explicit way to ask for it to be replaced.
 3. Walk the tree from `--path`, skipping the built-in ignored directories
    (e.g. `.git`, `node_modules`, `vendor`, build outputs), incrmit's own files
    (`incrmit.toml` by name plus the resolved `--output` path, the state file,
@@ -1093,11 +1107,16 @@ have kept the output safe, so only that check notices the ambiguity.
   `reading <path>: not a regular file` and exit `1`. `files.ReadTarget` checks the
   type before opening, because opening a pipe blocks until a writer appears and
   would otherwise leave incrmit hanging with no output at all.
-- A config, `--output`, or state file that is not an ordinary file (the same
-  kinds, directly or through a symlink): report
+- A config or state file that is not an ordinary file (the same kinds,
+  directly or through a symlink): report
   `config: reading <path>: not a regular file` (`history: reading ...` for the
   state file) and exit `1`, before anything is written. One over 16 MiB is
   reported the same way with its size and the limit.
+- A `discover --output` that exists and is not an incrmit config (not TOML, a
+  key incrmit does not use, comments alone, not an ordinary file, or over
+  16 MiB): report `<output> exists and is not an incrmit config (<reason>);
+  choose another --output or remove the file` and exit `1` before the scan,
+  `--dry-run` included. A missing or empty file, or a config, is replaced.
 - Undo with nothing to revert (no journal or an emptied one): print a friendly
   message and exit `0` — it is not an error.
 - Undo conflict (a file edited since the bump — or bumped past by another run —
@@ -1198,6 +1217,13 @@ incrmit/
   the component, with the project's snapshot unchanged; `preview` must show
   `n/a` in that column, aligned (`testdata/preview_overflow.golden`). One below
   the ceiling must bump to it, and `undo` must find the token it wrote.
+- What `discover --output` may replace (`internal/cli/discoveroutput_test.go`):
+  a Markdown file, one of headings alone, a target, `package.json`,
+  `pyproject.toml`, and a config with an extra key are each refused, by a real
+  run and by `--dry-run`, with exit `1`, the advice on stderr, and the file's
+  bytes and the project's snapshot unchanged; a missing, empty, or blank file
+  and each shape of config are regenerated. `config.TestLoadIgnoreRefusesNonConfig`
+  covers each reason at the unit level.
 - Fuzz targets over the parsers, the rewriter, discovery's scan, and the
   terminal escaping (§12.1).
 
@@ -1264,7 +1290,10 @@ What each target proves:
   hand-mangled file is not a hostile one: arbitrary bytes must produce a
   `config: ...` error, never a panic, and never a config that loaded into a
   shape the commands do not expect. What loads must also marshal and reload
-  identically, because a bump rewrites the config it just read.
+  identically, because a bump rewrites the config it just read. `LoadIgnore`
+  may fail only with a `*config.NotConfigError`, and must accept every config
+  `Marshal` writes with the same `ignore` list, or `discover` would refuse to
+  regenerate a config incrmit wrote.
 
 Seeds live in `f.Add` calls next to the invariant they exercise, where a
 reviewer reads them with the property rather than as an opaque file. The

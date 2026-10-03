@@ -595,10 +595,11 @@ func TestDiscoverExcludesConfigFile(t *testing.T) {
 }
 
 // A custom --output path that does not end in incrmit.toml is still excluded.
+// The config there pins a version, so the walk finds it like any other file.
 func TestDiscoverExcludesCustomOutput(t *testing.T) {
 	dir := project(t, "", map[string]string{
 		"VERSION":  "1.2.3\n",
-		"conf.cfg": "1.0.0\n",
+		"conf.cfg": "[[files]]\npath = \"VERSION\"\nversion = \"1.0.0\"\n",
 	})
 	out := filepath.Join(dir, "conf.cfg")
 

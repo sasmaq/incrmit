@@ -146,7 +146,17 @@ const discoverHelp = `usage: incrmit discover [flags]
 Scan a directory tree for version-bearing files and generate a config.
 
 Flags:
-` + discoverFlags + sizeNote + concurrencyNote
+` + discoverFlags + outputNote + sizeNote + concurrencyNote
+
+// outputNote says what discover's --output may replace. It is appended to the
+// discover help, where the flag lives.
+const outputNote = `
+--output may name a file that does not exist yet, an empty file, or an
+incrmit config, which is regenerated with its ignore list kept. Any other file
+(a README, a manifest, another tool's TOML) is refused with exit 1 before the
+scan, --dry-run included, and left as it was: choose another --output, or
+remove the file if it should be replaced.
+`
 
 // previewHelp documents the preview command. It is shown by
 // `incrmit preview -h`, `incrmit help preview`, and on a preview usage error.

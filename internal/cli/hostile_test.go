@@ -246,4 +246,16 @@ func TestHostileNamesInFailureMessages(t *testing.T) {
 		}
 		check(t, dir, ExitError, "refusing to undo", "undo")
 	})
+	t.Run("--output that is not a config", func(t *testing.T) {
+		dir := newProject(t)
+		check(t, dir, ExitError, "is not an incrmit config (line 1 is not TOML)", "discover", "-o", name)
+	})
+	t.Run("--output setting a hostile key", func(t *testing.T) {
+		dir := newProject(t)
+		// The key decodes to an escape sequence that retitles the window.
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("\"\\u001b]0;pwned\\u0007\" = 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		check(t, dir, ExitError, `it sets "\x1b]0;pwned\a"`, "discover", "-o", name)
+	})
 }

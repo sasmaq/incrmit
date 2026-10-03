@@ -194,6 +194,18 @@ func TestOverviewReusesFlagBlocks(t *testing.T) {
 	}
 }
 
+// The discover help says what --output may replace, so the refusal is not a
+// surprise to anyone who read it.
+func TestDiscoverHelpDocumentsOutputRule(t *testing.T) {
+	if !strings.Contains(discoverHelp, outputNote) {
+		t.Errorf("discoverHelp does not embed outputNote:\n%s", discoverHelp)
+	}
+	code, stdout, _ := runMain(t, "", "help", "discover")
+	if code != ExitOK || !strings.Contains(stdout, "an empty file, or an\nincrmit config") {
+		t.Errorf("incrmit help discover: exit = %d, stdout = %q, want the --output rule", code, stdout)
+	}
+}
+
 // Every help string should start with usage-oriented text and end with a
 // trailing newline so output is well-formed regardless of how it is printed.
 func TestHelpTextWellFormed(t *testing.T) {

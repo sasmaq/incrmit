@@ -609,8 +609,16 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 
 	// Read any user-authored ignore patterns from an existing config at the
 	// --output path so discovery honors them and they survive a regeneration.
+	// This is also where a file discover must not replace is refused, before
+	// the scan, so a mistyped -o costs nothing; --dry-run refuses it too.
 	ignore, err := config.LoadIgnore(opts.output)
 	if err != nil {
+		var notConfig *config.NotConfigError
+		if errors.As(err, &notConfig) {
+			fprintf(stderr, "incrmit: %s exists and is not an incrmit config (%s); choose another --output or remove the file\n",
+				displayName(opts.output), notConfig.Reason)
+			return ExitError
+		}
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
 	}

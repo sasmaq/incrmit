@@ -5,6 +5,21 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-10-03
+
+### Fixed
+
+- `discover` no longer overwrites a file that is not an incrmit config.
+  `incrmit discover -o NOTES.md` replaced the Markdown file with a generated
+  config and exited `0`, and `-o package.json` or `-o VERSION` would have done
+  the same to a manifest or a target. `--output` may now name a file that does
+  not exist yet, an empty file, or an incrmit config (TOML that sets only
+  `ignore` and `files`), which is regenerated as before. Anything else is
+  refused with exit `1` before the scan, `--dry-run` included, with a message
+  that says why and suggests choosing another `--output` or removing the file.
+  A config holding a key incrmit does not use, such as a misspelled `ignroe`,
+  is refused too, rather than regenerated without that key.
+
 ## [0.3.7] - 2026-10-01
 
 ### Fixed

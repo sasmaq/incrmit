@@ -12,9 +12,9 @@ import (
 )
 
 // Load and LoadIgnore read the config through files.ReadOwnFile, so a config
-// that is a named pipe is reported rather than opened. LoadIgnore's leniency
-// is for a stale or foreign config, not for this: discover would go on to
-// replace the pipe.
+// that is a named pipe is reported rather than opened. For LoadIgnore it is a
+// *NotConfigError, the same refusal as any other file discover must not
+// replace, wrapping the type check's error.
 func TestLoadRejectsFIFOConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultPath)
 	if err := testutil.Mkfifo(path); err != nil {
@@ -32,8 +32,9 @@ func TestLoadRejectsFIFOConfig(t *testing.T) {
 	})
 	testutil.Within(t, "LoadIgnore on a FIFO", func() {
 		got, err := LoadIgnore(path)
-		if !errors.Is(err, files.ErrNotRegular) {
-			t.Errorf("LoadIgnore err = %v, want files.ErrNotRegular", err)
+		var notConfig *NotConfigError
+		if !errors.Is(err, files.ErrNotRegular) || !errors.As(err, &notConfig) {
+			t.Errorf("LoadIgnore err = %v, want a *NotConfigError wrapping files.ErrNotRegular", err)
 		}
 		if got != nil {
 			t.Errorf("patterns = %v, want nil alongside the error", got)

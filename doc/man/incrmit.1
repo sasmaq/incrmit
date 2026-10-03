@@ -333,6 +333,27 @@ Default: current directory.
 Path for the generated config.
 Default:
 .Pa incrmit.toml .
+.Ar path
+may name a file that does not exist yet, an empty file, or an
+.Nm
+config: TOML that sets only
+.Sy ignore
+and
+.Sy files
+.Po with
+.Sy path , version , prerelease ,
+and
+.Sy build
+.Pc ,
+which is regenerated with its ignore list kept.
+Any other file, such as a README, a target, a manifest, another tool's TOML,
+a file of comments alone, or a named pipe or a device, is refused with exit 1
+before the scan, with
+.Fl -dry-run
+too, and left as it was.
+The message says why and suggests choosing another
+.Fl -output
+or removing the file; there is no option to force the write.
 .It Fl h , Fl -help
 Show help.
 For the default command and

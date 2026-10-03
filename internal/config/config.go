@@ -37,6 +37,11 @@ const LockFileName = ".incrmit.lock"
 // the `[[files]]` array-of-tables: in TOML a bare key written after a table
 // would be parsed as belonging to that table, so the field order here is what
 // keeps the generated config valid.
+//
+// The fields of Config and FileEntry are also the list of keys incrmit knows.
+// LoadIgnore refuses a file that sets any other key, which is how discover
+// tells a config it may regenerate from a file it must not replace, so a new
+// key or table (such as `[git]`) is added here and nowhere else.
 type Config struct {
 	Ignore []string    `toml:"ignore,omitempty"`
 	Files  []FileEntry `toml:"files"`
@@ -244,34 +249,67 @@ func (c *Config) normalizeVersions() error {
 	return nil
 }
 
-// LoadIgnore reads only the ignore list from the config at path, without
-// validating the file targets. It is used by `discover`, which needs the
-// user-authored ignore patterns from an existing config even when the config's
-// listed files are stale or the config is about to be regenerated. Because the
-// --output path is a file discover overwrites (and may not currently be a valid
-// config at all), this is deliberately lenient: a missing or unparseable file
-// yields a nil list and no error, so discovery simply falls back to the built-in
-// ignores.
+// LoadIgnore reads the ignore list from the file at path, which is the
+// --output that `discover` is about to replace, and decides whether discover
+// may replace it at all. The listed targets are not validated, so a stale
+// config's patterns are still honored when it is regenerated.
 //
-// The leniency covers a stale config, not a file that is no config at all. A
-// read error (a permission problem, say) is surfaced, and so is a path that is
-// not a regular file or is over files.MaxOwnFileBytes: the read goes through
-// files.ReadOwnFile like Load's, and a named pipe or a device is not something
-// for discover to go on and replace.
+// discover may replace a missing file or an empty one (nothing but
+// whitespace), for which LoadIgnore returns no patterns, and an incrmit config:
+// TOML that sets at least one key and no key that Config does not declare.
+// That accepts every config incrmit has written and every hand-written one.
+//
+// Anything else is a *NotConfigError, so discover refuses before it scans: a
+// Markdown file, a manifest, another tool's TOML, a file holding only comments,
+// and, through the same files.ReadOwnFile check Load makes, a named pipe, a
+// device, or a file over files.MaxOwnFileBytes. A file that exists but cannot
+// be read (a permission problem, say) is a read error instead, since it may
+// well be a config.
 func LoadIgnore(path string) ([]string, error) {
 	path = ResolvePath(path)
 
 	data, err := files.ReadOwnFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
+	var tooLarge *files.TooLargeError
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, nil
+	case errors.Is(err, files.ErrNotRegular):
+		return nil, &NotConfigError{Path: path, Reason: "it is not a regular file", Err: err}
+	case errors.As(err, &tooLarge):
+		return nil, &NotConfigError{Path: path, Err: err,
+			Reason: fmt.Sprintf("it is %d bytes, over the %d byte limit", tooLarge.Size, tooLarge.Limit)}
+	case err != nil:
 		return nil, fmt.Errorf("config: reading %q: %w", path, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
 	}
 
 	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil, nil
+	md, err := toml.Decode(string(data), &cfg)
+	var parseErr toml.ParseError
+	switch {
+	case errors.As(err, &parseErr):
+		reason := "it is not TOML"
+		if line := parseErr.Position.Line; line > 0 {
+			reason = fmt.Sprintf("line %d is not TOML", line)
+		}
+		return nil, &NotConfigError{Path: path, Reason: reason, Err: err}
+	case err != nil:
+		// The syntax is fine, so the decoder found ignore or files holding
+		// something other than what Config declares, such as files = 3.
+		return nil, &NotConfigError{Path: path, Reason: "it uses incrmit's keys with values of the wrong type", Err: err}
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		// The key's raw parts, Go-quoted once: Key.String() would TOML-quote
+		// a part such as "\x1b" first, and %q would then escape that again.
+		return nil, &NotConfigError{Path: path,
+			Reason: fmt.Sprintf("it sets %q, which incrmit does not use", strings.Join(undecoded[0], "."))}
+	}
+	// A file of comments alone parses as TOML with no keys. It is not empty, so
+	// it is something someone wrote, such as a Markdown file of headings.
+	if len(md.Keys()) == 0 {
+		return nil, &NotConfigError{Path: path, Reason: "it sets nothing, but is not empty"}
 	}
 	cfg.normalizeIgnore()
 	return cfg.Ignore, nil
@@ -368,6 +406,22 @@ type NotExistError struct {
 func (e *NotExistError) Error() string {
 	return fmt.Sprintf("config: %q not found; run `incrmit discover` to generate one", e.Path)
 }
+
+// NotConfigError is returned by LoadIgnore for a file that discover must not
+// replace because it is not an incrmit config. Reason says what is wrong with
+// it, in a phrase that quotes anything taken from the file, and Err is the
+// underlying error when there is one.
+type NotConfigError struct {
+	Path   string
+	Reason string
+	Err    error
+}
+
+func (e *NotConfigError) Error() string {
+	return fmt.Sprintf("config: %q is not an incrmit config: %s", e.Path, e.Reason)
+}
+
+func (e *NotConfigError) Unwrap() error { return e.Err }
 
 // IsNotExist reports whether err indicates a missing config file.
 func IsNotExist(err error) bool {

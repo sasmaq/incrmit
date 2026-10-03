@@ -1724,29 +1724,91 @@ the same to a manifest. The read that comes first does not catch it either:
 yields no ignore patterns rather than an error, and discover carries on as if
 it had found a config with nothing to keep.
 
-- [ ] Reproduce first: `-o` naming an existing Markdown file, an existing
+- [x] Reproduce first: `-o` naming an existing Markdown file, an existing
       target such as `VERSION` (which `excludeOutput` drops from the results
       just before overwriting it), an empty file, and an existing
       `incrmit.toml`, which must still be regenerated.
-- [ ] Define what `--output` may replace: a path with no file yet, an empty
+      `internal/cli/discoveroutput_test.go`. `TestDiscoverRefusesUnrelatedOutput`
+      runs six files as a real run and as `--dry-run`: `NOTES.md`, a Markdown
+      file of headings alone, `VERSION`, `package.json`, `pyproject.toml`, and
+      a config with an extra key in an entry. The tree always holds other
+      versions, so a refusal is never just "no version found". All twelve
+      exited `0` before the fix, and the real runs left each file holding a
+      generated config. `TestDiscoverReplacesConfigOutput` passed before and
+      after: no file, an empty file, a blank one, a config discover wrote, a
+      hand-written one, an `ignore` list alone, a stale config, and both
+      prerelease spellings are regenerated, with the `ignore` list kept.
+- [x] Define what `--output` may replace: a path with no file yet, an empty
       file, or a file that parses as TOML and holds only keys incrmit knows
       (`ignore` and `files`). That accepts every config incrmit has written
       and every hand-written one, and rejects a Markdown file, a JSON
       manifest, or a `pyproject.toml`. Keep the list of known keys next to
       `config.Config` so Milestone 38's `[git]` table extends it in one place.
-- [ ] Refuse anything else with exit `1` before the scan starts, so a mistake
+      Empty means nothing but whitespace. Known keys are checked with the TOML
+      decoder's `MetaData.Undecoded`, so the fields of `Config` and `FileEntry`
+      are the list, at every depth: `files.owner` is refused as well as
+      `project`. A new table is declared on `Config` and nothing else changes;
+      the comment on `Config` says so. No key has ever been retired from the
+      config (git history has only `path`, `version`, `prerelease`, `build`,
+      `ignore`, `files`), so no older config is refused. A value of the wrong
+      type (`files = 3`, `[files]` as one table) is refused too. One addition
+      to the rule: a file that is not empty but sets no key at all (comments
+      alone) is refused. It parses as TOML, but so does a Markdown file of
+      `#` headings, which is the motivating case, and incrmit never writes
+      such a file.
+- [x] Refuse anything else with exit `1` before the scan starts, so a mistake
       costs nothing, and say why and what to do: "NOTES.md exists and is not
       an incrmit config; choose another --output or remove the file". No
       `--force` is needed: removing the file is the explicit way to ask.
-- [ ] Apply the same check in `--dry-run`, so the dry run predicts the refusal
+      `config.LoadIgnore` returns a `*config.NotConfigError{Path, Reason, Err}`
+      and `runDiscover` prints `incrmit: NOTES.md exists and is not an incrmit
+      config (line 3 is not TOML); choose another --output or remove the
+      file`. The other reasons are `it sets "project", which incrmit does not
+      use`, `it uses incrmit's keys with values of the wrong type`, `it sets
+      nothing, but is not empty`, `it is not a regular file`, and the size
+      over the cap. A key from the file is Go-quoted, so one that decodes to an
+      escape sequence cannot reach the terminal raw (a case in
+      `TestHostileNamesInFailureMessages`). `TestDiscoverRefusesOutputBeforeScanning`
+      gives a `--path` that does not exist and gets the refusal, not the scan's
+      error. A real run still takes the lock first, so `.incrmit.lock` may be
+      created, as it is for every writing command; nothing else is.
+- [x] Apply the same check in `--dry-run`, so the dry run predicts the refusal
       rather than printing a plan the real run will not carry out.
-- [ ] Retire `LoadIgnore`'s leniency along with it: a file that fails the
+      `--dry-run` already called `LoadIgnore`, so it takes the same path;
+      every refusal case runs both ways.
+- [x] Retire `LoadIgnore`'s leniency along with it: a file that fails the
       check never reaches it, so an unparseable `--output` becomes an error
       rather than "no patterns". Share the check with Milestone 33's type
       check, so a FIFO or a device at `--output` is refused by the same code.
-- [ ] Assert in every refusal test that the file's bytes are unchanged.
+      The check is `LoadIgnore` itself, after the `files.ReadOwnFile` read, so
+      there is one read and one function deciding. A FIFO, a device, or a file
+      over the cap is now a `NotConfigError` wrapping `files.ErrNotRegular` or
+      the `*files.TooLargeError`, with the same message and advice as any other
+      refusal (`TestDiscoverRefusesFIFOOutput`); `TestOwnFilesNotRegular` and
+      `TestOwnFilesOverSizeCap` pass unchanged. A file that cannot be read is
+      still a read error, since it may be a config. Three tests pinned the old
+      leniency and were rewritten: `TestLoadIgnoreLenient` is now
+      `TestLoadIgnoreMissingOrEmpty`, `TestLoadIgnoreRefusesNonConfig` (each
+      reason), and `TestLoadIgnoreAcceptsConfigs`;
+      `TestDiscoverExcludesCustomOutput` used a `conf.cfg` holding `1.0.0`,
+      which is now refused, so it holds a config that pins a version;
+      and `FuzzLoad`, which required garbage to come back as no patterns, now
+      requires `LoadIgnore` to fail only with a `NotConfigError` and to accept
+      every config `Marshal` writes with the same `ignore` list. A 60s run
+      found nothing in 24,000 executions.
+- [x] Assert in every refusal test that the file's bytes are unchanged.
       Document the rule in `README.md`, `incrmit help discover`, and the man
       page, and add a `Fixed` entry to `CHANGELOG.md`.
+      Each refusal test compares the file's bytes and the project's snapshot.
+      As in Milestones 33 to 35, the reference material is in `doc/USAGE.md`:
+      a paragraph after the Discovery flags examples, with the message and the
+      cases, and a pointer from Ignoring folders and files. The README has one
+      sentence under Configuration. `incrmit help discover` has a new
+      `outputNote` (`TestDiscoverHelpDocumentsOutputRule`); the man page has
+      the rule under `-o, --output`. `doc/DEVELOPMENT.md` has it in §6.1, §7,
+      §8.2 step 2, §10, §12, and §12.1. `CHANGELOG.md` opens `[Unreleased]`
+      with a `Fixed` entry. Suite passes under `-race` and `make check`, all six
+      release platforms vet, and coverage is 96.6% -> 96.7%.
 
 ## Milestone 37 — Discover Paths Relative to the Config
 
