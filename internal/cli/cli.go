@@ -623,12 +623,15 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		return classify(err)
 	}
 
-	results, err := discovery.DiscoverWithLimit(opts.path, opts.maxFileSize, ignore...)
+	// Every path is recorded relative to the config's directory, which is
+	// where a bump resolves it, and the dry run and the summary print it so.
+	cfgDir := filepath.Dir(opts.output)
+	results, err := discovery.DiscoverWithLimit(opts.path, cfgDir, opts.maxFileSize, ignore...)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
 	}
-	results = excludeOutput(results, opts.path, opts.output)
+	results = excludeOutput(results, opts.output)
 	results = excludeUnlistable(results, stderr)
 	if len(results) == 0 {
 		fprintf(stderr, "incrmit: no version-bearing files found under %s\n", displayName(opts.path))
@@ -637,6 +640,9 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 
 	if opts.dryRun {
 		fprintf(stdout, "Discovered %d file(s) under %s (no config written):\n", len(results), displayName(opts.path))
+		if !discovery.SameDir(opts.path, cfgDir) {
+			fprintf(stdout, "  (paths relative to %s)\n", displayName(opts.output))
+		}
 		if len(ignore) > 0 {
 			fprintf(stdout, "  (ignoring: %s)\n", strings.Join(displayNames(ignore), ", "))
 		}
@@ -740,16 +746,14 @@ func excludeUnlistable(results []discovery.Result, stderr io.Writer) []discovery
 // excludeOutput drops any discovered result that refers to the config file the
 // discover command is about to write, so the generated config never lists
 // itself as a target. (Files literally named incrmit.toml are already skipped
-// during the walk; this also covers a custom --output path.)
-func excludeOutput(results []discovery.Result, root, output string) []discovery.Result {
-	outAbs, err := filepath.Abs(output)
-	if err != nil {
-		return results
-	}
+// during the walk; this also covers a custom --output path.) A result's path is
+// relative to the output's directory, so it names the output exactly when it
+// resolves there the way a bump will resolve it.
+func excludeOutput(results []discovery.Result, output string) []discovery.Result {
+	dir, out := filepath.Dir(output), filepath.Clean(output)
 	filtered := make([]discovery.Result, 0, len(results))
 	for _, r := range results {
-		rAbs, err := filepath.Abs(filepath.Join(root, r.Path))
-		if err == nil && rAbs == outAbs {
+		if config.TargetPath(dir, r.Path) == out {
 			continue
 		}
 		filtered = append(filtered, r)

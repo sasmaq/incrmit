@@ -2,7 +2,8 @@
 // top-level `ignore` list) against paths encountered during the discovery walk.
 //
 // Matching semantics (all paths are compared in slash form, relative to the
-// scan root):
+// config's directory, as the config's own `path` values are; a scan root
+// outside that directory gives paths that start with "../"):
 //
 //   - A trailing slash marks a pattern as directory-only: "testdata/" prunes a
 //     directory named testdata but never matches a file of that name.
@@ -76,8 +77,9 @@ func (m *ignoreMatcher) empty() bool {
 	return m == nil || len(m.patterns) == 0
 }
 
-// match reports whether the slash-form path rel (relative to the scan root)
-// should be ignored. isDir selects whether directory-only patterns apply.
+// match reports whether the slash-form path rel (relative to the config's
+// directory) should be ignored. isDir selects whether directory-only patterns
+// apply.
 func (m *ignoreMatcher) match(rel string, isDir bool) bool {
 	if m == nil {
 		return false

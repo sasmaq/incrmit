@@ -146,7 +146,16 @@ const discoverHelp = `usage: incrmit discover [flags]
 Scan a directory tree for version-bearing files and generate a config.
 
 Flags:
-` + discoverFlags + outputNote + sizeNote + concurrencyNote
+` + discoverFlags + pathsNote + outputNote + sizeNote + concurrencyNote
+
+// pathsNote says what the paths discover writes are relative to. It is
+// appended to the discover help, where --path and --output live.
+const pathsNote = `
+Each path is written relative to the directory --output is in, which is where
+every command resolves it, so --path and --output may name different
+directories. The config's ignore patterns are matched against those same
+paths.
+`
 
 // outputNote says what discover's --output may replace. It is appended to the
 // discover help, where the flag lives.

@@ -160,6 +160,15 @@ only regular files are read
 .Pq never pipes, devices, or sockets ,
 and files larger than 32 MiB are skipped
 .Pq see Fl -max-file-size .
+Each path is written relative to the directory holding the config, which is
+where every command resolves it, so
+.Fl -path
+and
+.Fl -output
+may name different directories; a scanned file outside the config's directory
+is listed with a leading
+.Pa ../ .
+The config's ignore patterns are matched against the same paths.
 .It Cm preview
 Show, for every file in the config, the version it holds today alongside what a
 .Fl -patch ,
@@ -328,11 +337,16 @@ A dry run takes no project lock.
 .Dq discover only.
 Root directory to scan.
 Default: current directory.
+The directory itself is scanned even when an ignore pattern names it.
 .It Fl o , Fl -output Ar path
 .Dq discover only.
 Path for the generated config.
 Default:
 .Pa incrmit.toml .
+Every path in it is relative to the directory
+.Ar path
+is in, not to
+.Fl -path .
 .Ar path
 may name a file that does not exist yet, an empty file, or an
 .Nm

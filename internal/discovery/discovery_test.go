@@ -569,7 +569,7 @@ func TestDiscoverWithLimitSkipsAboveCap(t *testing.T) {
 	mustWrite(t, root, "small.txt", "ver 1.2.3\n")
 	mustWrite(t, root, "large.txt", strings.Repeat("x", 4096)+"\nver 4.5.6\n")
 
-	got, err := DiscoverWithLimit(root, 1024)
+	got, err := DiscoverWithLimit(root, root, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +588,7 @@ func TestDiscoverWithLimitZeroScansEverything(t *testing.T) {
 		t.Fatalf("Discover = %+v (err %v), want the oversized file skipped by default", got, err)
 	}
 
-	got, err := DiscoverWithLimit(root, 0)
+	got, err := DiscoverWithLimit(root, root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

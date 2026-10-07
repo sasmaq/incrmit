@@ -206,6 +206,17 @@ func TestDiscoverHelpDocumentsOutputRule(t *testing.T) {
 	}
 }
 
+// The discover help says paths are written relative to --output's directory.
+func TestDiscoverHelpDocumentsPaths(t *testing.T) {
+	if !strings.Contains(discoverHelp, pathsNote) {
+		t.Errorf("discoverHelp does not embed pathsNote:\n%s", discoverHelp)
+	}
+	code, stdout, _ := runMain(t, "", "help", "discover")
+	if code != ExitOK || !strings.Contains(stdout, "relative to the directory --output is in") {
+		t.Errorf("incrmit help discover: exit = %d, stdout = %q, want the paths rule", code, stdout)
+	}
+}
+
 // Every help string should start with usage-oriented text and end with a
 // trailing newline so output is well-formed regardless of how it is printed.
 func TestHelpTextWellFormed(t *testing.T) {

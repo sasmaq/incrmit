@@ -594,6 +594,16 @@ func TestMarshalWritesCommentedIgnoreExample(t *testing.T) {
 	}
 }
 
+// Every config says what its ignore patterns are relative to: the config's
+// own folder, as its paths are, not wherever discover happened to scan.
+func TestIgnoreCommentSaysRelativeToConfig(t *testing.T) {
+	for _, hasIgnore := range []bool{false, true} {
+		if got := IgnoreComment(hasIgnore); !strings.Contains(got, "relative to the folder this file is in") {
+			t.Errorf("IgnoreComment(%v) = %q, want it to say patterns are relative to the config", hasIgnore, got)
+		}
+	}
+}
+
 // An empty Version must be omitted from the encoded output (omitempty), not
 // written as version = "".
 func TestMarshalOmitsEmptyVersion(t *testing.T) {

@@ -5,6 +5,33 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-10-08
+
+### Fixed
+
+- `discover` writes each path relative to the config it writes, which is where
+  every command resolves it. Paths were relative to `--path` instead, so the two
+  agreed only when the config went into the folder that was scanned. Run from
+  the project root, `incrmit discover --path sub` wrote `path = "VERSION"` for
+  `sub/VERSION`. If `./VERSION` held the same version, the next bump rewrote
+  `./VERSION` and reported success. If it did not exist, the config failed to
+  load. `-o sub/incrmit.toml` broke the same way in the other direction. Now
+  `--path src -o release/incrmit.toml` lists `../src/VERSION`. The `--dry-run`
+  listing and the summary print the paths the config holds, and a dry run
+  whose paths are not relative to the scanned folder says what they are
+  relative to. **If you ran `discover` with `--path` or `-o` pointing at a
+  different folder from the other, run it again**: the old config's paths may
+  name files that exist and hold the same version, so nothing can detect it.
+- `ignore` patterns are matched against those same config-relative paths, so a
+  config means the same thing whatever `--path` `discover` is run with. A
+  pattern containing a slash used to be relative to `--path`: under
+  `--path sub`, `gen/**` skipped `sub/gen`, and it now names `gen` beside the
+  config. Write `sub/gen/**` (or the bare `gen/`) instead. A bare pattern such
+  as `*.lock` matches at any depth, as before. The comment above `ignore` in
+  every config now says what patterns are relative to.
+- `discover --path FILE` recorded the file as `path = "."`, a config no command
+  could load; it now records the file's path.
+
 ## [0.3.8] - 2026-10-03
 
 ### Fixed

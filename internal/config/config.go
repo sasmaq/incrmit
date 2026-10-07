@@ -149,11 +149,13 @@ func Marshal(c *Config) ([]byte, error) {
 // uncommenting a line. The block has no trailing blank line: when hasIgnore is
 // true the real `ignore = [...]` line follows immediately below its description.
 // It is shared by the discover config generation and the bump-time rewrite so
-// both files carry the same guidance.
+// both files carry the same guidance, including that patterns are relative to
+// the config's directory, as its paths are, wherever discover scans from.
 func IgnoreComment(hasIgnore bool) string {
 	var b bytes.Buffer
 	b.WriteString("# ignore: folders and files for `incrmit discover` to skip, on top of the\n")
-	b.WriteString("# built-in ignores (.git, node_modules, vendor, and build outputs).\n")
+	b.WriteString("# built-in ignores (.git, node_modules, vendor, and build outputs). Like\n")
+	b.WriteString("# each file's path, a pattern is relative to the folder this file is in.\n")
 	if !hasIgnore {
 		b.WriteString("# ignore = [\"testdata/\", \"*.lock\", \"docs/**\"]\n")
 	}

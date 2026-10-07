@@ -155,8 +155,9 @@ ignore = [
   version = "0.1.0"
 ```
 
-Matching rules (patterns are compared against the path **relative to the scan
-root**, always using forward slashes, and matching is **case-sensitive**):
+Matching rules (patterns are compared against the path **relative to the
+config's folder** — the same path the config lists a file under — always using
+forward slashes, and matching is **case-sensitive**):
 
 - A **trailing slash** (`testdata/`) marks a pattern as directory-only: it
   prunes a matching directory (and its subtree) but never matches a file of the
@@ -173,6 +174,16 @@ root**, always using forward slashes, and matching is **case-sensitive**):
   `[ab].txt`. A backslash cannot escape a metacharacter, because backslashes in
   `ignore` are read as path separators (so a config written on Windows works
   everywhere).
+
+Because patterns are relative to the config rather than to the folder being
+scanned, a config means the same thing whatever [`--path`](#discovery-flags)
+`discover` is run with: in a root `incrmit.toml`, `src/gen/` names `src/gen`
+whether `discover` scans the whole project or only `src`, and `gen/**` never
+names it. A scan outside the config's folder is matched with a leading `../`,
+just as it is listed: a config in `release/` that scans `src` skips `src/gen`
+with `../src/gen/`. A bare name such as `*.lock` matches at any depth either
+way. The folder `--path` names is always scanned, even when a pattern (or a
+built-in ignore) names it; patterns apply to what is inside it.
 
 The `ignore` list is preserved when `discover` regenerates the config and when a
 bump rewrites it, so hand-authored entries are never dropped. `discover` reads
@@ -478,6 +489,21 @@ once per distinct version:
   version = "2.0.0"
 ```
 
+Every `path` is written relative to the folder the config goes in, which is
+where every command resolves it, so [`--path` and `--output`](#discovery-flags)
+may name different folders. Scanning `src` for a config in the project root
+lists `src/VERSION`, and a config written to `release/` lists the same file as
+`../src/VERSION`:
+
+```bash
+incrmit discover --path src --output release/incrmit.toml
+```
+
+```text
+Wrote release/incrmit.toml with 1 file(s):
+  ../src/VERSION: 1.2.3
+```
+
 `--dry-run` prints each occurrence it finds, with its line number and the text
 of the line for context, rather than writing the config:
 
@@ -506,7 +532,16 @@ under its real name.
 
 When the config has an `ignore` list, `--dry-run` notes the applied rules on a
 `(ignoring: …)` line and, like a normal run, never lists any skipped path as a
-finding.
+finding. When the config goes somewhere other than the folder being scanned,
+the paths it lists are not relative to that folder, so a line above says what
+they are relative to:
+
+```text
+Discovered 1 file(s) under src (no config written):
+  (paths relative to release/incrmit.toml)
+  ../src/VERSION:
+    L1: 1.2.3
+```
 
 ### Discovery flags
 
@@ -519,10 +554,10 @@ finding.
 | `--dry-run` | `-d` | Print discovered files without writing config | `false` |
 
 ```bash
-# Scan a specific directory and preview the results
+# Scan a specific directory and preview the results (listed as src/...)
 incrmit discover --path ./src --dry-run
 
-# Write the config to a custom location
+# Write the config to a custom location (paths listed from release/, as ../...)
 incrmit discover --output release/incrmit.toml
 ```
 

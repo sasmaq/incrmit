@@ -1825,34 +1825,105 @@ with `1.0.0` in both: the bump moved the root `VERSION` to `1.0.1` and left
 same way in the other direction, and `README.md` shows `--path ./src` as an
 example.
 
-- [ ] Reproduce first, with a decoy holding the same version at the location
+- [x] Reproduce first, with a decoy holding the same version at the location
       the bad path resolves to, since that is the silent case: `--path sub`
       with the default output, `-o sub/incrmit.toml` with the default path,
       and the two flags naming sibling directories. After each, assert that a
       bump changes the scanned file and nothing else.
-- [ ] Write every path relative to the output config's directory: make the
+      `internal/cli/discoverpaths_test.go`. `TestDiscoverPathsRelativeToConfig`
+      runs `discover` (as `--dry-run`, then for real) and then a bump of the
+      config it wrote, and compares every file in the tree. The scanned files
+      must move to `1.0.1` and the rest stay at `1.0.0`. Of its twelve
+      original cases, nine failed before the fix. Seven were silent, each
+      bumping its decoy and leaving the scanned file at `1.0.0`: `--path sub`,
+      `--path ./sub`, an absolute `--path`, absolute `--path` and `-o`,
+      `-o build/incrmit.toml` (the walk skips `build/`, so its `VERSION` is a
+      decoy nothing lists), siblings (`--path src -o release/incrmit.toml`),
+      and nested siblings. `-o sub/incrmit.toml` and `--path ..` run from
+      `sub` failed loudly instead, because `sub` is scanned too and its
+      `sub/VERSION` resolved to `sub/sub/VERSION`, so the config did not load.
+      The three cases with the config in the scanned directory passed before
+      and after.
+- [x] Write every path relative to the output config's directory: make the
       root and the output absolute, join each result to the root, and take
       `filepath.Rel` from the config's directory, in slash form. A root
       outside the config's directory gives `../` paths, which config loading
       already accepts. Rework `excludeOutput`, which joins paths to the root
       today.
-- [ ] Decide what `ignore` patterns are relative to. They are matched against
+      `discovery.DiscoverWithLimit` takes the config's directory as a new
+      `configDir` argument, and `Discover` passes the root for both. One
+      change from the plan: making the two directories absolute is not
+      enough. On macOS `t.TempDir()` is under `/var`, but `os.Getwd` after a
+      chdir reports `/private/var`, so an absolute `--path` gave
+      `../../../../../../../../var/folders/.../sub/VERSION`. That path
+      resolves to the right file, but it is absolute in all but name. A shell
+      whose `$PWD` is `/tmp/x` with an argument spelled `/private/tmp/x` hits
+      the same thing. `resolveDir` therefore also resolves symbolic links,
+      in the longest prefix that exists, since a `--dry-run` may name an
+      `--output` directory that is not there yet. The walk still uses
+      `--path` as given, so its errors name the path as the user wrote it. On
+      Windows, a root on another volume than the config has no relative form,
+      so the absolute path is written. `excludeOutput(results, output)` now
+      drops the result whose path `config.TargetPath` resolves to `--output`,
+      the way a bump resolves it. `TestDiscoverExcludesOutputBelowRoot` covers
+      `-o sub/conf.cfg` and `-o ./sub/../sub/conf.cfg`. A side effect:
+      `--path FILE` recorded `path = "."`, a config that never loaded, and now
+      records the file's path.
+- [x] Decide what `ignore` patterns are relative to. They are matched against
       paths relative to the scan root, but they live in the config, so one
       pattern means something different under a different `--path`.
       Recommend the config's directory, so a config means the same thing
       wherever discover is run from; either way, say so in the comment
       `IgnoreComment` writes into every config.
-- [ ] Print the config-relative paths in the `--dry-run` listing and the
+      The config's directory: patterns are matched against the same paths the
+      config lists, `../` included (`../src/gen/` from a config in
+      `release/`). A bare pattern matches a base name at any depth, so only a
+      pattern with a slash changes meaning, and only under a `--path` other
+      than the config's directory. The scan root itself is still never
+      pruned, by a pattern or a built-in name, as before; patterns apply to
+      what is inside it. `IgnoreComment` now says "Like each file's path, a
+      pattern is relative to the folder this file is in."
+      (`TestIgnoreCommentSaysRelativeToConfig`). This repo's `incrmit.toml`
+      picked up the new comment when the version bump rewrote it.
+- [x] Print the config-relative paths in the `--dry-run` listing and the
       "Wrote ..." summary too, so the paths a user reviews are the ones a bump
       will resolve.
-- [ ] A config written by the old behavior cannot be detected in general,
+      Both print `Result.Path`, which is now config-relative. A dry run whose
+      config is not in the scanned directory (`discovery.SameDir`) adds a
+      `(paths relative to release/incrmit.toml)` line under its heading.
+      Without it, `../src/VERSION` listed under "Discovered 1 file(s) under
+      src" reads like a mistake. The default output is unchanged
+      (`TestDiscoverDryRunNotesConfigDir`, plus a presence check in every
+      table case).
+- [x] A config written by the old behavior cannot be detected in general,
       since its paths may exist and hold the pinned version. Add a `Fixed`
       entry to `CHANGELOG.md` telling anyone who ran `discover` with `--path`
       or `-o` pointing elsewhere to run it again.
-- [ ] Test the cases above plus the default run (paths unchanged), an absolute
+      `[0.3.9]` has three `Fixed` entries: the paths, with the advice to rerun
+      in bold; the change in meaning for slashed `ignore` patterns under a
+      different `--path`, with the rewrite (`sub/gen/**`); and `--path FILE`.
+- [x] Test the cases above plus the default run (paths unchanged), an absolute
       `--path`, and a `--path` written with `./`. Update `README.md`
       (Discovery) and the man page to say paths are written relative to the
       config.
+      The table also has `--path ./`, `--path` naming a file, and two cases
+      run from a subdirectory. `internal/discovery/configdir_test.go` covers
+      the shapes at the unit level, `ignore` patterns relative to the config
+      (`gen/**` under `--path sub` no longer prunes `sub/gen`), the root never
+      being pruned, and a directory reached through a symbolic link or not
+      created yet. `TestDiscoverIgnoreRelativeToConfig` checks the patterns
+      through `cli.Main`. The `--path ./src` example is in `doc/USAGE.md`, not
+      the README; it was correct only because the config stays in `.`. The
+      README's Configuration section now says paths and patterns are written
+      relative to the config, with the sibling example. `doc/USAGE.md` covers
+      it in Discovery, the dry-run note, and the matching rules; the man page
+      under `discover`, `-P`, and `-o`. `incrmit help discover` has a new
+      `pathsNote` (`TestDiscoverHelpDocumentsPaths`), and `doc/DEVELOPMENT.md`
+      has it in §6.1, §8.2 steps 3, 6, and 7, §8.3, and §12. The suite
+      passes under `-race` and `make check`, and all six release platforms
+      vet. Coverage went from 96.7% to 96.5%: the new lines not covered are
+      the error branches for `os.Getwd` failing, a `filepath.Rel` that cannot
+      fail inside the walk, and the Windows cross-volume fallback.
 
 ## Milestone 38 — Release Tagging Helper (the `tag` command)
 

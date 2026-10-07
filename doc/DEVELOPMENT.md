@@ -150,9 +150,16 @@ duplicate. Validation rejects exact `(path, token)` duplicates and any repeated
 path where an entry omits the version (which would be ambiguous). Identical
 repeats of the same version within a file collapse to a single entry.
 
+A `path` is relative to the directory holding the config
+(`config.TargetPath`), and so is every path `discover` writes: since Milestone
+37 it records each file relative to `--output`'s directory rather than to
+`--path`, so the two flags may name different directories (see
+[section 8.2](#82-discover)).
+
 The optional top-level `ignore` list holds folder/file patterns that `discover`
-skips (see [section 8.3](#83-ignore-matching)). Empty patterns are rejected;
-each pattern is trimmed and its separators normalized to `/` on load.
+skips (see [section 8.3](#83-ignore-matching)), relative to the config's
+directory like the paths. Empty patterns are rejected; each pattern is trimmed
+and its separators normalized to `/` on load.
 
 In code (`Ignore` is declared before `Files` so it encodes as a top-level array
 ahead of the `[[files]]` array-of-tables — a bare key emitted after a table
@@ -538,7 +545,26 @@ list every flag without duplicating the flag text.
    (`incrmit.toml` by name plus the resolved `--output` path, the state file,
    the lock file, and any `.incrmit-*.tmp` write in flight), symlinks of any
    kind, and anything matched by the `ignore` patterns (see
-   [section 8.3](#83-ignore-matching)).
+   [section 8.3](#83-ignore-matching)). Each file is recorded relative to the
+   directory holding `--output`, which is where every command will resolve it
+   (`discovery.DiscoverWithLimit` takes that directory as `configDir`):
+   scanning `sub` for `./incrmit.toml` records `sub/VERSION`, and scanning
+   `src` for `release/incrmit.toml` records `../src/VERSION`. Both directories
+   are made absolute with symbolic links resolved (`resolveDir`) before
+   `filepath.Rel` relates them, so two spellings of one place — `/tmp` and
+   `/private/tmp` on macOS, where `os.Getwd` may report either — do not
+   produce a path that climbs to `/` and back down. Only the longest existing
+   prefix is resolved, since a `--dry-run` may name an `--output` directory
+   that does not exist yet. On Windows, a file on another volume than the
+   config has no relative form and is recorded by its absolute path. The walk
+   itself keeps `--path` as given, so its errors name the path the way the
+   user wrote it. Before Milestone 37 every path was relative to `--path`,
+   which agreed with the config's directory only when the two were the same:
+   `discover --path sub` wrote `path = "VERSION"` for `sub/VERSION`, and a
+   bump rewrote `./VERSION` instead if it existed.
+   `excludeOutput` then drops the result that is `--output` itself, which is
+   the one whose path `config.TargetPath` resolves to `--output`, exactly as a
+   bump would.
 4. For each candidate file, extract *every* semantic version occurrence,
    recording each one's line number and the trimmed text of its line
    (`discovery.Occurrence`). A file with at least one occurrence becomes a
@@ -555,15 +581,21 @@ list every flag without duplicating the flag text.
    discoverable from a freshly written config. The comment block
    (`config.IgnoreComment`) is shared by both the discover generation and the
    bump-time rewrite (`config.Marshal`) so both files carry identical guidance.
-6. If `--dry-run`, note the applied ignore rules and print each occurrence with
-   its line number and context, then exit.
-7. Otherwise write the generated config to `--output`.
+6. If `--dry-run`, print each occurrence with its line number and context,
+   then exit. When `--path` and `--output`'s directory differ
+   (`discovery.SameDir`), a `(paths relative to <output>)` line comes first,
+   since the paths listed are then not relative to the directory in the
+   heading; the applied ignore rules follow on an `(ignoring: …)` line.
+7. Otherwise write the generated config to `--output`, and print the same
+   config-relative paths in the summary.
 
 ### 8.3 Ignore matching
 
 The `ignore` patterns are compiled into an `ignoreMatcher` (`discovery/ignore.go`)
-and applied during the walk against paths **relative to the scan root**, always
-in slash form, **case-sensitively**:
+and applied during the walk against paths **relative to the config's
+directory** — the same paths the config lists, so a root outside that
+directory gives paths that start with `../` — always in slash form,
+**case-sensitively**:
 
 - A **trailing slash** marks a pattern as directory-only (`testdata/` prunes a
   directory but never matches a file).
@@ -576,7 +608,19 @@ in slash form, **case-sensitively**:
 A matching directory returns `filepath.SkipDir` to prune its subtree; a matching
 file is simply not recorded. These rules are applied *in addition to* the
 built-in `ignoredDirs`: a path is skipped if either the built-in set or any
-configured pattern matches.
+configured pattern matches. The scan root itself is never pruned, by either:
+`--path build` scans `build`, and the patterns apply to what is inside it.
+
+Patterns are relative to the config, not to `--path`, because they live in the
+config: matched against the scan root, as they were before Milestone 37, one
+pattern named a different directory under each `--path` (`gen/**` was `gen`
+for a scan of `.` and `sub/gen` for a scan of `sub`). Matched against the
+config's paths, a config means the same thing wherever `discover` runs from,
+and a pattern can be checked by reading the `path` values beside it.
+`config.IgnoreComment`, written into every config, says so. A bare pattern
+matches a base name at any depth, so it is unaffected; only a pattern with a
+slash in it changes meaning, and only for a `--path` other than the config's
+directory.
 
 ### 8.4 Undo
 
@@ -1224,6 +1268,17 @@ incrmit/
   bytes and the project's snapshot unchanged; a missing, empty, or blank file
   and each shape of config are regenerated. `config.TestLoadIgnoreRefusesNonConfig`
   covers each reason at the unit level.
+- Paths relative to the config (`internal/cli/discoverpaths_test.go`):
+  `discover` with `--path` and `-o` naming the same directory, a directory
+  below it, one above it, and a sibling, spelled relative, with `./`, from a
+  subdirectory, and absolute, plus a `--path` that names a file. Each tree
+  holds a decoy with the same version where a scan-root-relative path would
+  resolve, and the test bumps the config `discover` wrote and asserts that
+  exactly the scanned files changed. The dry run and the summary must print
+  the paths the config holds. `internal/discovery/configdir_test.go` covers
+  the same shapes at the unit level, `ignore` patterns under a `--path` other
+  than the config's directory, and a directory reached through a symbolic
+  link or not created yet.
 - Fuzz targets over the parsers, the rewriter, discovery's scan, and the
   terminal escaping (§12.1).
 

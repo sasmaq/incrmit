@@ -29,8 +29,9 @@ type Occurrence struct {
 	Text    string
 }
 
-// Result is a single discovered target: a path relative to the scan root and
-// every version occurrence detected inside it, in the order they appear. A file
+// Result is a single discovered target: its path as a config names it, relative
+// to the config's directory in slash form (see DiscoverWithLimit), and every
+// version occurrence detected inside it, in the order they appear. A file
 // with the same version in several places yields several occurrences; distinct
 // versions in one file are all captured here (see Generate for how they map to
 // config entries).
@@ -73,31 +74,55 @@ const DefaultMaxScanBytes = 32 << 20 // 32 MiB
 //
 // The optional ignore patterns come from the config's `ignore` list and are
 // applied in addition to the built-in ignoredDirs: any file or directory whose
-// path (relative to root) matches a pattern is skipped, and a matching directory
-// prunes its whole subtree. See ignore.go for the matching semantics.
+// path matches a pattern is skipped, and a matching directory prunes its whole
+// subtree. See ignore.go for the matching semantics.
 //
-// Files larger than DefaultMaxScanBytes are skipped; use DiscoverWithLimit to
-// choose a different cap.
+// Discover is for a config written in root itself, so paths are relative to
+// root; DiscoverWithLimit takes the config's directory separately. Files larger
+// than DefaultMaxScanBytes are skipped; DiscoverWithLimit also chooses the cap.
 func Discover(root string, ignore ...string) ([]Result, error) {
-	return DiscoverWithLimit(root, DefaultMaxScanBytes, ignore...)
+	return DiscoverWithLimit(root, root, DefaultMaxScanBytes, ignore...)
 }
 
-// DiscoverWithLimit is Discover with an explicit per-file size cap: a file
-// larger than maxBytes is skipped rather than read. A maxBytes of zero (or less)
-// removes the cap, so every regular file is scanned no matter its size.
-func DiscoverWithLimit(root string, maxBytes int64, ignore ...string) ([]Result, error) {
+// DiscoverWithLimit is Discover for a config written in configDir, with an
+// explicit per-file size cap.
+//
+// Every command resolves a config's paths against the directory holding it, so
+// each result's Path is relative to configDir, not to root: scanning sub for a
+// config in . records sub/VERSION, and a root outside configDir gives "../"
+// paths. The two directories are compared with symbolic links resolved (see
+// resolveDir). The ignore patterns are matched against those same paths, so a
+// config's patterns mean the same thing whichever root it is regenerated from.
+// The root itself is always walked, even when a pattern or a built-in name
+// matches it; the patterns apply to what is inside it.
+//
+// A file larger than maxBytes is skipped rather than read. A maxBytes of zero
+// (or less) removes the cap, so every regular file is scanned no matter its
+// size.
+func DiscoverWithLimit(root, configDir string, maxBytes int64, ignore ...string) ([]Result, error) {
+	rootAbs, err := resolveDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("discovery: resolving %q: %w", root, err)
+	}
+	baseAbs, err := resolveDir(configDir)
+	if err != nil {
+		return nil, fmt.Errorf("discovery: resolving %q: %w", configDir, err)
+	}
 	matcher := newIgnoreMatcher(ignore)
 	var results []Result
 
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil {
-			rel = p
+		// The walk keeps root as given, so its errors name the path the way
+		// the user wrote it; only the recorded path is resolved. Every p is
+		// root joined with the names below it, so Rel cannot fail here.
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
 		}
-		relSlash := filepath.ToSlash(rel)
+		relSlash := relativeTo(baseAbs, filepath.Join(rootAbs, rel))
 
 		// Never follow a symlink found inside the tree. Following one would let
 		// a link read (and, on a later bump, copy in) a file outside the scan
@@ -153,6 +178,53 @@ func DiscoverWithLimit(root string, maxBytes int64, ignore ...string) ([]Result,
 
 	sort.Slice(results, func(i, j int) bool { return results[i].Path < results[j].Path })
 	return results, nil
+}
+
+// SameDir reports whether a and b are one directory once resolved the way
+// DiscoverWithLimit resolves the scan root and the config's directory, which
+// is when the paths it returns are also relative to the scan root.
+func SameDir(a, b string) bool {
+	aDir, errA := resolveDir(a)
+	bDir, errB := resolveDir(b)
+	return errA == nil && errB == nil && aDir == bDir
+}
+
+// resolveDir returns dir as an absolute path with symbolic links resolved, so
+// two spellings of one directory give clean paths relative to each other: on
+// macOS /tmp is /private/tmp, and os.Getwd may report either, so a relative
+// --output and an absolute --path could otherwise produce a path that climbs
+// to / and back down. Only the longest prefix that exists is resolved, and the
+// rest is kept as written, since a --dry-run may name an --output directory
+// that is not there yet.
+func resolveDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for p := abs; ; {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return abs, nil
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
+// relativeTo returns target relative to the directory base, both resolved by
+// resolveDir, in slash form: the path a config in base lists target under. On
+// Windows a target on another volume than base has no relative form, so its
+// absolute path is returned; a config accepts an absolute path.
+func relativeTo(base, target string) string {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return filepath.ToSlash(target)
+	}
+	return filepath.ToSlash(rel)
 }
 
 // Generate renders the discovered results as the contents of an incrmit.toml

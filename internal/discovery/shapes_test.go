@@ -202,7 +202,7 @@ func TestDiscoverRefusesFileWhoseCapFallsMidToken(t *testing.T) {
 	mustWrite(t, root, "small", "1.0.0\n")
 
 	cut := int64(strings.Index(body, "1.2.34") + len("1.2.3"))
-	results, err := DiscoverWithLimit(root, cut)
+	results, err := DiscoverWithLimit(root, root, cut)
 	if err != nil {
 		t.Fatalf("DiscoverWithLimit: %v", err)
 	}
