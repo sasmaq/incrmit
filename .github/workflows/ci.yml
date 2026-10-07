@@ -47,6 +47,16 @@ jobs:
       - name: Coverage gate
         run: make cover
 
+      # Publishes the per-package table on the run's summary page and in this
+      # log. It runs whenever the gate left a profile behind, including when
+      # the gate failed, since that is when the table showing which packages
+      # fell short is most wanted. `shell: bash` turns on pipefail, so a failed
+      # `make` is not hidden behind tee's success.
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('coverage.out') != '' }}
+        shell: bash
+        run: make cover-summary | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Fuzzing runs in its own job, on every push, for a fixed budget per target.
   #
   # Two decisions worth keeping straight. It is a *separate job* because fuzzing

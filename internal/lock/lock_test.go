@@ -352,3 +352,16 @@ func TestNotRegularErrorNamesTheKind(t *testing.T) {
 		}
 	}
 }
+
+// A nil *Lock answers its accessors as well as Release, so a caller that got
+// one back alongside ErrContended can still log Path and Reason without a
+// guard.
+func TestNilLockAccessors(t *testing.T) {
+	var l *Lock
+	if got := l.Path(); got != "" {
+		t.Errorf("Path() = %q, want \"\"", got)
+	}
+	if err := l.Reason(); err != nil {
+		t.Errorf("Reason() = %v, want nil", err)
+	}
+}

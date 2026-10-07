@@ -184,6 +184,91 @@ func TestUndoMissingConfigLeavesFilesUntouched(t *testing.T) {
 	}
 }
 
+// assertUndoLeftBump checks that a failed undo left dir as the bump made it:
+// the target and the config still at 1.2.4, and the journal entry still there
+// for a retry.
+func assertUndoLeftBump(t *testing.T, dir, target string) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(dir, target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "1.2.4\n" {
+		t.Errorf("%s = %q, want the bumped value left in place by the aborted undo", target, got)
+	}
+	cfg, err := os.ReadFile(filepath.Join(dir, "incrmit.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), `"1.2.4"`) {
+		t.Errorf("config = %q, want it still recording 1.2.4", cfg)
+	}
+	h, err := history.Load(stateFile(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.Latest(); !ok {
+		t.Error("journal entry was popped despite the undo failing")
+	}
+}
+
+// undo reads every file it is about to revert before writing any of them, so a
+// target that has become unreadable since the bump stops the revert with the
+// config and journal as the bump left them.
+func TestUndoUnreadableTargetChangesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: file permissions are not enforced")
+	}
+	dir := project(t, "[[files]]\npath = \"VERSION\"\n", map[string]string{"VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir); code != ExitOK {
+		t.Fatalf("bump exit = %d (stderr %q)", code, stderr)
+	}
+	target := filepath.Join(dir, "VERSION")
+	if err := os.Chmod(target, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(target, 0o644) })
+
+	code, _, stderr := runMain(t, dir, "undo")
+	if code != ExitError {
+		t.Errorf("exit = %d, want %d (stderr %q)", code, ExitError, stderr)
+	}
+	if !strings.Contains(stderr, "reading VERSION: permission denied") {
+		t.Errorf("stderr = %q, want a read error naming VERSION", stderr)
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assertUndoLeftBump(t, dir, "VERSION")
+}
+
+// A target that cannot be written back fails the undo before the config is
+// rewritten or the journal popped, so the undo can be retried once the
+// directory is writable again.
+func TestUndoWriteToReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions are not enforced")
+	}
+	dir := project(t, "[[files]]\npath = \"ro/VERSION\"\n", map[string]string{"ro/VERSION": "1.2.3\n"})
+	if code, _, stderr := runMain(t, dir); code != ExitOK {
+		t.Fatalf("bump exit = %d (stderr %q)", code, stderr)
+	}
+	sub := filepath.Join(dir, "ro")
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+
+	code, _, stderr := runMain(t, dir, "undo")
+	if code != ExitError {
+		t.Errorf("exit = %d, want %d (stderr %q)", code, ExitError, stderr)
+	}
+	if !strings.Contains(stderr, "writing ro/VERSION: permission denied") {
+		t.Errorf("stderr = %q, want a write error naming ro/VERSION", stderr)
+	}
+	assertUndoLeftBump(t, dir, "ro/VERSION")
+}
+
 // A journal that cannot be read must stop the bump rather than let it report
 // success with no way to undo it.
 //

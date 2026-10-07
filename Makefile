@@ -7,7 +7,7 @@ LDFLAGS := -X github.com/sasmaq/incrmit/internal/buildinfo.version=$(VERSION)
 # artifact neither discloses the directory it was built in nor depends on it:
 # the same source then produces the same bytes on any machine.
 BUILDFLAGS := -trimpath -ldflags "$(LDFLAGS)"
-COVER_THRESHOLD ?= 80
+COVER_THRESHOLD ?= 90
 # How long `make fuzz` spends on each fuzz target. Fuzzing has no natural end,
 # so the budget is the knob: 30s each is a coffee-length local pass, and a
 # longer value is what to reach for when chasing something.
@@ -19,7 +19,7 @@ DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg release release-macos test cover vet fmt fmt-check lint check clean fuzz
+.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg release release-macos test cover cover-summary vet fmt fmt-check lint check clean fuzz
 
 build:
 	go build $(BUILDFLAGS) -o $(BINARY) .
@@ -137,6 +137,12 @@ cover:
 	echo "total coverage: $${total}% (threshold $(COVER_THRESHOLD)%)"; \
 	awk "BEGIN { exit !($${total} >= $(COVER_THRESHOLD)) }" || \
 		{ echo "FAIL: coverage $${total}% is below threshold $(COVER_THRESHOLD)%"; exit 1; }
+
+# cover-summary prints the profile `make cover` left behind as a Markdown table
+# of per-package coverage; CI appends it to the run's summary page. It reads
+# coverage.out rather than running the tests again, so run `make cover` first.
+cover-summary:
+	@scripts/coverage-summary.sh $(COVER_THRESHOLD) coverage.out
 
 # fuzz runs every Fuzz target in the module for FUZZTIME each, one at a time
 # (the go command fuzzes a single target per invocation). It is deliberately not

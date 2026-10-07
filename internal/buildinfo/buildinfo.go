@@ -17,12 +17,16 @@ import (
 // build time; see the package doc.
 var version = "0.3.9"
 
+// readBuildInfo is debug.ReadBuildInfo, held in a variable so tests can stand
+// in for the module version a `go install module@version` build records.
+var readBuildInfo = debug.ReadBuildInfo
+
 // Version returns the resolved tool version.
 func Version() string {
 	if version != "" {
 		return version
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok {
+	if bi, ok := readBuildInfo(); ok {
 		if v := bi.Main.Version; v != "" && v != "(devel)" {
 			return v
 		}

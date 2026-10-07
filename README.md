@@ -63,7 +63,7 @@ Download the `.deb` from the release page, then install:
 VERSION=0.3.9
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
-man incrmit
+incrmit -v
 ```
 
 #### Fedora, RHEL, or other RPM-based systems
@@ -75,7 +75,7 @@ release page, then install:
 VERSION=0.3.9
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
-man incrmit
+incrmit -v
 ```
 
 #### MacOS
@@ -89,8 +89,7 @@ VERSION=0.3.9
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
-incrmit version
-man incrmit
+incrmit -v
 ```
 
 The `.pkg` is unsigned, so the first install may require approving it under

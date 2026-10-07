@@ -1,6 +1,7 @@
 package buildinfo
 
 import (
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -45,5 +46,40 @@ func TestVersionFallsBackToDev(t *testing.T) {
 	version = ""
 	if got := Version(); got == "" {
 		t.Error("Version() returned empty string on fallback")
+	}
+}
+
+// With no injected value, a binary built by `go install module@v1.4.0` reports
+// the module version the toolchain recorded. A local build records "(devel)"
+// or nothing, and a binary without build info has neither; all of those fall
+// through to "dev".
+func TestVersionFallsBackToModuleVersion(t *testing.T) {
+	origVersion, origRead := version, readBuildInfo
+	t.Cleanup(func() { version, readBuildInfo = origVersion, origRead })
+	version = ""
+
+	tests := []struct {
+		name    string
+		mainVer string
+		ok      bool
+		want    string
+	}{
+		{"go-install", "v1.4.0", true, "v1.4.0"},
+		{"devel", "(devel)", true, "dev"},
+		{"empty", "", true, "dev"},
+		{"no-build-info", "", false, "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			readBuildInfo = func() (*debug.BuildInfo, bool) {
+				if !tt.ok {
+					return nil, false
+				}
+				return &debug.BuildInfo{Main: debug.Module{Version: tt.mainVer}}, true
+			}
+			if got := Version(); got != tt.want {
+				t.Errorf("Version() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

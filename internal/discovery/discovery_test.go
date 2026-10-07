@@ -1,6 +1,8 @@
 package discovery
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -607,6 +609,18 @@ func TestDiscoverEmptyTree(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got %d results, want 0", len(got))
+	}
+}
+
+// A root that is not there is an error rather than an empty tree: the two must
+// not look alike, or a mistyped path would read as "no versions found".
+func TestDiscoverMissingRoot(t *testing.T) {
+	got, err := Discover(filepath.Join(t.TempDir(), "absent"))
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want a not-exist error", err)
+	}
+	if got != nil {
+		t.Errorf("got %+v, want no results alongside the error", got)
 	}
 }
 
