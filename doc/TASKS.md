@@ -393,7 +393,7 @@ completed.
       correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
       verified working (`-ldflags` override honored, and an unstamped `go build`
       falls back to the same source default); the value is `0.1.13` until the
-      version is bumped to `1.0.0` in Milestone 45.
+      version is bumped to `1.0.0` in Milestone 48.
 - [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
       missing dependencies); confirm the Go version pin is intentional. Tidy is
       a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
@@ -1743,7 +1743,7 @@ it had found a config with nothing to keep.
       (`ignore` and `files`). That accepts every config incrmit has written
       and every hand-written one, and rejects a Markdown file, a JSON
       manifest, or a `pyproject.toml`. Keep the list of known keys next to
-      `config.Config` so Milestone 42's `[git]` table extends it in one place.
+      `config.Config` so Milestone 43's `[git]` table extends it in one place.
       Empty means nothing but whitespace. Known keys are checked with the TOML
       decoder's `MetaData.Undecoded`, so the fields of `Config` and `FileEntry`
       are the list, at every depth: `files.owner` is refused as well as
@@ -2211,7 +2211,139 @@ occurrences it names and nothing else in the file.
       Add an `Added` entry to `CHANGELOG.md` saying that running
       `incrmit discover` again writes the keys into an existing config.
 
-## Milestone 41 — Remove the Lock File Between Runs
+## Milestone 41 — YAML Parser
+
+Milestone 39 reads `.json` and `.toml` files by their format and leaves YAML
+to the text scanner, yet YAML holds the project version in Helm charts
+(`Chart.yaml`), Dart and Flutter packages (`pubspec.yaml`), snaps
+(`snapcraft.yaml`), Ansible collections (`galaxy.yml`), and `CITATION.cff`,
+and those files have the problem Milestone 39 describes. A prototype ran
+Milestone 39's TOML probe through a YAML decoder over a `Chart.yaml` holding
+`version: 0.7.3`, `appVersion: "1.4.2"`, a `kubeVersion` range, two
+dependencies (`12.5.6` and `"~17.11.3"`), the version in its description, and
+an image reference in an annotation. The text scanner makes all seven tokens
+candidates; read as YAML, three are (`version`, `appVersion`, and
+`dependencies[0].version`). A `pubspec.yaml` went from six candidates to
+three, and this repository's `ci.yml` and `release.yml` from eighteen and
+twelve to one each. The rest sat in comments (`# v7.0.1`) or inside
+`go install …@v1.6.0` commands, which is why this repository's config ignores
+`.github/`.
+
+The cost is a dependency. The standard library has no YAML reader, §2 asks for
+few dependencies, and §13 counts two, with none of their own.
+`go.yaml.in/yaml/v3` is the YAML organization's continuation of
+`gopkg.in/yaml.v3`, whose repository is archived, and it requires no other
+module, so incrmit would have three dependencies and still no transitive ones.
+In a minimal program it added about 0.9 MB to the binary (2.4 MB to 3.3 MB).
+Without it, Milestone 40's text `key` (`key = "appVersion: "`) still picks out
+the version in a YAML file, but discover keeps offering every range, comment,
+and dependency pin. The items below assume the dependency.
+
+- [ ] Reproduce first, once Milestones 39 and 40 have landed, since this
+      milestone builds on 39's parser seam and probe and on 40's `key`. Use
+      the `Chart.yaml` and `pubspec.yaml` above and a two-document Kubernetes
+      manifest; assert what `discover --dry-run` lists, what `discover`
+      writes, and what a bump changes, byte for byte. Keep the fixtures for
+      the tests below.
+- [ ] Record the dependency in `doc/DEVELOPMENT.md`: update §2 and the
+      sentence in §13 that counts two dependencies, and list what was
+      rejected. `go.yaml.in/yaml/v4` is still a release candidate
+      (`v4.0.0-rc.6`); revisit it at its first stable release.
+      `gopkg.in/yaml.v3` is archived. `github.com/goccy/go-yaml` reports
+      token positions, which the probe does not need. A hand-written reader is
+      out of proportion to the job, since YAML's grammar is far larger than
+      JSON's or TOML's. Measure the binary-size change on incrmit itself, not
+      only on the minimal program above, and record it.
+- [ ] Choose the parser as Milestone 39 does, by extension and ignoring case:
+      `.yaml` and `.yml` get the YAML parser, and so does `.cff`, since the
+      Citation File Format is YAML by definition. Add `"yaml"` to the values
+      the `parser` key accepts. Milestone 39's fallback carries over
+      unchanged: `discover` scans a YAML file that does not parse as text and
+      writes `parser = "text"`, and a bump never falls back.
+- [ ] Reuse Milestone 39's TOML probe with the same placeholders, decoded with
+      `go.yaml.in/yaml/v3` into a `yaml.Node` tree, never into `any`. A
+      candidate is a scalar that is a value, not a mapping key, whose decoded
+      text is exactly one placeholder and whose tag is `!!str`, implicit or
+      written (`!!str 1.2.3` counts, `!semver 1.2.3` does not). Plain,
+      single-quoted, and double-quoted scalars all qualify. A placeholder
+      inside a longer scalar (an image reference such as
+      `ghcr.io/me/app:1.4.2`, a range such as `~17.11.3`, a `|` or `>` block
+      scalar) is not a candidate, and neither is one in a comment or a key. A
+      placeholder resolves to `!!str` just as a version does, so the probe
+      never changes a value's type. After planning a bump, decode the
+      rewritten bytes in phase 1 and check that exactly the planned keys
+      changed, as Milestone 39 does for TOML.
+- [ ] Handle anchors and aliases. A `yaml.Node` keeps an alias as an alias
+      node, so an anchored version (`base: &v 1.2.3`) is one candidate at the
+      anchor's key, and an alias of it (`pinned: *v`) is not a candidate of
+      its own: it has no bytes to rewrite. Rewriting the anchored value
+      changes every alias, so the dry run lists the aliasing keys beside the
+      candidate, the phase-1 check counts them as planned, and a Milestone 40
+      `key` that names an alias is an error naming the anchor's key. A merge
+      key (`<<: *defaults`) is an alias too and follows the same rule.
+- [ ] Read one document per file. A YAML stream can hold several, and
+      Milestone 40's key path has no way to name one. Recommend: the YAML
+      parser accepts exactly one document (a leading `---` or a trailing `...`
+      is fine), and a file with more takes Milestone 39's fallback, with the
+      reason in the dry run (`deploy.yaml: 2 YAML documents, scanned as
+      text`). Multi-document files are mostly Kubernetes manifests, whose
+      versions sit inside image references that the YAML parser would not
+      offer anyway, so text with a text `key` is what they need. A document
+      selector in the key syntax can come later if someone asks for one.
+- [ ] Treat duplicate keys as Milestone 39 treats them in JSON. YAML forbids
+      them, but decoding into a `yaml.Node` accepts them, so both values are
+      candidates under the same key path, and Milestone 40's error for a key
+      that appears twice applies.
+- [ ] Cover hostile input. The prototype confirmed that the decoder refuses
+      nesting past 10,000 levels with an error rather than exhausting the
+      stack (100,000 nested `[` in 13 ms, 20,000 nested block mappings in
+      0.3 s), and that decoding into a `yaml.Node` expands no aliases, so a
+      billion-laughs document decodes at once (decoded into `any`, it is
+      refused as excessive aliasing). Add both to Milestone 31's
+      pathological-shapes tests. The decoder also limits an implicit key to
+      1,024 characters, and a placeholder is wider than most tokens, so a key
+      holding several tokens can pass the limit in the probe copy only.
+      Milestone 39 already refuses a probe copy that does not decode; add a
+      fixture for this case.
+- [ ] Add the YAML manifests to Milestone 40's table of known project keys:
+      `pubspec.yaml`, `snapcraft.yaml`, `galaxy.yml`, and `CITATION.cff` use
+      `version`. For `Chart.yaml`, write entries for both `version` (the
+      chart's) and `appVersion` (the application's): both belong to the
+      project, many charts keep them equal, and the user deletes the one they
+      version separately. Dependencies are listed as skipped, as for the other
+      manifests.
+- [ ] Note pubspec's build number. Flutter reads the part after `+` in
+      `version: 2.3.1+45` as the build number, and §9.2 drops build metadata
+      on a bump, so the bump writes `2.3.2`. The text scanner does the same
+      today; document it under `pubspec.yaml` in `doc/USAGE.md` and leave
+      §9.2 as it is.
+- [ ] Existing configs change meaning, as in Milestone 39: an entry for a
+      `.yaml`, `.yml`, or `.cff` file that pinned a version found only in a
+      comment, a range, or a longer string now finds nothing and fails in
+      phase 1. The case most likely to surprise is an image tag in a
+      Kubernetes manifest, fixed with `parser = "text"` and a text `key`
+      (`key = "ghcr.io/me/app:"`). Say so in the `CHANGELOG.md` `Changed`
+      entry, and have `undo` take the parser from the journal, as in
+      Milestone 39.
+- [ ] Test with golden fixtures in `internal/files/testdata`: the reproduction
+      files; a BOM (the decoder accepts one, and the probe moves no byte
+      outside a token, so unlike JSON nothing needs offsetting; assert it);
+      CRLF; flow mappings and sequences; all three quoting styles; a comment
+      after a value; `|` and `>` block scalars holding `version: 1.2.3` as
+      text; anchors, aliases, and a merge key; a duplicate key; an explicit
+      `!!str` tag and a custom one; a key that is a version; a two-document
+      file; tab indentation; a Jinja-templated conda `meta.yaml`, which is not
+      YAML and takes the fallback; and the implicit-key overflow. Test the
+      `parser` override in both directions and an old config failing in
+      phase 1 with every file unchanged.
+- [ ] Fuzz the YAML probe with Milestone 39's properties (§12.1, Milestone 30),
+      seeding the corpus with the fixtures.
+- [ ] Document YAML wherever Milestone 39 documents its parsers (`README.md`,
+      `doc/USAGE.md`, `incrmit help discover`, the man page, and
+      `doc/DEVELOPMENT.md` §5, §6.1, §9, and §12.1), including the image-tag
+      recipe above, and add an `Added` entry to `CHANGELOG.md`.
+
+## Milestone 42 — Remove the Lock File Between Runs
 
 Every project incrmit has written in keeps a `.incrmit.lock` afterward, and
 every user has to add it to `.gitignore`. The file carries no state. It is left
@@ -2305,7 +2437,7 @@ leave the file behind, but the next clean run removes it.
       RUNS sections, the `internal/lock` package comment, `Release`'s comment,
       and the note itself. Add a `CHANGELOG.md` entry under `Changed`.
 
-## Milestone 42 — Release Tagging Helper (the `tag` command)
+## Milestone 43 — Release Tagging Helper (the `tag` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
 no tag, no push. `incrmit tag` closes the gap the way `npm version` does, by
@@ -2584,7 +2716,7 @@ can hang a CI run. Bump stays git-free exactly as it is today.
       `govulncheck` gate from Milestone 26 still passes with the `x/term` tree
       in `go.sum`.
 
-## Milestone 43 — Conventional-Commit Bump Inference (`--auto`)
+## Milestone 44 — Conventional-Commit Bump Inference (`--auto`)
 
 Reading the commits since the last tag and inferring the bump component turns
 `discover` + language-agnostic + single-binary from a narrow story into a real
@@ -2611,13 +2743,13 @@ never writes to the repository.
       config's directory), and exit `1` naming the first one that does not.
 - [ ] Decide how to find the last release tag. Recommend
       `git for-each-ref --merged=HEAD --format=%(refname) refs/tags/v*` (with
-      the config's `[git] tag_prefix` from Milestone 42, default `v`), keeping
+      the config's `[git] tag_prefix` from Milestone 43, default `v`), keeping
       the names whose remainder after the prefix parses as a version and taking
       the highest by `version.Compare`. Prefer it over
       `git describe --tags --abbrev=0`, which reports a repository with no tag
       only as an error message that would have to be parsed and changes with
       the locale; `for-each-ref` prints nothing instead. The prefix passed
-      Milestone 42's ref-name rules, which refuse `*`, `?`, and `[`, so it goes
+      Milestone 43's ref-name rules, which refuse `*`, `?`, and `[`, so it goes
       into the pattern as it is. Decide too whether a prerelease tag counts as
       the last release: recommend not, so the commits since the last stable
       release decide the component. Record the decisions and the reasons.
@@ -2649,7 +2781,7 @@ never writes to the repository.
       parser: each rule, the highest-wins precedence, the `!` and trailer forms
       of a breaking change, CRLF line endings, empty input, and records split
       on NUL with the newline git adds between them. Through `cli.Main`, use
-      Milestone 42's `gittest` repositories: no tag (the whole history read),
+      Milestone 43's `gittest` repositories: no tag (the whole history read),
       the highest of several version tags, a tag on a branch not merged into
       `HEAD` ignored, a tag with the prefix but no version ignored, a
       prerelease tag per the decision above, no conforming commits, the
@@ -2670,7 +2802,7 @@ never writes to the repository.
       token that reaches every repository its owner can. Add a `CHANGELOG.md`
       entry under `Added`.
 
-## Milestone 44 — Code and Repository Hygiene
+## Milestone 45 — Code and Repository Hygiene
 
 Small cleanups worth doing before v1.0.0 freezes the surface.
 
@@ -2697,7 +2829,178 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
       build artifact or stray file appears at the repo root, so the tree stays
       clean without relying on remembering.
 
-## Milestone 45 — v1.0.0 Release: Publish
+## Milestone 46 — Shell Completion (bash, zsh, fish)
+
+incrmit has a handful of commands and a fixed set of flags, so tab completion
+is one small hand-written script per shell rather than one generated by a CLI
+framework. Cobra, the usual source of generated completion, would add
+`spf13/pflag` and `mousetrap` to a module that keeps its dependencies few on
+purpose (§2, §13). pflag would also break the single-dash long forms: the help
+documents `-version`, `-help`, and `-no-banner`, and the flag package accepts
+one dash for every flag, but pflag reads a single dash as a run of shorthands,
+so `-config x.toml` becomes `-c onfig` followed by a stray argument. The
+scripts are embedded in the binary, printed by `incrmit completion`, and
+installed by every package.
+
+- [ ] Record the decision in `doc/DEVELOPMENT.md` §7: hand-written scripts over
+      a framework, for the reasons above, and static ones. A script never runs
+      `incrmit` or reads the config to find what to offer, so pressing Tab in a
+      tree someone else wrote runs no program and reads no file in it.
+- [ ] Write the scripts in a new `internal/completion` package that embeds
+      them with `//go:embed` (an embed pattern cannot reach outside its
+      package's directory): `incrmit.bash`, `_incrmit` for zsh, and
+      `incrmit.fish`. In the first position each offers the commands
+      (`discover`, `preview`, `undo`, `version`, `help`, `completion`), the
+      bump flags, since bump is the default command, and `--version`/`-v`.
+      After a command it offers that command's flags, long and short, with
+      `-h`/`--help`; after `help`, a command name, `bump`, or `--no-banner`;
+      after `completion`, `bash`, `zsh`, or `fish`. For flag values: a file
+      after `--config`, `--file`, and `--output`, preferring `*.toml` for
+      `--config`; a directory after `--path`; `alpha`, `beta`, and `rc` after
+      `--pre`, as suggestions only, since any identifier is accepted; nothing
+      after `--max-file-size`. Add `tag` and `--auto` when Milestones 43 and 44
+      land; the drift test below fails until every script has them. Target
+      bash 4.2 or later, which current bash-completion releases require; the
+      3.2 that macOS ships as `/bin/bash` is out of scope.
+- [ ] Leave the rules for combining flags to the binary: offer `--release`
+      after `--pre` and let incrmit refuse it with exit `2`. Copied into three
+      scripts, those rules would each have to track `resolveBump`.
+- [ ] Add the `completion` command: `incrmit completion bash` (or `zsh`, or
+      `fish`) prints that script to stdout and exits `0`; a missing or unknown
+      shell, or an extra argument, exits `2` with the command's help on
+      stderr, as the other commands do. Dispatch it in `cli.Main`, and add it
+      to the overview and to `incrmit help completion` through the
+      centralized text in `internal/cli/help.go`. The scripts hold only
+      printable ASCII, newlines, and tabs, which `terminalWriter` passes
+      unchanged; a test compares each shell's output with its embedded file
+      byte for byte, which catches a script edited to hold a character the
+      writer would escape.
+- [ ] Keep the scripts in step with the flags. Add a test that reads the
+      commands from the overview (or from Milestone 47's command table, if it
+      has landed) and each command's flags from its flag block in
+      `internal/cli/help.go` (`bumpFlags`, `discoverFlags`, and the rest), and
+      fails when a script leaves one out or offers a `--flag` the help does not
+      list. The help text is already the single source of truth, so a flag
+      added there later fails the build until it completes too.
+- [ ] Test the scripts in their own shells. The `no-os-exec` rule in
+      `.golangci.yml` keeps `os/exec` out of the Go tests, so add
+      `scripts/test-completion.sh` and a `make completion-test` target, and
+      run it in CI on `ubuntu-latest` with `zsh` and `fish` installed. Locally
+      it skips a shell that is not installed and says so; in CI it requires
+      all three. Check each script's syntax (`bash -n`, `zsh -n`,
+      `fish --no-execute`). For bash, source the script, set `COMP_WORDS` and
+      `COMP_CWORD`, call the completion function, and compare `COMPREPLY`; for
+      fish, compare the output of `complete --do-complete 'incrmit dis'`. For
+      zsh, load the function under `compinit` with an empty `ZDOTDIR` and
+      confirm it is registered for `incrmit`; driving zsh's completion from a
+      script needs `zpty`, which is more machinery than the check needs.
+      Cover the first position, a command's flags, `help <command>`,
+      `completion <shell>`, both kinds of value (`--config` offering a `.toml`
+      file, `--path` offering only directories), and a flag after a value
+      (`incrmit --file x --<Tab>`).
+- [ ] Install the scripts with the packages. In `packaging/nfpm.yaml`, put
+      bash's at `/usr/share/bash-completion/completions/incrmit` and fish's at
+      `/usr/share/fish/vendor_completions.d/incrmit.fish`. zsh's goes where
+      each distribution's zsh looks, and the two differ: Debian's reads
+      `/usr/share/zsh/vendor-completions` and Fedora's
+      `/usr/share/zsh/site-functions`, so give the entry a `packager:` per
+      format and confirm both in a container with `zsh -c 'print -l $fpath'`.
+      The macOS package (`scripts/build-pkg.sh`) installs under
+      `/usr/local/share` (`bash-completion/completions`, `zsh/site-functions`,
+      `fish/vendor_completions.d`); confirm each shell finds its script there,
+      including Homebrew's shells on Apple Silicon, whose prefix is
+      `/opt/homebrew`. Add a `completions/` directory to the `.tar.gz`
+      archives. Every script is mode `0644`.
+- [ ] Document completion in `README.md`, `doc/USAGE.md`, and the man page
+      (`completion` under COMMANDS, and a SHELL COMPLETION section). After a
+      package install there is nothing to do but open a new shell (bash needs
+      the `bash-completion` package). Otherwise: for bash,
+      `source <(incrmit completion bash)` in `~/.bashrc`; for zsh,
+      `incrmit completion zsh > ~/.zfunc/_incrmit` with `~/.zfunc` added to
+      `fpath` before `compinit` runs; for fish,
+      `incrmit completion fish > ~/.config/fish/completions/incrmit.fish`.
+      Add a `CHANGELOG.md` entry under `Added`.
+
+## Milestone 47 — Suggest the Nearest Command
+
+A mistyped command (`incrmit discvoer`, `incrmit prevew`) exits `2` with
+`unknown command` and a pointer to `incrmit help`, which leaves the user to
+find the typo. Naming the nearest command saves the round trip. With fewer
+than ten commands the check is a plain edit distance to each name: a few dozen
+lines and no dependency. The suggestion is only printed. incrmit never runs
+the command it guessed, as git's `help.autoCorrect` can, because a guess can
+land on a command that writes: `incrmit und` run as `undo` would revert a bump
+nobody asked to revert.
+
+- [ ] Keep the command names in one place. `cli.Main` and `runHelp` each
+      switch over them today, and the suggester needs the same list, as does
+      Milestone 46's drift test. Recommend one table of commands in overview
+      order (name, run function, help text) that `cli.Main`, `runHelp`, and
+      the suggester all read, so a command cannot be added to one and missed
+      by another. `bump` is in the table for `incrmit help bump` but has no
+      name `cli.Main` dispatches (see below).
+- [ ] Add `suggest(name string, candidates []string) []string` in a new
+      `internal/cli/suggest.go`. It returns the candidates that start with
+      `name`, when `name` is at least two runes long (`di`, `ver`, which are
+      too far from `discover` and `version` by distance alone); failing that,
+      the candidates at the smallest optimal-string-alignment distance from
+      `name`, if that distance is at most `2`. Either way they come back in
+      table order. Use optimal string alignment rather than plain Levenshtein
+      because two swapped neighbors are the commonest typo, and they should
+      cost one edit, not two. Compare case-folded, so `Discover` suggests
+      `discover`, and count runes, not bytes, so a non-ASCII typo is one edit.
+      Return early when `name` is more than two runes longer than every
+      candidate: none can then be within distance `2` or start with it, so a
+      megabyte-long argument costs nothing.
+- [ ] Recognize a bump flag typed without its dashes. `incrmit minor` and
+      `incrmit major` are easy mistakes, since the flags read as words, and no
+      command is close to them. Before the distance check, when `name` is
+      exactly one of the bump command's long flags (taken from the flag set,
+      not a second list), suggest it with its dashes, as `--minor`. This runs
+      first so `pre` suggests `--pre`, not `preview` by prefix.
+- [ ] Handle `incrmit bump`. `bump` is a topic of `incrmit help bump` but not a
+      command `cli.Main` dispatches, so `incrmit bump --minor` is an unknown
+      command today even though the help names it. Decide between dispatching
+      it as an alias of the default command and keeping it unknown with a hint
+      of its own, saying that bump is the default command, run as
+      `incrmit --minor`. Recommend the hint: an alias is a second spelling to
+      document and keep forever, and the hint teaches the one that exists.
+      Record the decision in `doc/DEVELOPMENT.md` §7.
+- [ ] Print the suggestion between the two lines printed today, in the same
+      words from both places that report an unknown command (`cli.Main` and
+      `runHelp`):
+
+      ```text
+      incrmit: unknown command "discvoer"
+      Did you mean "discover"?
+      Run 'incrmit help' to see available commands.
+      ```
+
+      With several matches, list them one per line, indented, under
+      `The most similar commands are:`, as git does. With none, print the two
+      lines of today. The exit code stays `2` and stdout stays empty. `runHelp`
+      offers its own topics, which include `bump`, and skips the flag rule,
+      since a flag is not a help topic. The name the user typed is already
+      quoted with `%q` and goes through `terminalWriter`; the suggestions are
+      incrmit's own names.
+- [ ] Test `suggest` with a table: one substitution, insertion, deletion, and
+      transposition each; mixed case; a two-rune prefix and a one-rune one; a
+      tie; a name too far from everything; the empty string; a name three
+      runes longer than any command; non-ASCII and invalid UTF-8. Add a
+      `FuzzSuggest` target beside the existing ones that checks it never
+      panics and that every name it returns is a candidate meeting the rules
+      above. Through `cli.Main`, cover a typo of each command, a typo after
+      `help`, `incrmit minor`, `incrmit pre`, `incrmit bump --minor`, and a
+      typo holding an escape sequence, printed escaped: each exits `2` with
+      nothing on stdout. Confirm the existing unknown-command tests in
+      `internal/cli/help_test.go`, `internal/cli/cli_test.go`, and
+      `main_test.go` pass unchanged.
+- [ ] Document the suggestion in `doc/USAGE.md` and under EXIT STATUS in the
+      man page, where exit `2` is described; record the matching rules and the
+      decision never to run a guess in `doc/DEVELOPMENT.md` §7; and add a
+      `CHANGELOG.md` entry under `Added`.
+
+## Milestone 48 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -2712,7 +3015,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
 
-## Milestone 46 — apt / dnf Repo via GitHub Pages
+## Milestone 49 — apt / dnf Repo via GitHub Pages
 
 Host signed apt and dnf repositories on GitHub Pages so users can
 `apt install incrmit` / `dnf install incrmit` after adding the repo once.
