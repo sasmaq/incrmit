@@ -1411,6 +1411,12 @@ with each component and a prerelease counter at the boundary, now guards it.
   yields the same bytes anywhere.
 - Test: `go test ./...` (or `make check` for fmt/vet/lint/coverage).
 - Lint: `go vet ./...` and `gofmt`/`golangci-lint`.
+- Pre-commit hook: `make hooks` (once per clone) points git at `.githooks/`,
+  whose `pre-commit` runs `make check` before every commit. It checks the
+  staged content, copied out of the index, not the working tree, so a commit is
+  judged on exactly what it contains. It needs `golangci-lint` on `PATH`, at
+  the version pinned in `.github/workflows/ci.yml`. `git commit --no-verify`
+  skips it.
 - Cross-compile: `make dist VERSION=X.Y.Z` builds static binaries for
   `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`,
   `windows/amd64`, and `windows/arm64` into `dist/`, named

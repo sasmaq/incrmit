@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A git pre-commit hook in `.githooks/` runs `make check` on the staged changes
+  before each commit. `make hooks` turns it on for a clone.
+
 ### Changed
 
 - CI lints with `golangci-lint` v2.15.0, up from v2.13.2. Go 1.27.2 changed the

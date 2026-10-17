@@ -1,0 +1,33 @@
+#!/bin/sh
+# Runs `make check` against exactly what is about to be committed: the staged
+# content, copied out of the index into a scratch directory. Checking the
+# working tree instead would let an unstaged fix pass a commit that does not
+# contain it, and fail a commit over an unstaged file that is not in it.
+#
+# Install it once per clone with `make hooks`. `git commit --no-verify` skips it.
+set -eu
+
+if ! command -v golangci-lint >/dev/null 2>&1; then
+	echo "pre-commit: golangci-lint not found; install the version pinned in .github/workflows/ci.yml" >&2
+	exit 1
+fi
+
+# The scratch directory is at the same path on every run, inside this clone's
+# git directory, because the go build cache keys compiled packages by their
+# directory: a fresh temporary directory each time would rebuild and retest
+# everything on every commit.
+dir=$(git rev-parse --git-path pre-commit-check)
+case $dir in /*) ;; *) dir="$PWD/$dir" ;; esac
+rm -rf "$dir"
+trap 'rm -rf "$dir"' EXIT
+trap 'exit 130' INT TERM
+
+# checkout-index reads GIT_INDEX_FILE, which git sets for `git commit -a` and
+# `git commit <paths>`, so those forms check the index they are committing too.
+git checkout-index --all --prefix="$dir/"
+
+cd "$dir"
+if ! make check; then
+	echo "pre-commit: make check failed on the staged changes; fix them, or commit with --no-verify to skip the check" >&2
+	exit 1
+fi

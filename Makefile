@@ -19,7 +19,7 @@ DARWIN_ARCHES := amd64 arm64
 NFPM ?= nfpm
 NFPM_CONFIG := packaging/nfpm.yaml
 
-.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg release release-macos test cover cover-summary vet fmt fmt-check lint check clean fuzz
+.PHONY: build dist dist-archives linux-binaries darwin-binaries deb rpm pkg release release-macos test cover cover-summary vet fmt fmt-check lint check clean fuzz hooks
 
 build:
 	go build $(BUILDFLAGS) -o $(BINARY) .
@@ -175,6 +175,12 @@ lint:
 	golangci-lint run
 
 check: fmt-check vet lint cover
+
+# hooks points git at the hooks committed in .githooks/, so `git commit` runs
+# `make check` on the staged changes first (see .githooks/pre-commit). Run it
+# once per clone; `git config --unset core.hooksPath` undoes it.
+hooks:
+	git config core.hooksPath .githooks
 
 clean:
 	rm -f $(BINARY)
