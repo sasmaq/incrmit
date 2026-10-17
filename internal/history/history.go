@@ -1,10 +1,18 @@
 // Package history records a journal of bumps so they can be reverted.
 //
-// After a successful config-driven bump, incrmit appends an entry capturing
-// every file it rewrote (the old and new version tokens) and a timestamp to a
-// state file kept next to the config (config.StateFileName). The `undo` command
-// reads the most recent entry and reverts it, then pops the entry so repeated
-// undos walk back through history rather than re-applying the same revert.
+// A config-driven bump appends an entry capturing every file it rewrites (the
+// old and new version tokens) and a timestamp to a state file kept next to the
+// config (config.StateFileName). The `undo` command reads the most recent entry
+// and reverts it, then pops the entry so repeated undos walk back through
+// history rather than re-applying the same revert.
+//
+// The entry is saved before the bump writes anything, marked StatusPending, and
+// marked StatusComplete once every write has landed. A bump that stops partway,
+// whether it fails or the process dies, therefore leaves an entry `undo` can
+// find, and the mark tells undo that some of the files may never have been
+// written. An undo marks the entry pending again before its own first write,
+// for the same reason. Journals written before the status existed recorded
+// only finished bumps, so an entry without one loads as complete.
 //
 // Each change records the file's path as the config lists it, never a resolved
 // location: undo resolves it against the directory of the config it is given,
@@ -52,11 +60,28 @@ type Change struct {
 	New  string `toml:"new"`
 }
 
-// Entry is one recorded bump: when it happened and every file change applied.
-// The config it belongs to is the one next to the state file.
+// The values Entry.Status takes.
+const (
+	// StatusPending marks an entry whose changes a run was writing when it
+	// stopped, or is writing now: each file may hold either side of its
+	// change.
+	StatusPending = "pending"
+	// StatusComplete marks a bump whose every change was written.
+	StatusComplete = "complete"
+)
+
+// Entry is one recorded bump: when it happened, whether it finished, and every
+// file change it applies. The config it belongs to is the one next to the
+// state file.
 type Entry struct {
 	Timestamp time.Time `toml:"timestamp"`
+	Status    string    `toml:"status,omitempty"`
 	Changes   []Change  `toml:"changes"`
+}
+
+// Pending reports whether e is marked StatusPending.
+func (e Entry) Pending() bool {
+	return e.Status == StatusPending
 }
 
 // History is the on-disk journal: a stack of bump entries, oldest first, newest
@@ -81,6 +106,11 @@ func ResolvePath(configPath string) string {
 // undo" result. The read goes through files.ReadOwnFile, so a state file that
 // is not a regular file, or is over files.MaxOwnFileBytes, is an error rather
 // than a hang or an unbounded read.
+//
+// An entry with no status loads as StatusComplete: before the status existed,
+// a bump was recorded only once it had finished. An entry with a status this
+// version does not know is an error rather than a guess, since what undo may
+// assume about the files depends on it.
 func Load(path string) (*History, error) {
 	data, err := files.ReadOwnFile(path)
 	if err != nil {
@@ -92,6 +122,15 @@ func Load(path string) (*History, error) {
 	var h History
 	if err := toml.Unmarshal(data, &h); err != nil {
 		return nil, fmt.Errorf("history: parsing %q: %w", path, err)
+	}
+	for i := range h.Entries {
+		switch h.Entries[i].Status {
+		case "":
+			h.Entries[i].Status = StatusComplete
+		case StatusPending, StatusComplete:
+		default:
+			return nil, fmt.Errorf("history: parsing %q: entry %d has unknown status %q", path, i+1, h.Entries[i].Status)
+		}
 	}
 	return &h, nil
 }
@@ -155,6 +194,14 @@ func (h *History) Latest() (Entry, bool) {
 		return Entry{}, false
 	}
 	return h.Entries[len(h.Entries)-1], true
+}
+
+// MarkLatest sets the status of the most recent entry. It does nothing when
+// the journal is empty.
+func (h *History) MarkLatest(status string) {
+	if len(h.Entries) > 0 {
+		h.Entries[len(h.Entries)-1].Status = status
+	}
 }
 
 // Pop removes and returns the most recent entry. The second result is false

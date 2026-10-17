@@ -1933,29 +1933,119 @@ not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
 succeeds, so exactly the case where `undo` is needed is the case where no
 journal entry exists. Close this before v1.0.0.
 
-- [ ] Write the journal entry *before* phase 2 rather than after, marked
+- [x] Write the journal entry *before* phase 2 rather than after, marked
       `pending`, and flip it to `complete` once every write lands. Bump
       `history` file format handling so an older state file still loads.
-- [ ] On a phase-2 write failure, roll back the files already written in this
+      Reproduced first with three targets and `c/` read-only: `a/VERSION` and
+      `b/VERSION` were bumped, the run exited `1`, and `undo` answered
+      "Nothing to undo". `history.Entry` has a `status`, `pending` or
+      `complete`. `startEntry` pushes the entry `pending` and saves it before
+      the first target, and the bump marks it `complete` after the config. An
+      entry with no `status` loads as `complete`, since only finished bumps
+      were recorded before, and an unknown status fails the load
+      (`TestLoadEntryWithoutStatusIsComplete`,
+      `TestLoadRejectsUnknownStatus`). One addition to the plan: phase 2 was
+      not only writes. The pinned-version check ran there, file by file, so
+      `version = "9.9.9"` on the second of two files left the first bumped
+      and exited `3`, while `--dry-run` reported success. That check moved
+      into `planGroups`, which now computes every target's new bytes, and the
+      config is rendered before the first write too. Phase 2 only writes
+      (`TestBumpOutOfSyncPinWritesNothing`).
+- [x] On a phase-2 write failure, roll back the files already written in this
       run (the pre-bump bytes are still in memory from planning) before
       returning, and report both the original failure and whether the rollback
       itself succeeded.
-- [ ] When rollback is impossible or partially fails, leave the `pending` entry
+      `commitWrites` in the new `internal/cli/commit.go` does it for the bump
+      and for undo. It writes in order, and on a failure puts back the files
+      already written, newest first, attempting every one even after one
+      fails. If all of them are put back, it restores the journal: the
+      entries from before the run, or no state file at all if the run created
+      it, so a first bump that fails leaves no empty journal behind. The
+      report is the write error, then `rolled back a/VERSION, b/VERSION; no
+      file was changed`. A journal that cannot be restored is a warning,
+      since its pending entry is still one `undo` can clear.
+- [x] When rollback is impossible or partially fails, leave the `pending` entry
       in place and print an explicit recovery instruction naming `incrmit undo`
       and the affected files, rather than exiting with a bare error.
-- [ ] Teach `undo` to recognize a `pending` entry and treat it as the thing to
+      Each failed rollback is reported (`rolling back a/VERSION: permission
+      denied`), then the files left changed, one per line, and a line saying to
+      run `incrmit undo` once the problem is fixed. A
+      run given `-c` names `incrmit undo -c <config>`, with the path quoted for
+      a POSIX shell when it needs it (`shellWord`), so the line can be pasted.
+      A crash leaves the same entry with no message, so a bump that fails in
+      planning while the newest entry is `pending` adds a line pointing at
+      `undo` (`TestBumpAfterCrashPointsAtUndo`).
+- [x] Teach `undo` to recognize a `pending` entry and treat it as the thing to
       revert, tolerating files that were never written (the recorded `new` token
       is absent because the write never happened, which is not the "file was
       edited since" case that currently aborts the whole undo).
-- [ ] Order the config rewrite and the target writes so a crash between them is
+      For a `pending` entry, a file holding every `new` token and not every
+      `old` one is reverted, and one holding every `old` token and not every
+      `new` one is left alone and listed as `already at 1.0.1`. A file holding
+      both, or neither, is refused. A bump only raises precedence, so a file
+      it wrote cannot still hold its smallest `old` version, and a file it
+      never reached holds its largest `new` version only as text the bump does
+      not own. The config is judged the same way, as a whole: at the new
+      versions it is reverted, at the old ones it is left untouched, comments
+      included, and split between them it is refused. The trust check widens
+      only that far. One addition to the plan: undo is a multi-file write too,
+      and a failed one used to leave the reverted files at the old version,
+      after which every undo refused them as edited. Undo now marks the entry
+      `pending` before its first write, rolls back through `commitWrites`
+      (marking the entry `complete` again), and can simply be run again after
+      a crash. The output says `Undid the unfinished bump` for a pending
+      entry.
+- [x] Order the config rewrite and the target writes so a crash between them is
       recoverable in one direction only, and document which one is written first
       and why in `doc/DEVELOPMENT.md`.
-- [ ] Add tests that inject a write failure mid-run (e.g. a read-only directory
+      Targets first, config last: the config is the commit record, so a config
+      at the new versions means every target was written. A run that stops
+      between them leaves the targets new and the config old. A rerun of the
+      bump refuses that state (exit `3`, the pinned versions are gone from
+      the bumped files, and it now points at `undo`), and `undo` reverts it,
+      so the only way out is back. It is also what lets undo decide from the
+      config alone whether to rewrite it. DEVELOPMENT.md §8.7 explains why
+      the config does not go first.
+- [x] Add tests that inject a write failure mid-run (e.g. a read-only directory
       or an unwritable target as the Nth of M files) and assert: files are
       restored, the journal reflects the interrupted run, and a following `undo`
       leaves the tree exactly as it started.
-- [ ] Document the crash-safety guarantee — and its limits — in
+      `internal/cli/crashsafe_test.go`. A bump's and an undo's writes go
+      through two package variables, `writeFile` and `saveJournal`, which a
+      test replaces to fail the Nth write, fail a rollback too, or crash:
+      panic, so the run unwinds without its rollback or anything after it, as
+      a `kill -9` would. The project is three targets in their own
+      directories with an earlier bump in the journal. Bump and undo are each
+      failed at every target and the config, and crashed there and at both
+      journal writes. Every case must end byte-identical to the start
+      (`snapshotProject`), straight away for a clean rollback, or after one
+      `undo` for a failed rollback or a crash, which must leave a `pending`
+      entry naming the bump. A read-only target directory and an unwritable
+      config directory cover the real failures. The second stopped the old
+      build at the config write, after every target was bumped. Hand-written
+      `pending` journals cover unwritten files, files holding both sides or
+      neither, and configs at neither version or split. Six mutations
+      (dropping the rollback, the journal restore, the pending check, the
+      both-check, the pending mark, or the config check) each fail at least
+      one test.
+- [x] Document the crash-safety guarantee — and its limits — in
       `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
+      DEVELOPMENT.md has a new §8.7 (guarantee, write order, rollback, undo of
+      a pending entry, the last journal write failing, and limits). It is
+      referenced from §6.2 (the `status` field and how older and newer
+      versions read it), §8.1 and §8.4 (steps renumbered), §10, and §12. The
+      limits: readers can see a partly bumped tree; process death is covered
+      but power loss is not, since no directory is synced after a rename; a
+      rollback, like any write, leaves a replaced symlink a regular file; it
+      restores the bytes the run read, so an editor's change in that window
+      is lost; and undo judges files by tokens, not checksums. `Unreleased`
+      has four `Fixed` entries: the rollback, the out-of-sync pin, undo, and
+      the unwritable config folder. `doc/USAGE.md` (Undo), the man page
+      (`undo`, FILES, CAVEATS), and `incrmit help undo` describe the new
+      behavior. The suite passes under `-race` and `make check`, all six
+      release platforms vet, and coverage went from 96.9% to 97.7%. The new
+      lines not covered are the two `config.Marshal` error branches, which
+      cannot fail on a config `Load` accepted.
 
 ## Milestone 39 — JSON and TOML Parsers
 

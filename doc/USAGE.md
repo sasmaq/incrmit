@@ -692,10 +692,12 @@ incrmit undo
 # 1.2.4 -> 1.2.3
 ```
 
-To make undo possible, each successful bump records a small entry (the files it
-touched and their `old`/`new` versions, plus a timestamp) in a state file named
-`.incrmit.state.toml`, kept next to `incrmit.toml`. This file is **local working
-state** — it is not meant to be committed, so add it to your `.gitignore`:
+To make undo possible, each bump records a small entry (the files it touches
+and their `old`/`new` versions, plus a timestamp) in a state file named
+`.incrmit.state.toml`, kept next to `incrmit.toml`. The entry is written before
+any file is changed, so even a bump that stops partway can be undone. This file
+is **local working state** — it is not meant to be committed, so add it to your
+`.gitignore`:
 
 ```gitignore
 .incrmit.state.toml
@@ -732,6 +734,22 @@ A few details worth knowing:
   exits `1`. Unlike the config, a state file is not trusted input: a repository
   can commit one, and this check is what keeps it from reaching any file the
   config could not already bump.
+- **A bump is all or nothing.** If a file cannot be written (a read-only
+  directory, a full disk), the bump puts back the files it had already
+  written and exits `1` having changed nothing:
+
+  ```text
+  incrmit: writing c/VERSION: permission denied
+  incrmit: rolled back a/VERSION, b/VERSION; no file was changed
+  ```
+
+  If it cannot put one of them back either, it names the files left changed
+  and tells you to run `incrmit undo` once the problem is fixed. That undo,
+  like one after a bump that was killed partway, reverts the files the bump
+  reached and reports the rest as `already at` their old version. Until then a
+  new bump refuses to run, because the config no longer matches the files, and
+  points at `undo`. `undo` is protected the same way: one that fails puts the
+  files back, and one that stops partway can simply be run again.
 - **Nothing to undo is not an error.** With no recorded history, `undo` prints a
   friendly message and exits `0`.
 - **`--dry-run` previews the revert** (`new -> old`) without writing anything.

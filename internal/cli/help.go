@@ -205,6 +205,11 @@ lists at the version the bump wrote are reverted. A file that was edited since
 the bump is left untouched and the undo is refused, so your changes are never
 clobbered. Repeated undos walk back through successive bumps.
 
+A bump that stopped partway, and could not put back the files it had written,
+leaves its entry marked unfinished. Undo then reverts the files it reached and
+reports the rest as already at their old version. An undo that stops partway
+can be run again to finish.
+
 Flags:
 ` + undoFlags + concurrencyNote
 

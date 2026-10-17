@@ -121,6 +121,82 @@ func TestLoadIgnoresRetiredKeys(t *testing.T) {
 	}
 }
 
+// Each status survives a save and a load.
+func TestStatusRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), config.StateFileName)
+	h := &History{}
+	h.Push(Entry{Status: StatusComplete, Changes: []Change{{Path: "a", Old: "1.0.0", New: "1.0.1"}}})
+	h.Push(Entry{Status: StatusPending, Changes: []Change{{Path: "a", Old: "1.0.1", New: "1.0.2"}}})
+	if err := Save(path, h); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Entries) != 2 || got.Entries[0].Pending() || !got.Entries[1].Pending() {
+		t.Errorf("entries = %+v, want a complete entry and then a pending one", got.Entries)
+	}
+}
+
+// A journal written before Milestone 38 has no status, and recorded only bumps
+// that had finished, so its entries load as complete and are saved that way.
+func TestLoadEntryWithoutStatusIsComplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), config.StateFileName)
+	old := "[[entries]]\n  timestamp = 2026-07-10T01:02:03Z\n\n" +
+		"  [[entries.changes]]\n    path = \"VERSION\"\n    old = \"1.2.3\"\n    new = \"1.3.0\"\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if e, ok := h.Latest(); !ok || e.Status != StatusComplete {
+		t.Fatalf("entries = %+v, want one complete entry", h.Entries)
+	}
+	if err := Save(path, h); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `status = "complete"`) {
+		t.Errorf("the saved journal does not record the status:\n%s", data)
+	}
+}
+
+// A status this version does not know fails the load instead of being read as
+// either known one: undo checks a pending entry's files differently.
+func TestLoadRejectsUnknownStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), config.StateFileName)
+	body := "[[entries]]\ntimestamp = 2026-07-10T01:02:03Z\nstatus = \"complete\"\n\n" +
+		"[[entries]]\ntimestamp = 2026-07-11T01:02:03Z\nstatus = \"half-done\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `entry 2 has unknown status "half-done"`) {
+		t.Errorf("Load error = %v, want it to name entry 2's unknown status", err)
+	}
+}
+
+// MarkLatest changes only the newest entry, and does nothing to an empty
+// journal.
+func TestMarkLatest(t *testing.T) {
+	(&History{}).MarkLatest(StatusPending)
+
+	h := &History{}
+	h.Push(Entry{Status: StatusComplete})
+	h.Push(Entry{Status: StatusComplete})
+	h.MarkLatest(StatusPending)
+	if h.Entries[0].Pending() || !h.Entries[1].Pending() {
+		t.Errorf("entries = %+v, want only the newest marked pending", h.Entries)
+	}
+}
+
 // Save writes atomically through the files package, so the written state file
 // carries a documenting header and no temp files are left behind.
 func TestSaveWritesHeader(t *testing.T) {

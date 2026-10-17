@@ -214,6 +214,10 @@ Every recorded file must still be listed in the config at the version the bump
 wrote; otherwise the undo is refused and nothing is written.
 A file edited since the bump is left untouched and the undo is refused.
 Repeated undos walk back through successive bumps.
+A bump that failed and could not put its files back, or was killed partway,
+leaves its entry marked unfinished; undo then reverts the files it reached and
+reports each one it never wrote as already at its old version.
+An undo that stops partway can be run again to finish.
 .It Cm version
 Print the
 .Nm
@@ -398,8 +402,10 @@ A token written whole in
 .Pq Qq 1.2.3-rc.1
 is still accepted and is split on the next rewrite.
 .It Pa .incrmit.state.toml
-Bump-history state file written next to the config after a bump, used by
+Bump-history state file written next to the config, used by
 .Cm undo .
+A bump records its entry there before changing any other file, marked
+pending, and marks it complete once every file is written.
 It is local, tool-maintained working state and is not meant to be committed
 .Pq add it to Pa .gitignore .
 A bump reads it before writing anything, so one that cannot be read stops the
@@ -551,6 +557,18 @@ setgid, and sticky bits are dropped, a hard link is broken
 .Pq other names keep the old contents ,
 a symlink becomes a regular file, and ownership, extended attributes, and ACLs
 are those of a new file created by the running user.
+.Pp
+A bump writes its files one at a time, each by the same rename, then the
+config.
+If one cannot be written, the ones already written are put back and the
+command exits 1 having changed nothing.
+If one of those cannot be put back either, or the process is killed, the state
+file keeps the bump marked unfinished and
+.Nm
+.Cm undo
+reverts it.
+While a bump runs, a reader may see some files bumped and others not, and the
+order of the renames is not guaranteed to survive a power cut.
 .Pp
 The files
 .Nm

@@ -195,8 +195,10 @@ patterns", so `discover -o NOTES.md` replaced the Markdown file and exited `0`.
 
 ### 6.2 Bump history / state file (`internal/history`)
 
-After a successful, non-`--dry-run` bump in config mode, `incrmit` appends an
-entry to a **state file** so the bump can be reverted by `incrmit undo`.
+Every non-`--dry-run` bump in config mode pushes an entry onto a **state file**
+so the bump can be reverted by `incrmit undo`. The entry is written before any
+other file, marked `pending`, and marked `complete` once every write has
+landed (see [section 8.7](#87-crash-safety-all-or-nothing-across-files)).
 
 - **Location:** the file is named `.incrmit.state.toml` (`config.StateFileName`)
   and lives in the **same directory as the config** (`incrmit.toml`), so the two
@@ -228,6 +230,17 @@ entry to a **state file** so the bump can be reverted by `incrmit undo`.
 - **`--file` mode records nothing:** a single-file bump has no config-anchored
   location to keep or later find the state file, so no history is written and
   `undo` is a config-mode operation only.
+- **Status:** `pending` marks an entry whose changes a run was writing when it
+  stopped (or is writing now), so each file may hold either side of its
+  change; `complete` marks a bump that wrote them all. An undo marks the entry
+  it is reverting `pending` before its own first write. Journals written
+  before Milestone 38 have no `status`, and they recorded only bumps that had
+  finished, so `Load` reads a missing status as `complete` and the next save
+  writes it out. A status this version does not know fails the load instead of
+  being read as either one. An older `incrmit` ignores the key and reads a
+  `pending` entry as `complete`, which fails safe: its undo requires every file
+  to hold the version the bump wrote and the config to list it, so it refuses
+  a half-applied entry rather than writing over a file the bump never reached.
 
 The schema (TOML), encoded with the same `github.com/BurntSushi/toml` library:
 
@@ -240,6 +253,7 @@ type Change struct {
 
 type Entry struct {
     Timestamp time.Time `toml:"timestamp"`
+    Status    string    `toml:"status,omitempty"` // "pending" or "complete"
     Changes   []Change  `toml:"changes"`
 }
 
@@ -489,7 +503,12 @@ list every flag without duplicating the flag text.
 3. Resolve targets:
    - If `--file` is set, use that single file.
    - Otherwise load the config from `--config`.
-4. Group config entries by file (a file listed once per distinct version is a
+4. In config mode, load the journal beside the config (`history.Load`), so a
+   state file that cannot be read fails the bump before anything is written. It
+   used to be read last, after the targets and the config already held the new
+   version, which left a bump with no entry for `undo` to find. A `--dry-run`
+   reads it too, so it predicts that failure.
+5. Group config entries by file (a file listed once per distinct version is a
    single group) and read each file once, refusing one larger than
    `--max-file-size` when a cap is set (see
    [section 9.1](#91-scan-boundaries)). For every entry, determine the old
@@ -497,30 +516,37 @@ list every flag without duplicating the flag text.
    recorded) and apply the bump to get the new version. A bump that fails for
    one entry (`--release` on a version with no prerelease, or a number already
    at `math.MaxInt`; see [section 9.2](#92-prerelease-and-build-metadata))
-   fails the whole command here, before anything is written.
-5. In config mode, load the journal beside the config (`history.Load`). It is
-   read here, with everything else in phase 1, so a state file that cannot be
-   read fails the bump before anything is written. It used to be read last,
-   after the targets and the config already held the new version, which left a
-   bump with no entry for `undo` to find. A `--dry-run` reads it too, so it
-   predicts that failure.
-6. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
-7. Otherwise rewrite each file once, replacing all of its known version tokens
-   in a single pass (`files.SetKnownVersions`). A single pass over the original
-   bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4` alongside
-   `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering another's when two
-   versions live in the same file.
-8. In config mode (not `--file`), rewrite `incrmit.toml` so each entry's
-   `version` records the new value (one entry per distinct version per file),
-   keeping the config in sync for the next run. The file is regenerated through
-   `config.Marshal`, so the `[[files]]` entries and `ignore` list survive but
-   user-authored comments and formatting do not. The output is deterministic:
-   the same config bumped twice produces byte-identical layout.
-9. In config mode, push a history entry (each file's path as the config lists
-   it and its `old`/`new` tokens, plus a timestamp) onto the journal
-   read in step 5 and save it beside the config so the bump can be undone (see
-   [section 6.2](#62-bump-history--state-file-internalhistory)).
-10. Report results (files bumped, and each `old -> new`).
+   fails the whole command here, before anything is written. If the newest
+   journal entry is `pending`, a failure here also says to run `incrmit undo`:
+   a run that stopped partway is the likeliest reason the config and the files
+   disagree.
+6. Compute the bytes each file will hold, replacing all of its known version
+   tokens in a single pass (`files.SetKnownVersions`). A single pass over the
+   original bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4`
+   alongside `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering
+   another's when two versions live in the same file. A pinned version the
+   file no longer holds fails the bump here, `--dry-run` included. This check
+   used to run as each file was written, so a config out of sync with its
+   third file left the first two bumped. In config mode, render the config too:
+   each entry's `version` set to the new value (one entry per distinct version
+   per file), keeping the config in sync for the next run. It is regenerated
+   through `config.Marshal`, so the `[[files]]` entries and `ignore` list
+   survive but user-authored comments and formatting do not. The output is
+   deterministic: the same config bumped twice produces byte-identical layout.
+7. If `--dry-run`, print `old -> new` for each entry and exit (no writes).
+8. In config mode, push a history entry (each file's path as the config lists
+   it and its `old`/`new` tokens, plus a timestamp) marked `pending` onto the
+   journal read in step 4, and save it beside the config (see
+   [section 6.2](#62-bump-history--state-file-internalhistory)). If that save
+   fails, nothing has been written.
+9. Write each target, then the config (`commitWrites`). If a write fails, put
+   back the files already written and the journal, and report both the failure
+   and the rollback (see
+   [section 8.7](#87-crash-safety-all-or-nothing-across-files)).
+10. Mark the entry `complete` and save the journal. If that save fails, every
+    file already holds the new version and a pending entry undoes like a
+    complete one, so the bump stands: warn and carry on.
+11. Report results (files bumped, and each `old -> new`).
 
 ### 8.2 Discover
 
@@ -644,7 +670,9 @@ directory.
    what a journal can reach to what the config could already bump: an absolute
    `path`, or one with `../`, is allowed exactly when the config lists it. It
    also catches a config edited since the bump, which is refused rather than
-   partly undone.
+   partly undone. A `pending` entry may instead find every change listed at
+   its `old` version, because the config is the bump's last write; a config
+   at neither, or split between the two, is refused.
 5. Resolve each recorded `path` against the config's directory
    (`config.TargetPath`, as `resolveTargets` does for a bump). Read every
    recorded file once, group its changes, and build the reverse
@@ -653,14 +681,24 @@ directory.
    `new` token, it was edited since the bump — or another run bumped past it,
    since a lock only serializes the runs that take it: report which file
    diverged and abort without writing anything, rather than putting an older
-   version back over newer work.
-6. If `--dry-run`, print `new -> old` for each change and exit (no writes).
-7. Otherwise rewrite each reverted file once, then restore the config by setting
-   each `(path, new)` entry back to its `old` version and rewriting the config
-   at the path undo was given (the bump's self-update in reverse).
-8. Pop the entry and save the journal so a repeated `undo` does not re-apply the
-   same revert (and instead reverts the previous bump, if any).
-9. Report the reverted files (each `new -> old`).
+   version back over newer work. For a `pending` entry, a file that holds every
+   `old` token and not every `new` one was never written (or was put back), so
+   it is left alone; one that holds all of both, or all of neither, is refused
+   (see [section 8.7](#87-crash-safety-all-or-nothing-across-files)).
+6. Render the config with each `(path, new)` entry set back to its `old`
+   version (the bump's self-update in reverse), unless a `pending` entry found
+   it at the `old` versions already, in which case it is not rewritten.
+7. If `--dry-run`, print `new -> old` for each change, or `already at <old>`
+   for a file left alone, and exit (no writes).
+8. Mark the entry `pending` and save the journal, unless it already is.
+9. Write each reverted file, then the config at the path undo was given
+   (`commitWrites`). If a write fails, put back what this undo already wrote,
+   mark the entry `complete` again, and report it, exactly as a bump does.
+10. Pop the entry and save the journal so a repeated `undo` does not re-apply the
+    same revert (and instead reverts the previous bump, if any). If that save
+    fails, warn and carry on: every file is back at its old version, so the next
+    undo finds the pending entry with nothing left to write and pops it.
+11. Report the reverted files (each `new -> old`, or `already at <old>`).
 
 ### 8.5 Preview
 
@@ -743,6 +781,132 @@ records one as a real target. A run that holds the lock also sweeps them
 (`files.SweepTemps`) from the directories it is about to write in, which is the
 one moment they are provably safe to delete: no other run can have a write in
 flight. A degraded lock buys no such guarantee, so nothing is swept then.
+
+### 8.7 Crash safety: all or nothing across files
+
+Each write `incrmit` makes is atomic on its own (`files.WriteAtomic`), but a
+bump writes several files, and no filesystem offers a transaction over several
+renames. Before Milestone 38 a bump planned every file before writing any, then
+wrote them one at a time and recorded its journal entry last. A failure on the
+third of five targets left two bumped, and because the entry came after every
+write, the run that most needed `undo` was the one it could not see: `undo`
+answered "Nothing to undo", and the next bump failed because the config's
+pinned versions were no longer in the bumped files. The pinned-version check
+also ran during the writes, so a config out of sync with a later file did the
+same.
+
+**The guarantee.** A bump or an undo that exits `0` has written every file it
+names. One that does not has done one of three things:
+
+- put back every file it wrote, and the journal, and changed nothing. It
+  reports the failure and `rolled back <files>; no file was changed`;
+- failed to put some file back. It names each such file and the `incrmit undo`
+  command that finishes the job (with `-c` when the run was given one,
+  shell-quoted), and leaves its journal entry `pending` for that undo to find;
+- died outright (a `kill -9`, a panic, a power cut; but see the limits below),
+  leaving the `pending` entry with the same effect.
+
+`incrmit undo` returns any of these to exactly the state before the run, and
+the tests compare the whole project byte for byte to check that
+(`internal/cli/crashsafe_test.go`).
+
+**How.** Everything is computed before the first write: each target's new
+bytes, with the pinned-version check (`planGroups`), and the config's. Writing
+then does nothing that can fail for a reason of incrmit's own, only for one
+outside it, such as permissions, a full disk, or a directory that went away.
+The writes go in this order:
+
+1. The journal entry, marked `pending`. If this write fails, nothing has been
+   written.
+2. Each target, in config order.
+3. The config.
+4. The entry, marked `complete`.
+
+**Targets first, config last.** The config records which version each file
+holds, so it goes last, as the commit record: a config at the new versions
+means every target holds them. A run that stops between the two leaves the
+targets new and the config old, and that state can only be recovered
+backward. Running the bump again cannot carry it forward, since planning
+finds the config's pinned versions missing from the files already bumped and
+exits `3`, pointing at `undo` because the newest entry is `pending`; `undo`
+then finishes it. A rerun that succeeded would bump the written files twice
+and the rest once, so refusing it is the point. Writing the config first would
+also refuse a rerun, but the config would then claim versions no file holds,
+and a config at the new versions would no longer show that the targets had
+been written. With the config last, its state tells `undo` whether to rewrite
+it, and because it is one atomic write it is never partly reverted.
+
+**Rollback.** When a write fails, the files this run already wrote get their
+bytes from planning back, newest first, each through `files.WriteAtomic`. Every
+one is attempted even after one fails, so as little as possible is left
+changed. If all of them are put back, the journal goes back to the entries it
+held before the run, or the state file is removed if this run created it. If
+one is not, the `pending` entry stays and the run prints the advice above. The
+config is never rolled back: it is the last write, so either it is the write
+that failed, which changed nothing, or there was no failure.
+
+**Undo of a `pending` entry.** Each file is checked against both sides of its
+changes:
+
+- every `new` token present, and not every `old` one: the run wrote it, so
+  it is reverted as for a finished bump;
+- every `old` token present, and not every `new` one: the run never wrote it,
+  or put it back, so it is left alone and reported `already at <old>`;
+- both, or neither: refused, with nothing written. Neither means the file was
+  edited since. Both cannot come from the bump itself. Every bump raises a
+  version's precedence, so a file's smallest `old` version is no change's
+  `new` version, and its largest `new` version is no change's `old` version.
+  The run's write replaced every `old` token, so a written file cannot still
+  hold that smallest `old` version. A file the run never reached cannot hold
+  that largest `new` version unless it already held it as text of its own,
+  and reverting that would rewrite text the bump never owned.
+
+The config is checked the same way, as a whole: every change listed at its
+`new` version means the run wrote the config, so it is reverted; every change
+at its `old` version means the run never reached it, and it is left exactly as
+it is, comments and all; a mixture is refused. Trust is widened only that far:
+a `pending` entry may name a file the config lists at the entry's `old`
+version.
+
+**Undo is made safe the same way.** It marks the entry `pending` before its
+first write, writes the files and then the config, and pops the entry last. A
+write that fails rolls back what the undo had written and marks the entry
+`complete` again. An undo that stops partway leaves files on either side of the
+entry, and running `undo` again finishes from there.
+
+**The last journal write can fail too.** Marking a bump's entry `complete`,
+or popping an undone entry, can fail after every file is already where the run
+meant it to be. The run then exits `0` with a warning rather than reporting
+work that happened as a failure, which would invite a script to retry it. The
+entry stays `pending`, which is still correct. For a bump, it undoes exactly as
+a complete entry would. For an undo, every file is at its `old` version, so
+the next `undo` writes nothing and only pops the entry.
+
+**Limits.**
+
+- **Not atomic for readers.** Between the first write and the last, `preview`,
+  a dry run, or a build can see a partly bumped tree. The lock only serializes
+  writers ([section 8.6](#86-concurrency-one-writer-per-project)).
+- **Process death, not power loss.** `files.WriteAtomic` syncs each temp file
+  before renaming it, but no directory is synced after a rename. The operating
+  system may therefore persist two renames out of order across a power cut,
+  so the journal's rename might not survive while a target's does. A crash,
+  `kill -9`, or failed write is covered; losing power mid-run is not
+  guaranteed to be.
+- **A rollback is a write like any other.** It puts back contents and
+  permission bits under a new file, as the bump did, so a symbolic link the
+  bump replaced stays a regular file and a hard link stays broken (see
+  [Consequences of the atomic write](#consequences-of-the-atomic-write)).
+- **A rollback restores the bytes the run read.** Something other than
+  `incrmit` that edits an already-written target in the milliseconds before its
+  rollback loses that edit. The lock keeps other `incrmit` runs out, but not
+  editors.
+- **Undo judges a file by its version tokens, not a checksum.** If a target is
+  edited after a crash so that it holds exactly the `old` versions again, undo
+  treats it as never written, which is the result undo would have produced
+  anyway.
+- **`--file` mode** writes a single file, which `files.WriteAtomic` already
+  makes all or nothing, and keeps no journal.
 
 ## 9. Version Detection Strategy
 
@@ -1169,7 +1333,30 @@ have kept the output safe, so only that check notices the ambiguity.
 - Undo of a change the config does not list (the config was edited since the
   bump, or the state file names a path of its own): report
   `<path>: not listed in <config> at <new>, the version the last bump recorded
-  (refusing to undo)`, write nothing, and exit `1`.
+  (refusing to undo)`, write nothing, and exit `1`. For a `pending` entry the
+  message names both versions (`at <new> or <old>, the versions the unfinished
+  bump recorded`), and a config listing some changes at one and some at the
+  other is refused the same way.
+- Undo of a `pending` entry where a file holds every version the run wrote and
+  every one it started from, or neither: report
+  `<path>: holds both ...` or `<path>: holds neither ...`, write nothing, and
+  exit `1`.
+- A write that fails partway through a bump or an undo: report it, put back
+  the files the run already wrote and the journal, report
+  `rolled back <files>; no file was changed`, and exit `1`. A rollback that
+  fails as well is reported per file, followed by the files that could not be
+  put back and the `incrmit undo` command that finishes the job; the journal
+  keeps the entry `pending`, and the exit is `1`. See
+  [section 8.7](#87-crash-safety-all-or-nothing-across-files).
+- A bump that fails in planning while the newest journal entry is `pending`:
+  report the failure, then say the last bump or undo stopped partway and name
+  the undo command.
+- Marking a bump's entry `complete`, or popping an undone entry, fails after
+  every file was written: warn on stderr and exit `0`, since the work is done
+  and the `pending` entry left behind still undoes correctly.
+- A state file with an entry whose `status` is neither `pending` nor
+  `complete`: report `history: parsing <path>: entry <n> has unknown status
+  "<status>"` and exit `1` before anything is written.
 - A project already held by another `incrmit` run: report it, name `--wait`,
   write nothing, and exit `1` (generic error). See
   [section 8.6](#86-concurrency-one-writer-per-project) for why this fails fast
@@ -1279,6 +1466,21 @@ incrmit/
   the same shapes at the unit level, `ignore` patterns under a `--path` other
   than the config's directory, and a directory reached through a symbolic
   link or not created yet.
+- Writes that fail or stop partway (`internal/cli/crashsafe_test.go`). The
+  writes go through two package variables, `writeFile` and `saveJournal`, which
+  a test replaces to fail the Nth write of a run, fail a rollback write too, or
+  "crash" there: panic, so the run unwinds without its rollback or anything
+  after that point, as a `kill -9` would. A bump over three targets in their own
+  directories, with an earlier bump already in the journal, is failed and
+  crashed at each target, the config, and both journal writes, and so is an
+  undo of it. After each, the project must be byte-identical to how it started,
+  either straight away (a clean rollback) or after one `incrmit undo` (a failed
+  rollback or a crash, which must leave a `pending` entry naming the bump).
+  Real permission failures cover the same ground without the variables: a
+  read-only target directory, and a config directory where the journal cannot
+  be written, which must now stop the bump before any target changes. Undo of
+  hand-written `pending` entries covers files never written, edited files that
+  hold both sides or neither, and configs at neither version or split.
 - Fuzz targets over the parsers, the rewriter, discovery's scan, and the
   terminal escaping (§12.1).
 

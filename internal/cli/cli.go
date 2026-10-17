@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -203,21 +205,11 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	}
 	sweepTemps(lk, dirsOf(sweepPaths...)...)
 
-	// Phase 1: read and plan every file before writing anything, so a failure
-	// on one file does not leave others half-updated (fail fast). Config entries
-	// are grouped by file: a single file may be listed several times (once per
-	// distinct version it contains), and all of those versions are bumped in one
-	// pass so the writes never clobber each other.
-	groups, code := planGroups(targets, bump, opts.maxFileSize, stderr)
-	if code != ExitOK {
-		return code
-	}
-
-	// The journal is read in phase 1 too, so a state file that cannot be read
-	// fails the bump before anything is written. Read after the writes, it left
-	// the targets and the config at the new version with no entry for `undo` to
-	// find. A dry run reads it as well, so it predicts that failure. Only config
-	// mode keeps a journal.
+	// The journal is read before anything is written, so a state file that
+	// cannot be read fails the bump with the tree untouched; a dry run reads
+	// it as well, so it predicts that failure. Only config mode keeps a
+	// journal: an --file bump has no config-anchored location to keep (or
+	// find) the state file.
 	var journal *history.History
 	statePath := ""
 	if cfgPath != "" {
@@ -226,6 +218,38 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 			fprintln(stderr, "incrmit:", err)
 			return classify(err)
 		}
+	}
+
+	// Phase 1: read and plan every file, down to the bytes each one will hold,
+	// before writing anything, so a problem with one file fails the bump with
+	// none of them changed (fail fast). Config entries are grouped by file: a
+	// single file may be listed several times (once per distinct version it
+	// contains), and all of those versions are bumped in one pass so the
+	// writes never clobber each other.
+	groups, code := planGroups(targets, bump, opts.maxFileSize, stderr)
+	if code != ExitOK {
+		// A pending entry on top is a run that stopped partway, which is the
+		// likeliest reason the config and the files no longer agree.
+		if journal != nil {
+			if latest, ok := journal.Latest(); ok && latest.Pending() {
+				fprintf(stderr, "incrmit: the last bump or undo in this project stopped partway; run `%s` to finish putting it back\n",
+					undoCommand(opts.configPath))
+			}
+		}
+		return code
+	}
+
+	writes := make([]fileWrite, 0, len(groups)+1)
+	for _, g := range groups {
+		writes = append(writes, fileWrite{display: g.display, fsPath: g.fsPath, before: g.data, after: g.updated})
+	}
+	if cfgPath != "" {
+		data, err := bumpedConfig(groups, ignore)
+		if err != nil {
+			fprintln(stderr, "incrmit:", err)
+			return ExitError
+		}
+		writes = append(writes, fileWrite{display: cfgPath, fsPath: cfgPath, after: data})
 	}
 
 	if opts.dryRun {
@@ -238,54 +262,29 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 
-	// Phase 2: write each file once, replacing all of its known version tokens
-	// in a single pass so overlapping bumps do not cascade.
-	for _, g := range groups {
-		repl := make([]files.Replacement, 0, len(g.entries))
-		for _, e := range g.entries {
-			repl = append(repl, files.Replacement{Old: e.oldVer, New: e.newVer})
-		}
-		updated, counts := files.SetKnownVersions(g.data, repl)
-		for _, e := range g.entries {
-			if counts[e.oldVer.String()] == 0 {
-				fprintf(stderr, "incrmit: %s: %v\n", displayName(g.display), fmt.Errorf("%w: %s", files.ErrVersionNotFound, e.oldVer))
-				return ExitNoVersion
-			}
-		}
-		if err := files.WriteAtomic(g.fsPath, updated); err != nil {
-			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", g.display, err))
-			return classify(err)
+	// Phase 2, in an order chosen so the run can stop at any point and leave
+	// something undo can finish (doc/DEVELOPMENT.md section 8.7). The journal
+	// entry goes first, marked pending, so it exists before any file changes.
+	// The targets follow, then the config: it records the new versions, so a
+	// config at the new versions means every target was written. The entry is
+	// marked complete last.
+	var restore func() error
+	if cfgPath != "" {
+		if restore, code = startEntry(statePath, journal, groups, stderr); code != ExitOK {
+			return code
 		}
 	}
-
-	// Keep the config in sync: record each entry's new version so the next bump
-	// reads the correct current version. Only done in config mode (not --file).
-	// One entry is written per (path, version) so files with several versions
-	// keep all of their entries.
+	run := writeRun{what: "bump", journal: statePath, undo: undoCommand(opts.configPath), then: "revert what it wrote"}
+	if code := commitWrites(writes, restore, run, stderr); code != ExitOK {
+		return code
+	}
 	if cfgPath != "" {
-		// Carry the user-authored ignore list through the rewrite so a bump
-		// never drops it.
-		updated := &config.Config{Ignore: ignore}
-		for _, g := range groups {
-			for _, e := range g.entries {
-				updated.Files = append(updated.Files, config.EntryFor(g.display, e.newVer))
-			}
-		}
-		data, err := config.Marshal(updated)
-		if err != nil {
-			fprintln(stderr, "incrmit:", err)
-			return ExitError
-		}
-		if err := files.WriteAtomic(cfgPath, data); err != nil {
-			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", cfgPath, err))
-			return classify(err)
-		}
-
-		// Record the bump in the journal next to the config so `incrmit undo`
-		// can revert it. Only in config mode: an --file bump has no
-		// config-anchored location to keep (or find) the state file.
-		if code := recordHistory(statePath, journal, groups, stderr); code != ExitOK {
-			return code
+		journal.MarkLatest(history.StatusComplete)
+		if err := saveJournal(statePath, journal); err != nil {
+			// Every file holds the new version, and a pending entry undoes
+			// exactly as a complete one would, so the bump stands.
+			fprintf(stderr, "incrmit: warning: %s; the bump is applied, but its journal entry stays marked unfinished, which `%s` still reverts\n",
+				fsErrorMessage("writing", statePath, err), run.undo)
 		}
 	}
 
@@ -311,16 +310,22 @@ type entryPlan struct {
 type fileGroup struct {
 	display string
 	fsPath  string
-	data    []byte
+	data    []byte // contents as read, put back if a later write fails
+	updated []byte // contents with every entry bumped, set by planGroups
 	entries []entryPlan
 }
 
 // planGroups reads every target file once and computes the old/new version for
-// each config entry, grouping entries that refer to the same file. A target
-// larger than maxBytes is reported rather than read (maxBytes of 0 means no
-// limit). File order and entry order are preserved for deterministic output. On
-// failure it reports the problem to stderr and returns the appropriate exit
-// code; ExitOK indicates success.
+// each config entry, grouping entries that refer to the same file, and then
+// the bytes each file will hold: all of its known version tokens replaced in a
+// single pass, so overlapping bumps do not cascade. A target larger than
+// maxBytes is reported rather than read (maxBytes of 0 means no limit), and so
+// is a pinned version the file no longer contains. File order and entry order
+// are preserved for deterministic output. On failure it reports the problem to
+// stderr and returns the appropriate exit code; ExitOK indicates success.
+//
+// The pinned-version check used to run as each file was written, so a config
+// out of sync with its third file left the first two bumped.
 func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	groups, code := readGroups(targets, maxBytes, stderr)
 	if code != ExitOK {
@@ -337,7 +342,37 @@ func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Write
 			e.newVer = newVer
 		}
 	}
+	for i := range groups {
+		g := &groups[i]
+		repl := make([]files.Replacement, 0, len(g.entries))
+		for _, e := range g.entries {
+			repl = append(repl, files.Replacement{Old: e.oldVer, New: e.newVer})
+		}
+		updated, counts := files.SetKnownVersions(g.data, repl)
+		for _, e := range g.entries {
+			if counts[e.oldVer.String()] == 0 {
+				fprintf(stderr, "incrmit: %s: %v\n", displayName(g.display), fmt.Errorf("%w: %s", files.ErrVersionNotFound, e.oldVer))
+				return nil, ExitNoVersion
+			}
+		}
+		g.updated = updated
+	}
 	return groups, ExitOK
+}
+
+// bumpedConfig renders the config a bump writes back: each entry at its new
+// version, so the next bump reads the correct current version. One entry is
+// written per (path, version), so files with several versions keep all of
+// their entries, and the user-authored ignore list is carried through so a
+// bump never drops it.
+func bumpedConfig(groups []fileGroup, ignore []string) ([]byte, error) {
+	updated := &config.Config{Ignore: ignore}
+	for _, g := range groups {
+		for _, e := range g.entries {
+			updated.Files = append(updated.Files, config.EntryFor(g.display, e.newVer))
+		}
+	}
+	return config.Marshal(updated)
 }
 
 // readGroups reads every target file once and records the version each entry
@@ -761,15 +796,20 @@ func excludeOutput(results []discovery.Result, output string) []discovery.Result
 	return filtered
 }
 
-// recordHistory appends a journal entry for a successful config-mode bump to
-// h, the journal read from statePath during planning, and saves it there so
-// `incrmit undo` can revert the bump. Each change records the path as the
-// config lists it, the same value the config rewrite just wrote, and undo
-// resolves it against the config it is given. Nothing absolute is stored, so
-// the journal follows the project when it is copied or moved. On failure it
-// reports to stderr and returns a non-OK exit code.
-func recordHistory(statePath string, h *history.History, groups []fileGroup, stderr io.Writer) int {
-	entry := history.Entry{Timestamp: time.Now().UTC()}
+// startEntry pushes the journal entry for a config-mode bump onto h, the
+// journal read from statePath during planning, marked pending, and saves it
+// there before the bump writes anything, so `incrmit undo` can revert the bump
+// however far it gets. Each change records the path as the config lists it,
+// the same value the config rewrite writes, and undo resolves it against the
+// config it is given. Nothing absolute is stored, so the journal follows the
+// project when it is copied or moved.
+//
+// It returns the function that puts the journal back as it was, for a bump
+// that is rolled back: the earlier entries, or no state file at all if there
+// was none. On failure it reports to stderr and returns a non-OK exit code,
+// with nothing written.
+func startEntry(statePath string, h *history.History, groups []fileGroup, stderr io.Writer) (func() error, int) {
+	entry := history.Entry{Timestamp: time.Now().UTC(), Status: history.StatusPending}
 	for _, g := range groups {
 		for _, e := range g.entries {
 			entry.Changes = append(entry.Changes, history.Change{
@@ -780,12 +820,21 @@ func recordHistory(statePath string, h *history.History, groups []fileGroup, std
 		}
 	}
 
+	_, statErr := os.Lstat(statePath)
+	existed := !errors.Is(statErr, fs.ErrNotExist)
+	saved := slices.Clone(h.Entries)
 	h.Push(entry)
-	if err := history.Save(statePath, h); err != nil {
+	if err := saveJournal(statePath, h); err != nil {
 		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", statePath, err))
-		return classify(err)
+		return nil, classify(err)
 	}
-	return ExitOK
+	return func() error {
+		h.Entries = saved
+		if !existed {
+			return os.Remove(statePath)
+		}
+		return saveJournal(statePath, h)
+	}, ExitOK
 }
 
 type undoOptions struct {
@@ -854,12 +903,32 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	// could have written, each recorded file listed at the version the bump
 	// left it at, and refuses the whole entry otherwise. A path the config
 	// lists as absolute or with ../ is allowed exactly because it lists it.
+	//
+	// A pending entry may also find the config at the versions the bump
+	// started from, since the config is written after every target: a bump
+	// that stopped before it, or an undo that got past it. The config is
+	// written whole, so it is entirely at one side or the other.
+	pending := entry.Pending()
+	atNew, atOld := true, true
 	for _, c := range entry.Changes {
-		if !listed[listing{c.Path, c.New}] {
+		isNew, isOld := listed[listing{c.Path, c.New}], listed[listing{c.Path, c.Old}]
+		atNew, atOld = atNew && isNew, atOld && isOld
+		switch {
+		case isNew, pending && isOld:
+		case pending:
+			fprintf(stderr, "incrmit: %s: not listed in %s at %s or %s, the versions the unfinished bump recorded (refusing to undo)\n",
+				displayName(c.Path), displayName(cfgPath), c.New, c.Old)
+			return ExitError
+		default:
 			fprintf(stderr, "incrmit: %s: not listed in %s at %s, the version the last bump recorded (refusing to undo)\n",
 				displayName(c.Path), displayName(cfgPath), c.New)
 			return ExitError
 		}
+	}
+	if !atNew && !atOld {
+		fprintf(stderr, "incrmit: %s lists some of the unfinished bump's files at the versions it wrote and others at the ones it started from (refusing to undo)\n",
+			displayName(cfgPath))
+		return ExitError
 	}
 
 	// Phase 1: read every recorded file once, group changes by file, and build
@@ -871,13 +940,43 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	if opts.dryRun {
-		fprintln(stdout, "Dry run: would undo the most recent bump (no files changed)")
-		for _, g := range groups {
-			for _, c := range g.changes {
-				fprintf(stdout, "  %s: %s -> %s\n", displayName(c.Path), c.New, c.Old)
+	// Restore the config's recorded versions to their pre-bump values so the
+	// config stays in sync with the reverted files (mirroring the bump's
+	// self-update in reverse). It is the config undo was given, whatever
+	// location an older journal recorded. A pending entry whose bump never
+	// reached the config leaves it alone.
+	var writes []fileWrite
+	for _, g := range groups {
+		if !g.unwritten {
+			writes = append(writes, fileWrite{display: g.display, fsPath: g.fsPath, before: g.data, after: g.updated})
+		}
+	}
+	if atNew {
+		revert := make(map[listing]string, len(entry.Changes))
+		for _, c := range entry.Changes {
+			revert[listing{c.Path, c.New}] = c.Old
+		}
+		for i := range cfg.Files {
+			f := &cfg.Files[i]
+			if old, ok := revert[listing{f.Path, f.Token()}]; ok {
+				f.SetToken(old)
 			}
 		}
+		data, err := config.Marshal(cfg)
+		if err != nil {
+			fprintln(stderr, "incrmit:", err)
+			return ExitError
+		}
+		writes = append(writes, fileWrite{display: cfgPath, fsPath: cfgPath, after: data})
+	}
+
+	which := "most recent"
+	if pending {
+		which = "unfinished"
+	}
+	if opts.dryRun {
+		fprintf(stdout, "Dry run: would undo the %s bump (no files changed)\n", which)
+		printReverts(stdout, groups)
 		return ExitOK
 	}
 
@@ -889,52 +988,59 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	}
 	sweepTemps(lk, dirsOf(sweepPaths...)...)
 
-	// Phase 2: write each reverted file once.
-	for _, g := range groups {
-		if err := files.WriteAtomic(g.fsPath, g.updated); err != nil {
-			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", g.display, err))
+	// Phase 2, in the bump's order: the entry is marked pending before the
+	// first write, so an undo that stops partway can be run again and finish;
+	// then the files, then the config; then the entry is popped.
+	var restore func() error
+	if !pending {
+		h.MarkLatest(history.StatusPending)
+		if err := saveJournal(statePath, h); err != nil {
+			fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", statePath, err))
 			return classify(err)
 		}
-	}
-
-	// Restore the config's recorded versions to their pre-bump values so the
-	// config stays in sync with the reverted files (mirroring the bump's
-	// self-update in reverse). It is the config undo was given, whatever
-	// location an older journal recorded.
-	revert := make(map[listing]string, len(entry.Changes))
-	for _, c := range entry.Changes {
-		revert[listing{c.Path, c.New}] = c.Old
-	}
-	for i := range cfg.Files {
-		f := &cfg.Files[i]
-		if old, ok := revert[listing{f.Path, f.Token()}]; ok {
-			f.SetToken(old)
+		restore = func() error {
+			h.MarkLatest(history.StatusComplete)
+			return saveJournal(statePath, h)
 		}
 	}
-	data, err := config.Marshal(cfg)
-	if err != nil {
-		fprintln(stderr, "incrmit:", err)
-		return ExitError
-	}
-	if err := files.WriteAtomic(cfgPath, data); err != nil {
-		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", cfgPath, err))
-		return classify(err)
+	run := writeRun{what: "undo", journal: statePath, undo: undoCommand(opts.configPath), then: "finish the undo"}
+	if code := commitWrites(writes, restore, run, stderr); code != ExitOK {
+		return code
 	}
 
 	// Pop the reverted entry so a repeated undo does not re-apply it.
 	h.Pop()
-	if err := history.Save(statePath, h); err != nil {
-		fprintf(stderr, "incrmit: %s\n", fsErrorMessage("writing", statePath, err))
-		return classify(err)
+	if err := saveJournal(statePath, h); err != nil {
+		// The files and the config are back at the old versions, which is
+		// what an unfinished entry's undo leaves alone, so the next undo
+		// clears the entry without writing anything.
+		fprintf(stderr, "incrmit: warning: %s; the undo is applied, but its journal entry stays, marked unfinished, until `%s` clears it\n",
+			fsErrorMessage("writing", statePath, err), run.undo)
 	}
 
-	fprintf(stdout, "Undid the most recent bump in %d file(s):\n", len(groups))
+	reverted := 0
 	for _, g := range groups {
-		for _, c := range g.changes {
-			fprintf(stdout, "  %s: %s -> %s\n", displayName(c.Path), c.New, c.Old)
+		if !g.unwritten {
+			reverted++
 		}
 	}
+	fprintf(stdout, "Undid the %s bump in %d file(s):\n", which, reverted)
+	printReverts(stdout, groups)
 	return ExitOK
+}
+
+// printReverts lists what an undo reverts, each change as new -> old, or
+// "already at" the old version for a file the unfinished bump never wrote.
+func printReverts(w io.Writer, groups []revertGroup) {
+	for _, g := range groups {
+		for _, c := range g.changes {
+			if g.unwritten {
+				fprintf(w, "  %s: already at %s\n", displayName(c.Path), c.Old)
+				continue
+			}
+			fprintf(w, "  %s: %s -> %s\n", displayName(c.Path), c.New, c.Old)
+		}
+	}
 }
 
 // listing is a config entry as undo matches it against the journal: the path
@@ -946,8 +1052,13 @@ type listing struct{ path, version string }
 type revertGroup struct {
 	display string
 	fsPath  string
-	updated []byte
+	data    []byte // contents as read, put back if a later write fails
+	updated []byte // contents with every change reverted
 	changes []history.Change
+	// unwritten marks a file of a pending entry that holds the versions the
+	// bump started from: the run never wrote it, or put it back, so there is
+	// nothing to revert.
+	unwritten bool
 }
 
 // planReverts reads each recorded file once, groups the entry's changes by
@@ -957,6 +1068,12 @@ type revertGroup struct {
 // given, exactly as resolveTargets resolves them for a bump. It fails fast if a
 // file no longer contains the "new" token the bump wrote, which means the file
 // was edited since the bump and undoing would clobber that change.
+//
+// A pending entry's run may have stopped before writing a file, so there a
+// file holding every "old" token and not every "new" one is marked unwritten
+// and left alone, rather than refused as edited. A file holding all of both,
+// or all of neither, is refused: the first cannot be told apart from a file
+// that already held the new version somewhere, and the second was edited.
 func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]revertGroup, int) {
 	var groups []revertGroup
 	index := make(map[string]int, len(entry.Changes))
@@ -969,7 +1086,7 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 				fprintf(stderr, "incrmit: %s\n", fsErrorMessage("reading", c.Path, err))
 				return nil, classify(err)
 			}
-			groups = append(groups, revertGroup{display: c.Path, fsPath: fsPath, updated: data})
+			groups = append(groups, revertGroup{display: c.Path, fsPath: fsPath, data: data})
 			gi = len(groups) - 1
 			index[fsPath] = gi
 		}
@@ -978,7 +1095,7 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 
 	for i := range groups {
 		g := &groups[i]
-		repl := make([]files.Replacement, 0, len(g.changes))
+		back := make([]files.Replacement, 0, len(g.changes))
 		for _, c := range g.changes {
 			// The journal stores whole tokens; parse them back so the revert
 			// matches the same way the bump did, prerelease suffix included.
@@ -988,18 +1105,53 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 				fprintf(stderr, "incrmit: %s: recorded versions %q -> %q are not valid (refusing to undo)\n", displayName(g.display), c.Old, c.New)
 				return nil, ExitNoVersion
 			}
-			repl = append(repl, files.Replacement{Old: newVer, New: oldVer})
+			back = append(back, files.Replacement{Old: newVer, New: oldVer})
 		}
-		updated, counts := files.SetKnownVersions(g.updated, repl)
-		for _, c := range g.changes {
-			if counts[c.New] == 0 {
-				fprintf(stderr, "incrmit: %s: expected version %s from the last bump is no longer present; the file was changed since (refusing to undo)\n", displayName(g.display), c.New)
+		updated, newCounts := files.SetKnownVersions(g.data, back)
+		g.updated = updated
+		missingNew := firstMissing(back, newCounts)
+
+		if !entry.Pending() {
+			if missingNew != nil {
+				fprintf(stderr, "incrmit: %s: expected version %s from the last bump is no longer present; the file was changed since (refusing to undo)\n", displayName(g.display), missingNew.Old)
 				return nil, ExitError
 			}
+			continue
 		}
-		g.updated = updated
+
+		forward := make([]files.Replacement, len(back))
+		for j, r := range back {
+			forward[j] = files.Replacement{Old: r.New, New: r.Old}
+		}
+		_, oldCounts := files.SetKnownVersions(g.data, forward)
+		missingOld := firstMissing(forward, oldCounts)
+		switch {
+		case missingNew == nil && missingOld != nil:
+			// Written: revert it as for a finished bump.
+		case missingNew != nil && missingOld == nil:
+			g.unwritten = true
+		case missingNew == nil:
+			fprintf(stderr, "incrmit: %s: holds both %s, which the unfinished bump wrote, and %s, which it started from, so whether the bump reached it cannot be told (refusing to undo)\n",
+				displayName(g.display), g.changes[0].New, g.changes[0].Old)
+			return nil, ExitError
+		default:
+			fprintf(stderr, "incrmit: %s: holds neither %s, which the unfinished bump wrote, nor %s, which it started from; the file was changed since (refusing to undo)\n",
+				displayName(g.display), missingNew.Old, missingOld.Old)
+			return nil, ExitError
+		}
 	}
 	return groups, ExitOK
+}
+
+// firstMissing returns the first replacement in repls whose Old version
+// SetKnownVersions counted no occurrence of, or nil when every one occurs.
+func firstMissing(repls []files.Replacement, counts map[string]int) *files.Replacement {
+	for i := range repls {
+		if counts[repls[i].Old.String()] == 0 {
+			return &repls[i]
+		}
+	}
+	return nil
 }
 
 // parseUndoFlags registers the undo flags (long and short names) and parses

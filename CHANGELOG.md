@@ -22,6 +22,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built it as the v2.13.2 entry below says: both releases were built with Go
   1.27.0.
 
+### Fixed
+
+- A bump that fails partway through its files no longer leaves some of them
+  bumped. If `c/VERSION` sat in a read-only folder, `incrmit` bumped
+  `a/VERSION` and `b/VERSION`, failed on `c/VERSION`, and exited `1`. The bump
+  had written no undo history, so `incrmit undo` answered "Nothing to undo",
+  and the next bump failed because the config no longer matched the files.
+  Now the files already written are put back and the bump exits `1` having
+  changed nothing, saying `rolled back a/VERSION, b/VERSION; no file was
+  changed`. The undo history is written before any file, so if a file cannot
+  be put back either, or `incrmit` is killed partway, `incrmit undo` reverts
+  the bump; the error names the files left changed and the command to run.
+  Until then, a new bump refuses to run and points at `undo`.
+- A config whose pinned version is missing from a file is now reported before
+  anything is written. The check ran file by file as the bump wrote, so
+  `version = "9.9.9"` on the second file left the first one bumped, and
+  `--dry-run`, which never got that far, reported success. Both exit `3`, and
+  nothing is written.
+- `undo` is all or nothing too. One that failed partway left the files it had
+  reverted at the old version and the rest at the new one, and every later
+  undo refused, because the reverted files no longer held the version the bump
+  wrote. Now it puts those files back, and an undo that is killed partway can
+  be run again to finish.
+- A bump in a project whose config folder cannot be written now fails before
+  any target is changed, at the undo history. The config used to be the first
+  write to fail there, after every target had already been bumped, leaving the
+  targets at the new version, the config at the old one, and no undo history.
+
 ## [0.3.9] - 2026-10-08
 
 ### Fixed
