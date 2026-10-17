@@ -393,7 +393,7 @@ completed.
       correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
       verified working (`-ldflags` override honored, and an unstamped `go build`
       falls back to the same source default); the value is `0.1.13` until the
-      version is bumped to `1.0.0` in Milestone 42.
+      version is bumped to `1.0.0` in Milestone 44.
 - [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
       missing dependencies); confirm the Go version pin is intentional. Tidy is
       a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
@@ -1472,7 +1472,7 @@ without end.
       those. Its check can sit behind the same `ReadOwnFile` read.
 - [x] Read the journal before phase 2 of a bump instead of after the writes,
       so a state file that cannot be read fails the bump with nothing
-      written. Milestone 40 moves the journal *write* ahead of phase 2 too;
+      written. Milestone 42 moves the journal *write* ahead of phase 2 too;
       this item is only the read.
       `runBump` loads it right after planning, and `recordHistory` pushes
       onto that copy instead of reading the file again. `--dry-run` reads it
@@ -1743,7 +1743,7 @@ it had found a config with nothing to keep.
       (`ignore` and `files`). That accepts every config incrmit has written
       and every hand-written one, and rejects a Markdown file, a JSON
       manifest, or a `pyproject.toml`. Keep the list of known keys next to
-      `config.Config` so Milestone 38's `[git]` table extends it in one place.
+      `config.Config` so Milestone 40's `[git]` table extends it in one place.
       Empty means nothing but whitespace. Known keys are checked with the TOML
       decoder's `MetaData.Undecoded`, so the fields of `Config` and `FileEntry`
       are the list, at every depth: `files.owner` is refused as well as
@@ -1925,7 +1925,261 @@ example.
       the error branches for `os.Getwd` failing, a `filepath.Rel` that cannot
       fail inside the walk, and the Windows cross-volume fallback.
 
-## Milestone 38 — Release Tagging Helper (the `tag` command)
+## Milestone 38 — JSON and TOML Parsers
+
+Every file goes through the same text scanner, `version.FindTokens`, which
+knows nothing about the format it reads. In a JSON or TOML manifest every
+version-shaped run is a candidate: one inside a URL, a dependency range, or a
+comment counts the same as the project's own `version` key. Reproduced with a
+`package.json` holding `"version": "1.2.3"`, a `$schema` URL with `2.0.0` in
+its path, three dependencies (`1.2.3`, `4.17.21`, `^18.3.1`), and
+`"engines": { "node": ">=20.0.0" }`, next to a `Cargo.toml` whose `version`
+line ends in `# was 0.3.9` and which has two dependencies. `discover` wrote
+eight entries for the two files and `--minor` moved all eight: the schema URL
+became `.../2.1.0/schema.json`, `^18.3.1` became `^18.4.0`, `>=20.0.0` became
+`>=20.1.0`, and the comment became `# was 0.4.0`, all with exit `0`.
+
+Give `.json` and `.toml` files a parser that reads the format, so a candidate
+is a string value that is exactly a version, and each candidate knows the key
+it sits under. Every other file keeps the text scanner, and so does a `.json`
+or `.toml` file these parsers cannot read. This alone does not stop the
+dependency pins from moving, since `"left-pad": "1.2.3"` and
+`serde = "1.0.200"` are whole string values too; Milestone 39 selects the
+project's version by the key this milestone records.
+
+- [ ] Reproduce first, with the two files above plus a `pyproject.toml`:
+      assert what `discover --dry-run` lists, what `discover` writes, and what
+      a bump changes, byte for byte. The schema URL, both ranges, and the TOML
+      comment must stop being candidates; the dependency pins are still
+      candidates, which is Milestone 39's case. Keep the fixtures for
+      Milestone 39's tests.
+- [ ] Put the parser behind one seam, so §9's rule still holds: what discovery
+      records is exactly what a bump rewrites. A parser takes a file's bytes
+      and returns each candidate as a byte range, its parsed version, and its
+      key path (none from the text scanner). `discovery.scan`,
+      `files.SetKnownVersions`, `files.FindVersion`, `preview`, and `undo`
+      take their ranges from it instead of calling `version.FindTokens`
+      themselves. The text parser is `FindTokens` plus `version.Parse`,
+      unchanged, so every file that is not `.json` or `.toml` behaves exactly
+      as before. Fix the comment at the top of `internal/files/files.go`: it
+      says structured detection lives in `discovery`, but nothing there reads
+      a format today.
+- [ ] Choose the parser by extension, ignoring case: `.json` gets the JSON
+      parser, `.toml` the TOML parser, and everything else text. Add an
+      optional `parser` key to `[[files]]` (`"json"`, `"toml"`, or `"text"`)
+      that overrides it, for a `.json` file with comments (`tsconfig.json`,
+      VS Code's `settings.json`) or TOML under another name (`Pipfile`).
+      Omitted means "by extension", so every existing config still loads.
+      Declaring the field on `FileEntry` is all Milestone 36's known-key check
+      needs, and an unknown value is a config error naming the entry. The
+      bump's config rewrite rebuilds each entry with
+      `config.EntryFor(path, version)`, which would drop the key, so carry it
+      through and test that a bump keeps it.
+- [ ] JSON: use the standard library's `encoding/json` `Decoder`, walking
+      `Token()` with a stack of object keys and array indexes, and take each
+      string value's byte range from `InputOffset()`. That needs no new
+      dependency; `encoding/json/jsontext` reports offsets directly, but it is
+      still behind `GOEXPERIMENT=jsonv2` in Go 1.27. A candidate is a string
+      value, never an object key, whose whole content is one token that
+      `version.Parse` accepts: `"1.2.3"` and `"v1.2.3"` are candidates, and
+      `"^18.3.1"`, `">=20.0.0"`, and a URL holding `2.0.0` are not. The
+      decoder rejects a byte-order mark, which §9.4 says incrmit keeps, so
+      skip a UTF-8 BOM before decoding and offset every range past it. A value
+      whose raw bytes differ from its decoded text (an escape such as
+      `\u002e`) is not a candidate, and the dry run says so, rather than
+      incrmit re-encoding the string. `encoding/json` accepts duplicate keys,
+      so both values are candidates under the same key path.
+- [ ] TOML: `BurntSushi/toml`, which already reads the config, is the only
+      TOML reader. It decides whether the file is TOML and what each key
+      holds, but v1.6.0 keeps key positions in an unexported field, so it
+      cannot say where a value's bytes are. Find them by probing rather than
+      lexing: replace every token `version.FindTokens` finds (and
+      `version.Parse` accepts) with its own placeholder, decode the probe copy
+      once, and walk it through tables, inline tables, arrays, and arrays of
+      tables (`bin[0]`). A token whose placeholder is now a key's whole value
+      is a candidate at that key. One whose placeholder is part of a longer
+      string (a URL, a description, a multi-line string) is not, and one whose
+      placeholder is in no value was in a comment or a key. Token boundaries
+      stay `FindTokens`'s, so §9's single definition of a token holds in TOML
+      files too.
+- [ ] Make the probe exact and cheap. Placeholders are digits and dots, so
+      each is valid wherever its token was, have a fixed width
+      (`987654321.987654321.000000001`), and must not already occur in the
+      file. In a prototype, unpadded placeholders collided (`...1` is a
+      prefix of `...10`), and a comment token was reported as part of
+      `bin[0].version`. A probe copy that does not decode when the original
+      did is refused like a file that does not parse. All tokens share one
+      probe decode: the prototype classified 2,000 tokens in under 0.1 s,
+      while one decode per token took 2.8 s at 1,000 and grows quadratically.
+      After planning a bump, decode the rewritten bytes in phase 1 and check
+      that exactly the planned keys changed, to the planned values.
+- [ ] Record the TOML decision in `doc/DEVELOPMENT.md`. A hand-written locator
+      that lexes TOML to find byte ranges was the first plan, and
+      `pelletier/go-toml/v2` exposes ranges through its `unstable` package.
+      Both were rejected: each is a second TOML reader that could disagree with
+      the one the config is read with, and the second is also a new dependency
+      with an API marked as subject to change. The probe leaves every question
+      of TOML syntax to `BurntSushi/toml`.
+- [ ] Decide what happens when a file does not parse. Recommend: `discover`
+      scans a `.json` or `.toml` file that fails to parse as text, writes
+      `parser = "text"` into its entries so a bump uses what discover used, and
+      says why in the dry run (`tsconfig.json: not JSON (line 3: invalid
+      character '/'), scanned as text`). A bump never falls back: an entry
+      whose parser cannot read its file fails with exit `3`, naming the file
+      and line and suggesting `parser = "text"`, in phase 1, so nothing is
+      written. A file that parsed when discover ran and no longer does has
+      changed shape, and guessing is how a bump goes wrong silently.
+- [ ] Show the key in discover's output: `Occurrence` gains the key path, and
+      the dry run prints it next to the line number. `Generate` still writes
+      one entry per distinct version with no key, so the generated config for
+      a JSON or TOML file changes only by losing the entries that are no
+      longer candidates. Write `parser` only when it differs from the
+      extension's default.
+- [ ] Existing configs change meaning: an entry for a `.json` or `.toml` file
+      now matches only whole string values, so an entry pinning a version that
+      appeared only in a comment, a URL, or a range (four of the eight above)
+      finds nothing, and the bump exits `3` with the existing "not found"
+      error. That is right, since none of them was the project's version, but
+      the check runs in phase 2 today, after earlier files have been written,
+      and this change makes it far more likely to fire. Move it into phase 1,
+      which already holds every file's bytes, so an old config fails with
+      nothing written. Add a `Changed` entry to `CHANGELOG.md` telling users
+      to run `incrmit discover` again, or to set `parser = "text"` on an entry
+      to keep the old behavior for that file. `undo` uses the parser the bump
+      used: record it in the journal entry, and read an older entry that has
+      none as text, which is what wrote it.
+- [ ] Test each parser with golden fixtures in `internal/files/testdata`: the
+      existing `package.json`, `package.min.json`, `appsettings.json`, and
+      `pyproject.toml`, plus a `Cargo.toml` and the reproduction files. Cover
+      a BOM, CRLF, minified and tab-indented JSON, nested arrays, duplicate
+      keys, and an escaped value. In TOML, cover dotted keys, a quoted key
+      holding a dot (`"a.b" = "1.2.3"` is one key, not two), a quoted key that
+      is a version, inline tables, a sub-table (`[dependencies.tokio]`),
+      arrays of tables, an array of version strings, a URL, a multi-line
+      string holding `version = "1.2.3"` as text, and a comment holding a
+      version. Cover placeholder collisions too: more than ten tokens, and a
+      file that already holds the placeholder text. Test the fallback, the
+      `parser` override in both directions, a bump keeping `parser`, an
+      unknown `parser` value, and an old config failing in phase 1 with every
+      file unchanged.
+- [ ] Fuzz the JSON locator and the TOML probe (§12.1, Milestone 30): for any
+      input the decoder accepts, every candidate's bytes decode to the value
+      the decoder reports at its key path, and rewriting one candidate with a
+      version of a different length, then decoding again, changes that key
+      and no other. Neither may panic on input the decoder rejects. Seed the
+      corpora with the fixtures.
+- [ ] Document the parsers in `README.md`, `doc/USAGE.md`,
+      `incrmit help discover`, and the man page: which file gets which parser,
+      what counts as a candidate, the `parser` key, and the fallback. In
+      `doc/DEVELOPMENT.md`, rewrite the §9 bullet that calls discovery
+      "content-based and format-agnostic", and cover the parser seam in §5,
+      the `parser` key in §6.1, and the fuzz targets in §12.1.
+
+## Milestone 39 — Version Key per Parser
+
+After Milestone 38 a JSON or TOML candidate must be a whole string value, but a
+dependency pin is a whole string value too. A config entry still names only a
+path and a version, and a bump rewrites every candidate in that file holding
+the version. In Milestone 38's reproduction, the `package.json` entry for
+`1.2.3` rewrites both `version` and `dependencies.left-pad`, the `Cargo.toml`
+entry for `0.4.0` rewrites `package.version` and `anyhow`'s inline
+`{ version = "0.4.0" }`, and the entries discover writes for `4.17.21` and
+`1.0.200` bump two dependencies outright. A Node project gets a version bump
+for a package it does not own, and nothing says so.
+
+Let an entry say which occurrence is the project's version, with a `key` that
+the entry's parser interprets. For JSON and TOML the key is a path (`version`,
+`package.version`, `project.version`). Text has no structure, so for a text
+file the key is the literal text in front of the version (in a Makefile,
+`VERSION ?=` and the space after it). An entry with a key rewrites exactly the
+occurrences it names and nothing else in the file.
+
+- [ ] Reproduce first, on Milestone 38's fixtures: assert that a bump moves
+      the dependency pins listed above. Add a text case, a `Makefile` holding
+      `VERSION ?= 1.2.3` and a line that downloads a tool at `1.2.3`.
+- [ ] Add one optional `key` field to `[[files]]`, read according to the
+      entry's parser, so there is one thing to learn whatever the file. The
+      cost is that a key changes meaning when its entry's parser does (a
+      `parser` override, or Milestone 38's fallback to text), so make sure
+      that case fails loudly instead of matching something else. A path read
+      as text matches nothing: most paths end in a letter or digit, and a
+      token needs a word boundary in front of it. A text key read as a path
+      is not valid path syntax (the Makefile key holds a space and a `?`), or
+      names a key the file does not have. Either way it is an error, never a
+      rewrite of the wrong occurrence; test both directions. Omitting `key`
+      keeps today's behavior: every candidate holding the pinned version.
+- [ ] Define `key` for JSON and TOML: a dotted path from the document root,
+      written the way TOML writes a dotted key, with bare segments,
+      double-quoted segments for keys that hold a dot or a space
+      (`key = '"."'` for the `.` key in `.release-please-manifest.json`), and
+      `[N]` for an array index (`bin[0].version`, for a TOML `[[bin]]` or a
+      JSON array). It matches the whole path, never a suffix: `version` in
+      `package.json` is the top-level key alone, never `dependencies.version`.
+      The value there must be a string candidate holding the pinned version.
+      A key that is absent, holds anything else, or appears twice (a duplicate
+      JSON key) is an error that names the file and the key, with exit `3`,
+      raised in phase 1 so nothing is written.
+- [ ] Define `key` for text: literal bytes that must come right before the
+      token on the same line, with no pattern language. `key = "VERSION ?= "`
+      matches `VERSION ?= 1.2.3` and not `.../tool-1.2.3.tar.gz`. Matching is
+      byte-exact and case-sensitive, and whitespace counts. An empty key, or
+      one holding a line break, is a config error. A text key that matches no
+      occurrence of the pinned version is the same phase-1 error as a missing
+      JSON or TOML key. A regular expression would cover more (the "Per-file
+      custom match patterns" bullet under Future Work in `doc/DEVELOPMENT.md`),
+      but a literal covers the common cases without a pattern language in the
+      config; replace that bullet with a pointer here and leave patterns for
+      later.
+- [ ] Make `discover` write `key` where it can. Every JSON and TOML candidate
+      now has a key path, so write one entry per candidate with its `key`:
+      each entry then rewrites exactly one value, can be deleted on its own,
+      and shows in the config what it is. For manifests whose project version
+      is known, write only that entry and list the other candidates in the dry
+      run as skipped, with the `key` to add to track one. Recommend a short
+      table: `package.json`, `composer.json`, `deno.json`, and `jsr.json` use
+      `version`; `Cargo.toml` uses `package.version` or
+      `workspace.package.version`; `pyproject.toml` uses `project.version` or
+      `tool.poetry.version`. A known manifest without its project key (a
+      private monorepo root) gets no entry, and the dry run says so, rather
+      than an entry per dependency. Do not infer a `key` for text files: the
+      text in front of a version is often prose, and rewording the sentence
+      would break the entry. A user adds one by hand.
+- [ ] Plan keyed entries by occurrence: a `files.Replacement` carries the
+      ranges its entry claims, so `SetKnownVersions` rewrites exactly those,
+      still in one pass so overlapping bumps do not cascade. Two entries that
+      claim the same occurrence (an entry without a key and a keyed one for
+      the same version, or two entries with the same key) are a config error
+      naming both, raised in phase 1. Carry `key` through the config rewrite
+      after a bump (the same `config.EntryFor` problem as Milestone 38's
+      `parser`) and through the journal, so `undo` reverts the same
+      occurrences even after the config has been edited.
+- [ ] Extend `--file` mode and `preview`. Add `--key` to the bump, so
+      `incrmit --file package.json --key version` and
+      `incrmit --file Makefile --key 'VERSION ?= '` work without a config,
+      where today both files are ambiguous. A `--key` that is not a valid path
+      for a JSON or TOML file, or an empty one, is exit `2`. `preview` shows
+      each entry's key, so the user sees which value will move.
+- [ ] Test each fixture bumped with and without `key`, asserting that no
+      dependency pin moves once the project's key is given. Cover path
+      matching (top level only, quoted segments, `[N]` indexes, a JSON key
+      containing a dot) and text matching (whitespace counts, case counts,
+      same line only). Cover each error (an absent key, a wrong value, a
+      duplicate key, an invalid path, an empty or multi-line text key, two
+      entries claiming one occurrence, a key whose parser changed), each
+      raised with every file unchanged; discover's output for each known
+      manifest, including one without its project key; a bump and an `undo`
+      keeping `key`; and the new `--file` flag. Extend Milestone 38's fuzz
+      targets so every key path a parser reports resolves back to the same
+      range.
+- [ ] Document `key` in `README.md`, `doc/USAGE.md`, `incrmit help`,
+      `incrmit help discover`, and the man page, with an example per parser:
+      `package.json` (the motivating case), `Cargo.toml`, and a `Makefile`.
+      In `doc/DEVELOPMENT.md`, cover it in §6.1, §8.1, and §8.2, and extend
+      §9.3: the config now says where the version is, not only what it is.
+      Add an `Added` entry to `CHANGELOG.md` saying that running
+      `incrmit discover` again writes the keys into an existing config.
+
+## Milestone 40 — Release Tagging Helper (the `tag` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
 no tag, no push. The gap is closed without incrmit ever running git: `os/exec`
@@ -1958,7 +2212,7 @@ stays git-free exactly as it is today.
       The command is read-only, so it takes no `--dry-run`: the printed
       commands are the preview. Thread stdin through `cli.Main` as an
       `io.Reader`, with a way to ask whether it is a terminal, so the picker
-      (and Milestone 39's `--auto`) can be tested in-process.
+      (and Milestone 41's `--auto`) can be tested in-process.
 - [ ] Build the candidate list from `incrmit.toml`: collect the distinct tokens
       the `[[files]]` entries pin (`FileEntry.Token()`, so a prerelease is
       offered as `1.2.4-rc.1`, not `1.2.4`), order them by `version.Compare`
@@ -2041,12 +2295,12 @@ stays git-free exactly as it is today.
       Confirm the `govulncheck` gate from Milestone 26 still passes with the
       `x/term` tree in `go.sum`.
 
-## Milestone 39 — Conventional-Commit Bump Inference (`--auto`)
+## Milestone 41 — Conventional-Commit Bump Inference (`--auto`)
 
 Reading the commits since the last tag and inferring the bump component turns
 `discover` + language-agnostic + single-binary from a narrow story into a real
 one: no other tool does automatic inference *and* arbitrary-file rewriting
-without a per-ecosystem plugin. As in Milestone 38, incrmit does not run git:
+without a per-ecosystem plugin. As in Milestone 40, incrmit does not run git:
 `--auto` reads commit messages from stdin, and the user's own `git log`
 supplies them.
 
@@ -2078,11 +2332,11 @@ supplies them.
       terminal stdin refusing to wait.
 - [ ] Document the rules and a full CI recipe in `README.md`, the man page, and
       `doc/DEVELOPMENT.md` — the `git log | incrmit --auto` pipeline, matching
-      the Milestone 38 tag prefix with `git describe --match 'v*'`, and
+      the Milestone 40 tag prefix with `git describe --match 'v*'`, and
       `fetch-depth: 0` on `actions/checkout` so the tags and history are there
       to read; add a `CHANGELOG.md` entry under `Added`.
 
-## Milestone 40 — Crash-Safe Multi-File Writes
+## Milestone 42 — Crash-Safe Multi-File Writes
 
 Planning is already fail-fast (Milestone 22's phase 1/2 split), but phase 2 is
 not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
@@ -2114,7 +2368,7 @@ journal entry exists. Close this before v1.0.0.
 - [ ] Document the crash-safety guarantee — and its limits — in
       `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
 
-## Milestone 41 — Code and Repository Hygiene
+## Milestone 43 — Code and Repository Hygiene
 
 Small cleanups worth doing before v1.0.0 freezes the surface.
 
@@ -2141,7 +2395,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
       build artifact or stray file appears at the repo root, so the tree stays
       clean without relying on remembering.
 
-## Milestone 42 — v1.0.0 Release: Publish
+## Milestone 44 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -2156,7 +2410,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
 
-## Milestone 43 — apt / dnf Repo via GitHub Pages
+## Milestone 45 — apt / dnf Repo via GitHub Pages
 
 Host signed apt and dnf repositories on GitHub Pages so users can
 `apt install incrmit` / `dnf install incrmit` after adding the repo once.
