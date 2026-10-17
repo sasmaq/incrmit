@@ -5,6 +5,18 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- CI lints with `golangci-lint` v2.15.0, up from v2.13.2. Go 1.27.2 changed the
+  export data format it writes for the standard library, and v2.13.2 could not
+  read it, so every lint run failed with typecheck errors in `syscall`, `os`,
+  `testing`, and `time` rather than on anything in this repository. The cause
+  is the `golang.org/x/tools` the linter is built against, not the Go that
+  built it as the v2.13.2 entry below says: both releases were built with Go
+  1.27.0.
+
 ## [0.3.9] - 2026-10-08
 
 ### Fixed

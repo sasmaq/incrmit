@@ -113,14 +113,18 @@ jobs:
         with:
           # Pinned so `golangci-lint run` locally reports exactly what CI does.
           #
-          # This version is tied to the go-version above: the released binary
-          # embeds go/types from the Go it was built with, and it cannot
-          # typecheck the standard library of a newer one. Go 1.27 moving to
-          # `stable` broke v2.12.2 (built with 1.26) with a typecheck error
-          # inside internal/poll. Bump this whenever a new Go release does the
-          # same, and pick a golangci-lint built with that Go or later
-          # (`golangci-lint --version` reports it).
-          version: v2.13.2
+          # This version is tied to the go-version above. To typecheck, the
+          # linter reads the export data the installed Go writes for the
+          # standard library, using the golang.org/x/tools it was built
+          # against, and an older x/tools refuses a newer format. Even a Go
+          # patch release can change it: Go 1.27.2 moved to export data
+          # version 5, which v2.13.2 (x/tools v0.49.0) cannot read, while
+          # v2.14.0 and later can. The Go a release was built with does not
+          # decide this: v2.13.2 and v2.15.0 were both built with 1.27.0. So
+          # when `stable` moves and lint fails with typecheck errors inside
+          # the standard library, bump to a release that passes `golangci-lint
+          # run` under that Go locally.
+          version: v2.15.0
 
   vulncheck:
     name: Vulnerability scan

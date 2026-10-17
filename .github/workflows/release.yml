@@ -49,7 +49,7 @@ jobs:
         with:
           # Pinned to the same version as the CI workflow and local runs, and
           # tied to the go-version above for the reason documented there.
-          version: v2.13.2
+          version: v2.15.0
 
       # Set the proxy and checksum database explicitly rather than inheriting them
       # from the runner: they are what make a pinned module version immutable, so
