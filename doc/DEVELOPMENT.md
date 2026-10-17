@@ -186,7 +186,7 @@ nothing is there or the file is empty (only whitespace), which yield no
 patterns, and when the file is an incrmit config: TOML that sets at least one
 key and no key the `Config` and `FileEntry` structs do not declare, checked with
 the decoder's `MetaData.Undecoded`. The struct fields are the list of known
-keys, so a new table (Milestone 40's `[git]`) extends it by being declared.
+keys, so a new table (Milestone 42's `[git]`) extends it by being declared.
 Anything else is a `*config.NotConfigError` whose `Reason` says why (`line 3 is
 not TOML`, `it sets "project", which incrmit does not use`, `it sets nothing,
 but is not empty`, `it is not a regular file`), and `discover` refuses. Before

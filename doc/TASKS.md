@@ -393,7 +393,7 @@ completed.
       correctly (`incrmit version` shows the intended `1.0.0`). Stamping is
       verified working (`-ldflags` override honored, and an unstamped `go build`
       falls back to the same source default); the value is `0.1.13` until the
-      version is bumped to `1.0.0` in Milestone 44.
+      version is bumped to `1.0.0` in Milestone 45.
 - [x] Run `go mod tidy` and verify `go.mod`/`go.sum` are unchanged (no stray or
       missing dependencies); confirm the Go version pin is intentional. Tidy is
       a no-op and there is one dependency (`github.com/BurntSushi/toml v1.6.0`).
@@ -1472,7 +1472,7 @@ without end.
       those. Its check can sit behind the same `ReadOwnFile` read.
 - [x] Read the journal before phase 2 of a bump instead of after the writes,
       so a state file that cannot be read fails the bump with nothing
-      written. Milestone 42 moves the journal *write* ahead of phase 2 too;
+      written. Milestone 38 moves the journal *write* ahead of phase 2 too;
       this item is only the read.
       `runBump` loads it right after planning, and `recordHistory` pushes
       onto that copy instead of reading the file again. `--dry-run` reads it
@@ -1743,7 +1743,7 @@ it had found a config with nothing to keep.
       (`ignore` and `files`). That accepts every config incrmit has written
       and every hand-written one, and rejects a Markdown file, a JSON
       manifest, or a `pyproject.toml`. Keep the list of known keys next to
-      `config.Config` so Milestone 40's `[git]` table extends it in one place.
+      `config.Config` so Milestone 42's `[git]` table extends it in one place.
       Empty means nothing but whitespace. Known keys are checked with the TOML
       decoder's `MetaData.Undecoded`, so the fields of `Config` and `FileEntry`
       are the list, at every depth: `files.owner` is refused as well as
@@ -1925,7 +1925,39 @@ example.
       the error branches for `os.Getwd` failing, a `filepath.Rel` that cannot
       fail inside the walk, and the Windows cross-volume fallback.
 
-## Milestone 38 — JSON and TOML Parsers
+## Milestone 38 — Crash-Safe Multi-File Writes
+
+Planning is already fail-fast (Milestone 22's phase 1/2 split), but phase 2 is
+not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
+1–2 bumped and 3–5 untouched. Worse, `recordHistory` runs *after* every write
+succeeds, so exactly the case where `undo` is needed is the case where no
+journal entry exists. Close this before v1.0.0.
+
+- [ ] Write the journal entry *before* phase 2 rather than after, marked
+      `pending`, and flip it to `complete` once every write lands. Bump
+      `history` file format handling so an older state file still loads.
+- [ ] On a phase-2 write failure, roll back the files already written in this
+      run (the pre-bump bytes are still in memory from planning) before
+      returning, and report both the original failure and whether the rollback
+      itself succeeded.
+- [ ] When rollback is impossible or partially fails, leave the `pending` entry
+      in place and print an explicit recovery instruction naming `incrmit undo`
+      and the affected files, rather than exiting with a bare error.
+- [ ] Teach `undo` to recognize a `pending` entry and treat it as the thing to
+      revert, tolerating files that were never written (the recorded `new` token
+      is absent because the write never happened, which is not the "file was
+      edited since" case that currently aborts the whole undo).
+- [ ] Order the config rewrite and the target writes so a crash between them is
+      recoverable in one direction only, and document which one is written first
+      and why in `doc/DEVELOPMENT.md`.
+- [ ] Add tests that inject a write failure mid-run (e.g. a read-only directory
+      or an unwritable target as the Nth of M files) and assert: files are
+      restored, the journal reflects the interrupted run, and a following `undo`
+      leaves the tree exactly as it started.
+- [ ] Document the crash-safety guarantee — and its limits — in
+      `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
+
+## Milestone 39 — JSON and TOML Parsers
 
 Every file goes through the same text scanner, `version.FindTokens`, which
 knows nothing about the format it reads. In a JSON or TOML manifest every
@@ -1944,15 +1976,15 @@ is a string value that is exactly a version, and each candidate knows the key
 it sits under. Every other file keeps the text scanner, and so does a `.json`
 or `.toml` file these parsers cannot read. This alone does not stop the
 dependency pins from moving, since `"left-pad": "1.2.3"` and
-`serde = "1.0.200"` are whole string values too; Milestone 39 selects the
+`serde = "1.0.200"` are whole string values too; Milestone 40 selects the
 project's version by the key this milestone records.
 
 - [ ] Reproduce first, with the two files above plus a `pyproject.toml`:
       assert what `discover --dry-run` lists, what `discover` writes, and what
       a bump changes, byte for byte. The schema URL, both ranges, and the TOML
       comment must stop being candidates; the dependency pins are still
-      candidates, which is Milestone 39's case. Keep the fixtures for
-      Milestone 39's tests.
+      candidates, which is Milestone 40's case. Keep the fixtures for
+      Milestone 40's tests.
 - [ ] Put the parser behind one seam, so §9's rule still holds: what discovery
       records is exactly what a bump rewrites. A parser takes a file's bytes
       and returns each candidate as a byte range, its parsed version, and its
@@ -2075,12 +2107,12 @@ project's version by the key this milestone records.
       "content-based and format-agnostic", and cover the parser seam in §5,
       the `parser` key in §6.1, and the fuzz targets in §12.1.
 
-## Milestone 39 — Version Key per Parser
+## Milestone 40 — Version Key per Parser
 
-After Milestone 38 a JSON or TOML candidate must be a whole string value, but a
+After Milestone 39 a JSON or TOML candidate must be a whole string value, but a
 dependency pin is a whole string value too. A config entry still names only a
 path and a version, and a bump rewrites every candidate in that file holding
-the version. In Milestone 38's reproduction, the `package.json` entry for
+the version. In Milestone 39's reproduction, the `package.json` entry for
 `1.2.3` rewrites both `version` and `dependencies.left-pad`, the `Cargo.toml`
 entry for `0.4.0` rewrites `package.version` and `anyhow`'s inline
 `{ version = "0.4.0" }`, and the entries discover writes for `4.17.21` and
@@ -2094,13 +2126,13 @@ file the key is the literal text in front of the version (in a Makefile,
 `VERSION ?=` and the space after it). An entry with a key rewrites exactly the
 occurrences it names and nothing else in the file.
 
-- [ ] Reproduce first, on Milestone 38's fixtures: assert that a bump moves
+- [ ] Reproduce first, on Milestone 39's fixtures: assert that a bump moves
       the dependency pins listed above. Add a text case, a `Makefile` holding
       `VERSION ?= 1.2.3` and a line that downloads a tool at `1.2.3`.
 - [ ] Add one optional `key` field to `[[files]]`, read according to the
       entry's parser, so there is one thing to learn whatever the file. The
       cost is that a key changes meaning when its entry's parser does (a
-      `parser` override, or Milestone 38's fallback to text), so make sure
+      `parser` override, or Milestone 39's fallback to text), so make sure
       that case fails loudly instead of matching something else. A path read
       as text matches nothing: most paths end in a letter or digit, and a
       token needs a word boundary in front of it. A text key read as a path
@@ -2150,7 +2182,7 @@ occurrences it names and nothing else in the file.
       claim the same occurrence (an entry without a key and a keyed one for
       the same version, or two entries with the same key) are a config error
       naming both, raised in phase 1. Carry `key` through the config rewrite
-      after a bump (the same `config.EntryFor` problem as Milestone 38's
+      after a bump (the same `config.EntryFor` problem as Milestone 39's
       `parser`) and through the journal, so `undo` reverts the same
       occurrences even after the config has been edited.
 - [ ] Extend `--file` mode and `preview`. Add `--key` to the bump, so
@@ -2168,7 +2200,7 @@ occurrences it names and nothing else in the file.
       entries claiming one occurrence, a key whose parser changed), each
       raised with every file unchanged; discover's output for each known
       manifest, including one without its project key; a bump and an `undo`
-      keeping `key`; and the new `--file` flag. Extend Milestone 38's fuzz
+      keeping `key`; and the new `--file` flag. Extend Milestone 39's fuzz
       targets so every key path a parser reports resolves back to the same
       range.
 - [ ] Document `key` in `README.md`, `doc/USAGE.md`, `incrmit help`,
@@ -2179,48 +2211,207 @@ occurrences it names and nothing else in the file.
       Add an `Added` entry to `CHANGELOG.md` saying that running
       `incrmit discover` again writes the keys into an existing config.
 
-## Milestone 40 — Release Tagging Helper (the `tag` command)
+## Milestone 41 — Remove the Lock File Between Runs
+
+Every project incrmit has written in keeps a `.incrmit.lock` afterward, and
+every user has to add it to `.gitignore`. The file carries no state. It is left
+behind because Milestone 29 found that unlinking it on release reopens the race
+the lock closes: a run that opened the file just before the holder unlinked it
+goes on to lock the now nameless file, a run arriving after creates a fresh
+file at the name and locks that, and both proceed. `AcquireWait` reopens the
+file on every poll, so the window is the moment between any run's open and its
+`flock`, whether it waits or not. The standard fix is to check after locking,
+with two rules. Only the holder removes the name, and it does so *before* it
+unlocks. A run that gets a lock trusts it only if the name still leads to the
+file it locked, and otherwise drops it and starts over. The holder is then the
+only one who can remove the name, so once a run's check passes, every newcomer
+opens the same file and contends. A crash still skips the release and can
+leave the file behind, but the next clean run removes it.
+
+- [ ] Reproduce the race before fixing it, as Milestones 29 and 32 did, so the
+      fix has something to prove. Add test seams in `lock.Acquire` after the
+      open and after the lock (unexported function variables the tests swap),
+      make `Release` unlink the file with no other change, and drive the
+      interleaving in `internal/lock`: A holds the lock, B opens the file, the
+      seam releases A, B locks the orphaned file, and C creates and locks a
+      new one. Run it with C arriving both before and after B takes its lock.
+      Goroutines are fair here, since a flock belongs to the open file
+      description (Milestone 29). Assert the invariant rather than the damage
+      (at most one run holds the project), so the same test proves the fix.
+- [ ] Check after locking. Once `tryLock` succeeds, `Stat` the descriptor and
+      `Lstat` the path, and keep the lock only when `os.SameFile` says they are
+      the same file. A missing name or a different file means a previous
+      holder removed the name after this run opened it: unlock, close, and
+      open the name again. Use `Lstat`, not `Stat`, so a link swapped in at the
+      name never matches and the reopen refuses it as Milestone 32 does. The
+      check must come after the lock, not before: until this run holds it, the
+      holder can still remove the name between the check and the lock.
+- [ ] Decide how many times `Acquire` starts over. Each mismatch means another
+      run finished in between, so the loop ends on its own in practice, but a
+      name that keeps changing would spin. Recommend a small cap, past which
+      `Acquire` reports `ErrContended`: a name that keeps moving means other
+      runs keep getting there first, and contention stays the only error
+      `Acquire` reports (Milestone 29). `AcquireWait` already retries
+      `Acquire`, so a waiting run keeps queueing. Record the decision and the
+      reason.
+- [ ] Remove the name in `Release` while the lock is still held, then unlock
+      and close. Remove it only when the name still leads to the held file
+      (`os.SameFile` again): if someone deleted or replaced it by hand, the
+      file there now may be another run's lock. Removing after the unlock
+      instead reopens the race one step later (a run locks the file between
+      the unlock and the removal, passes its check, then loses the name to a
+      newcomer), so add a seam between the two steps and a test that fails
+      when they are swapped.
+- [ ] Delete only a file incrmit made. Milestone 32 decided that a regular file
+      already at the lock path is used as the lock but never rewritten, and
+      deleting it is a bigger change than rewriting it. Remove the file only
+      when it has one name and holds exactly the note or nothing, which is the
+      test `writeNote` already applies plus a check of the contents. A file
+      holding anything else, or hard-linked from elsewhere, is unlocked and
+      left as it was. A file left by a crashed run holds the note, so the next
+      clean run removes it.
+- [ ] Decide what Windows does. `openLockFile` opens without
+      `FILE_SHARE_DELETE`, so the holder cannot delete the file while it, or a
+      polling run, has it open. Adding the flag is not enough on its own: with
+      classic delete semantics the name stays, "delete pending", until the last
+      handle closes, and opening it meanwhile fails with `ERROR_ACCESS_DENIED`.
+      `Acquire` would report that as a degraded lock, so a queued run would go
+      on unlocked. POSIX-semantics deletion
+      (`FILE_DISPOSITION_FLAG_POSIX_SEMANTICS` through
+      `SetFileInformationByHandle`, NTFS on Windows 10 1607 and later) removes
+      the name at once and is the alternative to evaluate. Recommend keeping
+      the file on Windows for this milestone, behind a build-tagged
+      `removeLockFile` that does nothing there, while the check after locking
+      runs on every platform so the code path is shared. A leftover file costs
+      less than an unlocked run. Record the decision and the reason.
+- [ ] Confirm the rest of the lock's users still hold with the file now
+      transient. The walk keeps skipping `.incrmit.lock` by name, since a run
+      in progress or a crashed one still leaves it in the tree. `SweepTemps`
+      still runs only under a held lock, a degraded lock has nothing to
+      remove, and `preview` and every `--dry-run` still never create the file.
+- [ ] Cover the change with tests: the reproduction above now ends with one
+      holder in both orders; `Release` removes a file incrmit created and
+      leaves one holding other text or a second name; a file left by a crash
+      (locked, then closed without `Release`) is reused and then removed; and
+      the cap reports `ErrContended`. Through `cli.Main`, `bump`, `undo`, and
+      `discover` leave no `.incrmit.lock`, and Milestone 29's eight queued
+      `--wait` bumps still land eight increments and eight journal entries,
+      then leave no file. Build and vet all six release platforms, run the
+      suite under `-race` and `make check`, and record coverage before and
+      after.
+- [ ] Document the change in `README.md` (the `.gitignore` advice now covers a
+      file left only by a crashed run, or by any run on Windows),
+      `doc/DEVELOPMENT.md` §6.4 and §8.6, the man page's FILES and CONCURRENT
+      RUNS sections, the `internal/lock` package comment, `Release`'s comment,
+      and the note itself. Add a `CHANGELOG.md` entry under `Changed`.
+
+## Milestone 42 — Release Tagging Helper (the `tag` command)
 
 The name reads as "increment + commit", but there is no git integration at all:
-no tag, no push. The gap is closed without incrmit ever running git: `os/exec`
-is banned in this repo (a `depguard` rule in `.golangci.yml`), so `incrmit tag`
-does the part only incrmit knows — which version to release — and hands the git
-part back as commands to run. It lists the versions recorded in `incrmit.toml`,
-the user picks one with the arrow keys and Enter (or quits without touching
-anything), and it prints the `git tag` and `git push` commands for that
-version. incrmit never reads or writes the repository and never touches the
-network. Because the user's own `git` runs the commands, their remotes,
-credential helpers, SSH config, `insteadOf` rewrites, and signing setup all
-apply unchanged, and incrmit itself gains no runtime dependency on git. Bump
-stays git-free exactly as it is today.
+no tag, no push. `incrmit tag` closes the gap the way `npm version` does, by
+running the user's own `git` binary. It lists the versions recorded in
+`incrmit.toml`, the user picks one with the arrow keys and Enter (or quits
+without touching anything), and incrmit proves that the commit at `HEAD` holds
+that version, creates an annotated tag for that commit, and pushes exactly that
+tag. Because the real `git` does the work, the user's remotes, credential
+helpers, SSH config, `insteadOf` rewrites, signing setup, and hooks all apply
+unchanged, and incrmit gains no Go dependency on git. Starting a subprocess is
+new to incrmit, so it happens in one package under fixed rules: an argument
+list and never a shell, no value git could read as an option, a repository
+chosen by the directory and never by inherited variables, and no prompt that
+can hang a CI run. Bump stays git-free exactly as it is today.
 
-- [ ] Record the decision in `doc/DEVELOPMENT.md`: incrmit never starts a
-      subprocess, and `depguard` denies the `os/exec` import. A Go git library
-      such as `go-git` was rejected too: v5.19.2 adds 20 modules (19 new) to a
-      project whose only dependencies are `BurntSushi/toml` and
-      `golang.org/x/sys` (a minimal program using it builds to 9.1 MB against
-      incrmit's 4.0 MB), and its push ignores credential helpers, reads only
-      `Hostname` and `Port` from
+- [ ] Record the decision in `doc/DEVELOPMENT.md`: incrmit runs git, and only
+      git, from a new `internal/git` package, the one package allowed to import
+      `os/exec`. Narrow the `depguard` rule in `.golangci.yml` to exempt
+      `internal/git` and its subpackages with a `!` pattern under `files`, and
+      reword its `desc`, so every other package and every test still calls
+      `cli.Main` in-process. `depguard` sees only imports, so add a
+      `forbidigo` rule, with the same exemption, for the other ways to start a
+      process: `os.StartProcess`, `syscall.Exec`, `syscall.ForkExec`, and
+      `golang.org/x/sys/unix.Exec`. A Go git library such as `go-git` was
+      rejected: v5.19.2 adds 20 modules (19 new) to a project whose only
+      dependencies are `BurntSushi/toml` and `golang.org/x/sys` (a minimal
+      program using it builds to 9.1 MB against incrmit's 4.0 MB), and its push
+      ignores credential helpers, reads only `Hostname` and `Port` from
       `~/.ssh/config` (no `IdentityFile`, no `ProxyJump`), and signs only with
       an OpenPGP key loaded in-process (no gpg-agent, no SSH signing). Printing
-      the commands keeps all of those working. Replace the "Optional git
+      the git commands for the user to run was rejected too: it kept all of
+      that working, but left every check below to the user. Narrow the "Git
+      tagging, committing, or changelog generation" exclusion in §1 to
+      committing and changelog generation, and replace the "Optional git
       integration" bullet under Future Work with a pointer to this design.
+- [ ] Write `internal/git` to the rules `npm version` follows, and state them in
+      the package comment. Build each command as an argument list with
+      `exec.Command`, never through a shell, so a message holding `'`, `;`, or
+      `$(...)` reaches git as text. Resolve `git` once with `exec.LookPath` and
+      run that absolute path. Since Go 1.19 a `git` found through a relative
+      `PATH` entry such as `.` or `bin` comes back with `exec.ErrDot`, but
+      `LookPath` returns the planted path alongside that error, so treat
+      `ErrDot` as "git not found" and never run the path. On Windows, refuse a
+      `git` that resolves to anything but an `.exe`: a `git.cmd` or `git.bat`
+      shim runs under `cmd.exe`, which splits the command line by its own
+      rules, so a message holding `&` or `"` could run a command (the
+      "BatBadBut" class of bugs). Set `cmd.Dir` on every call, and remove the
+      variables `git rev-parse --local-env-vars` prints (`GIT_DIR`,
+      `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS`, and the rest;
+      ask the installed git, so the list matches its version), so the
+      directory alone picks the repository: git exports `GIT_INDEX_FILE` to
+      its hooks, and `GIT_DIR` when it was started with `--git-dir`, so a run
+      started from a hook would otherwise check another index or tag in
+      another repository. Pass everything else through untouched (`HOME`,
+      `SSH_AUTH_SOCK`, and `GPG_TTY` are what make the user's setup work),
+      adding only `GIT_TERMINAL_PROMPT=0` when stdin is not a terminal, so a
+      missing credential fails the push instead of waiting for an answer.
+      Never hand git incrmit's stdin: git, ssh, and pinentry open the terminal
+      themselves to prompt.
+- [ ] Never kill git, and keep its output behind incrmit's terminal guarantee.
+      `exec.CommandContext` kills on cancel with `SIGKILL`, which git cannot
+      catch, so a `git tag` stopped mid-write can leave
+      `refs/tags/<name>.lock` behind and fail every later run until someone
+      deletes it by hand: run git without a context, let a Ctrl-C reach it
+      through the terminal's process group, and wait for it to exit. Start
+      every command with `--no-pager`, and every read-only one with
+      `--no-optional-locks`, so a check never takes `index.lock` from a git the
+      user is running at the same time. Read only machine-readable output
+      (porcelain formats with `-z`, `rev-parse`, `for-each-ref`, exit status)
+      and never git's messages, which change with the locale. Pipe git's own
+      stdout and stderr through the `terminalWriter` (§9.5) instead of handing
+      it the file descriptors: a remote's `remote:` lines reach the terminal
+      through git and can carry escape sequences. A missing git and a failed
+      command both exit `1`, after git's own stderr.
+- [ ] Keep every value from being read as an option. The tag name is the
+      validated prefix followed by a version token, so it never starts with
+      `-`; a remote name that starts with `-` is refused; and both still go
+      after `--end-of-options`, git's marker that what follows are arguments.
+      Name refs in full (`refs/tags/v1.2.4`, `HEAD`) and commits by hash,
+      which no option starts with, and pass file paths after `--` with
+      `--literal-pathspecs`, so a name holding `*` or starting with `:` is a
+      file and not a pattern. `--end-of-options` arrived in git 2.24 (2019):
+      document that as the minimum. An older git rejects the marker with its
+      own unknown-option error, so no version probe is needed.
 - [ ] Add the `tag` subcommand: dispatch it in `cli.Main` alongside `discover`,
       `preview`, and `undo`, add it to the top-level overview and to
       `incrmit help tag` via the centralized text in `internal/cli/help.go`,
       and reject unknown arguments with exit `2` the way the other commands do.
-      The command is read-only, so it takes no `--dry-run`: the printed
-      commands are the preview. Thread stdin through `cli.Main` as an
-      `io.Reader`, with a way to ask whether it is a terminal, so the picker
-      (and Milestone 41's `--auto`) can be tested in-process.
-- [ ] Build the candidate list from `incrmit.toml`: collect the distinct tokens
-      the `[[files]]` entries pin (`FileEntry.Token()`, so a prerelease is
-      offered as `1.2.4-rc.1`, not `1.2.4`), order them by `version.Compare`
-      with the newest first, and show each one with the files that hold it.
-      When entries disagree, mark the minority rows the way `preview` marks
-      drift so a half-finished bump is visible before anything is tagged. A
-      missing or empty config reuses the existing "run discover" error path and
-      its exit code.
+      `--dry-run` runs every read-only check below and prints the commands
+      instead of running them. Thread stdin through `cli.Main` as an
+      `io.Reader`, with a way to ask whether it is a terminal, so the picker can
+      be tested in-process.
+- [ ] Build the candidate list from `incrmit.toml`: collect the versions the
+      `[[files]]` entries pin (`FileEntry.Token()`, so a prerelease is offered
+      as `1.2.4-rc.1`, not `1.2.4`), group them the way `preview` judges drift
+      (`precedenceKey`), order the groups by `version.Compare` with the newest
+      first, and show each one with the files that hold it. Entries that
+      differ only in the `v` prefix or in build metadata name one release, and
+      this repository's own config pins both `0.3.9` and `v0.3.9` in
+      `README.md`: listed apart, they would be two candidates, so `--yes`
+      could never pick, and one of them would tag `vv0.3.9`. Name the tag from
+      the version without its source `v` and without build metadata, so the
+      prefix is the only `v`. When entries disagree, mark the minority rows the
+      way `preview` marks drift so a half-finished bump is visible before
+      anything is tagged. A missing or empty config reuses the existing "run
+      discover" error path and its exit code.
 - [ ] Implement the selection as an arrow-key list, not a typed answer: the
       candidates are drawn with one row highlighted, the user moves the
       highlight with the up and down arrows and confirms with Enter, and nothing
@@ -2229,17 +2420,23 @@ stays git-free exactly as it is today.
       and stdlib-adjacent; a full TUI framework would dwarf the tool and
       hand-rolled termios syscalls would mean per-platform code. Restore the
       terminal on every exit path, including a `SIGINT` handler, so a cancelled
-      prompt never leaves the shell without echo. Draw the picker on stderr,
-      never stdout, so stdout carries only the final commands.
+      prompt never leaves the shell without echo, and before any git command
+      starts, so a passphrase prompt from git, ssh, or gpg echoes normally.
+      Draw the picker on stderr, never stdout. Its cursor and erase sequences
+      cannot pass through the `terminalWriter`, which would escape them, so the
+      picker writes around it and the guarantee does not cover what it draws:
+      render every file name through `displayName`, since the names come from
+      the project.
 - [ ] Define the key map and the redraw, and keep both testable: arrows arrive
       as `ESC [ A` / `ESC [ B`, so decode key events from a byte stream in a
       pure function that tests feed fixed sequences; accept `k`/`j` as aliases,
       wrap at the ends of the list, confirm on Enter, and cancel on `q`, Esc, or
-      Ctrl-C — a cancel exits `0` having printed no commands and says so on
-      stderr. Redraw by moving up the N rows just written and clearing each line
-      (`ESC [ A`, `ESC [ 2 K`) rather than clearing the screen, so scrollback
-      survives, and render frames to an `io.Writer` so they can be golden-tested
-      the way `preview` output is in `internal/cli/testdata`.
+      Ctrl-C — a cancel exits `1` having tagged and pushed nothing, and says so
+      on stderr, so `incrmit tag && …` stops there. Redraw by moving up the N
+      rows just written and clearing each line (`ESC [ A`, `ESC [ 2 K`) rather
+      than clearing the screen, so scrollback survives, and render frames to an
+      `io.Writer` so they can be golden-tested the way `preview` output is in
+      `internal/cli/testdata`.
 - [ ] Make the command usable from CI: `--version <token>` selects a candidate
       without prompting (unknown token → exit `2`, listing what is available),
       and `--yes`/`-y` accepts the sole candidate when there is exactly one.
@@ -2247,128 +2444,233 @@ stays git-free exactly as it is today.
       arrow-key prompt cannot run at all, so never attempt raw mode there: fail
       with exit `2` and the usage hint naming `--version` instead of blocking on
       a prompt that no one can answer.
+- [ ] Check the repository before the picker opens, so nothing is chosen only to
+      fail. Find the work tree with `git rev-parse --show-toplevel` from the
+      config's directory (a config in a subdirectory works), resolve `HEAD` to
+      a commit hash once and use that hash from then on, and, unless
+      `--no-push`, require the remote to be one that `git remote` lists, so a
+      typo or a URL fails before a tag exists rather than after. Pushing a tag
+      publishes the commit it names, with all its history, whether or not any
+      branch holding it was pushed, and the release workflow builds whatever
+      the tag names; so, unless `--no-push`, also refuse a commit that no ref
+      under `refs/remotes/<remote>/` contains
+      (`git for-each-ref --contains=<hash> refs/remotes/<remote>/`), with the
+      hint to push the branch first. Then refuse when a file any `[[files]]`
+      entry pins has uncommitted changes:
+      `git status --porcelain=v1 -z --untracked-files=all --ignored=matching`
+      on those paths must print nothing. That check is the early, clear error
+      ("commit the bump first"), not the guarantee: `git status` reports a
+      file marked `assume-unchanged` or `skip-worktree` as clean whatever it
+      holds, and a tracked symlink as clean whatever its target holds (all
+      three tried); the check at the commit below is what proves the version.
+      Unlike `npm version`, other changes in the work tree are not checked,
+      since they are not in the tag either, and neither is `incrmit.toml`,
+      which is often git-ignored (this repository ignores `*.toml`). Each
+      refusal exits `1` naming the files and the fix.
+- [ ] Prove the version at the commit, after the selection and immediately
+      before tagging. For each pinned file, read its mode with
+      `git ls-tree -z <hash> -- ./<path>` and its contents with
+      `git cat-file blob <hash>:./<path>`, both run from the config's
+      directory, so no path arithmetic against the top level is needed
+      (macOS's `/var` → `/private/var` link would break it). Refuse a symlink
+      (mode `120000`), a submodule (`160000`), or a path missing at the
+      commit; check the size first with `git cat-file -s` against the limit
+      `--max-file-size` sets, and offer that flag on `tag` too; then parse the
+      blob with the parser a bump uses. Tag only when every file holds the
+      selected version, and tag the hash, not `HEAD`, so a commit or checkout
+      made while the picker was open cannot change what is tagged.
 - [ ] Build the commands: an annotated tag named with a configurable prefix
       (default `v`, so `v1.2.4`) settable as `--prefix` or `[git] tag_prefix`
       in `incrmit.toml`, with a `--tag-message` whose default template is
-      `Release {{.Version}}`, pushed to `--remote` (default `origin`). The
-      default output is one line:
-      `git tag -a v1.2.4 -m 'Release 1.2.4' && git push origin refs/tags/v1.2.4`.
-      Push exactly the one tag refspec — never a branch, never a bulk `--tags`.
-      `--no-push` prints only the `git tag` command. `--sign` prints `git tag
-      -s`, so git applies `user.signingkey` and `gpg.format` (OpenPGP or SSH)
-      as configured, and `tag.gpgSign = true` works with no flag at all. No
-      `--force` is offered: git refuses an existing local tag and the remote
-      rejects an existing remote one.
-- [ ] Make the output safe to paste or pipe: stdout is exactly the command
-      line, joined with `&&` so a failed `git tag` never reaches the push, and
-      everything else (the picker, notes, reminders) goes to stderr, so
-      `incrmit tag --version 1.2.4 | sh` runs exactly what was shown. Validate
-      the prefix against git's ref-name rules (no leading `-`, whitespace,
-      `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`, or trailing `.lock`) and exit
-      `2` naming the rule, so the tag name never needs quoting and can never be
-      read as a flag. Quote the message with POSIX single quotes (`'` becomes
-      `'\''`) and document that the output targets POSIX shells.
-- [ ] Say what incrmit cannot check: with no repository access it cannot
-      confirm the worktree is clean or that `HEAD` holds the selected version,
-      and the printed `git tag` tags `HEAD`. Print a one-line reminder on
-      stderr ("this tags HEAD — commit the bump first") and document the
-      release order (bump, commit, `incrmit tag`) so a version that was bumped
-      but never committed is not tagged. The drift marking above still catches
-      a half-finished bump in the working tree.
-- [ ] Add tests that run in-process through `cli.Main` with no git and no
-      repository: golden output for the printed commands (defaults, `--prefix`,
-      `[git] tag_prefix`, `--remote`, `--no-push`, `--sign`, and a message
-      template containing `'`); the stdout/stderr split, with stdout exactly
-      the command line; prefix validation, one case per rejected form. Drive
-      the selector through the decoder rather than a real terminal — fixed byte
-      sequences for down-down-Enter, wrap-around at both ends, `q`, Esc, and
-      Ctrl-C — with golden frames for the rendered list. Cover the
+      `Release {{.Version}}`, pushed to `--remote` (default `origin`):
+      `git tag -a -m 'Release 1.2.4' --end-of-options v1.2.4 <hash>`, then
+      `git push --no-follow-tags --recurse-submodules=no --end-of-options
+      origin refs/tags/v1.2.4:refs/tags/v1.2.4`. Push exactly the one tag
+      refspec — never a branch, never a bulk `--tags` or `--follow-tags` — and
+      switch off what the user's config can add to it: with
+      `push.followTags = true`, a push of one tag also sends every annotated
+      local tag on the commit's history that the remote lacks (tried), and
+      `push.recurseSubmodules` can push submodule commits. `--no-push` runs
+      only `git tag`. `--sign` runs `git tag -s`, so git applies
+      `user.signingkey` and `gpg.format` (OpenPGP or SSH) as configured, and
+      `tag.gpgSign = true` works with no flag at all. No `--force` is offered:
+      an existing tag elsewhere is refused below, and the remote rejects an
+      existing remote one.
+- [ ] Validate before anything runs. Check the prefix against git's ref-name
+      rules (no leading `-`, whitespace, `..`, `~`, `^`, `:`, `?`, `*`, `[`,
+      `\`, or trailing `.lock`) and exit `2` naming the rule, then confirm the
+      full name with `git check-ref-format refs/tags/<name>`, so git's own rules
+      have the last word. Refuse a remote that starts with `-`, an empty
+      message, and a message holding a NUL byte, which no argument list can
+      carry, with exit `2` too.
+- [ ] Run the commands, echoing each to stderr first. Before tagging, look up
+      `refs/tags/<name>` with `git for-each-ref` (`%(objecttype)`,
+      `%(*objectname)`, `%(contents:signature)`). If it is an annotated tag of
+      the selected commit, and a signed one when `--sign` is given, skip
+      `git tag` and push it as it is, saying so on stderr, so running the
+      command again after a failed push finishes the job. Refuse, with exit
+      `1` naming what was found, a lightweight tag, an unsigned one under
+      `--sign`, or a tag of any other commit. When the push fails, keep the
+      local tag, say that it exists and that the same command retries the
+      push, and exit `1`.
+- [ ] Keep the output scriptable: on success stdout is exactly the tag name
+      (`v1.2.4`), and everything else (the picker, the echoed commands, notes,
+      and git's own stdout and stderr) goes to stderr. `--dry-run` prints the
+      commands on stdout instead, quoted for a POSIX shell (`'` becomes
+      `'\''`), so they can still be run by hand; they name the commit by hash,
+      so running them later still tags the commit that was checked. Document
+      that the quoting targets POSIX shells.
+- [ ] Say what incrmit trusts, as `npm version` does: the first `git` on
+      `PATH`, and the repository. A repository's config and hooks can run
+      commands (`core.fsmonitor` on `git status`, a `pre-push` hook on the
+      push), so running `incrmit tag` in a repository trusts it exactly as
+      running `git status` there does. Leave git's `safe.directory` check in
+      force: never pass `-c safe.directory=…`, or any other `-c` override, so
+      git still refuses a repository another user owns.
+- [ ] Add an `internal/git/gittest` package, inside the `depguard` exemption,
+      that creates a repository in `t.TempDir()` with a bare one beside it as
+      `origin` (a local path, so no network), and isolate it from the
+      developer's repository as well as from their configuration. The
+      pre-commit hook runs `make check` inside `git commit`, where git exports
+      `GIT_INDEX_FILE` pointing at the index being committed, and a fixture's
+      `git add` under it writes into that commit (tried: the commit then fails
+      on the fixture's object). So clear the variables
+      `git rev-parse --local-env-vars` prints, set `GIT_CONFIG_GLOBAL`,
+      `GIT_CONFIG_NOSYSTEM`, a temporary `HOME`, `GIT_CEILING_DIRECTORIES` at
+      the temporary root, and `GIT_ALLOW_PROTOCOL=file`, so no test can reach
+      a network remote even by mistake, and assert that
+      `git rev-parse --show-toplevel` is inside `t.TempDir()` before any
+      command that writes. Fail rather than skip when git is missing, so CI
+      cannot pass by skipping. Unit-test the argv and environment each command
+      is built with, without running git, and the Windows `.exe` rule as a
+      pure function of the resolved path, so it is tested on every platform.
+- [ ] Cover the command through `cli.Main` against `gittest` repositories: the
+      defaults (an annotated tag with the message, present in `origin`),
+      `--prefix`, `[git] tag_prefix`, `--remote` to a second bare repository,
+      `--no-push`, `--sign` through `--dry-run`, a message holding `'`, `;`,
+      `$(...)`, and a leading `-` arriving in the tag unchanged, and a `v` and
+      a bare entry of one version making one candidate tagged `v0.3.9`. Cover
+      the stdout/stderr split (stdout exactly the tag name, or exactly the
+      quoted commands under `--dry-run`) and each refusal: no repository, no
+      commit, a commit not on the remote, a pinned file modified, staged,
+      untracked, and ignored (one case each) while an unrelated change is
+      allowed, a pinned file marked `assume-unchanged` or `skip-worktree` or
+      tracked as a symlink (each refused by the check at the commit), an
+      unknown remote, a tag at another commit, a lightweight tag, and one
+      prefix per rejected form. `push.followTags = true` in the repository's
+      config still pushes only the one tag. A tag already at the commit is
+      pushed without being recreated, and a failed push (an `origin` path that
+      no longer exists) keeps the local tag, which a second run pushes once
+      `origin` is back. `GIT_DIR` and `GIT_INDEX_FILE` set to another
+      repository change nothing. Refuse a missing git (an empty `PATH`) and a
+      fake `git` reached through `PATH=.` (`exec.ErrDot`). Drive the selector
+      through the decoder rather than a real terminal — fixed byte sequences
+      for down-down-Enter, wrap-around at both ends, `q`, Esc, and Ctrl-C (each
+      cancel exiting `1`) — with golden frames for the rendered list, and a
+      file name holding an escape sequence drawn quoted. Cover the
       single-candidate and `--version` paths, an unknown token, drift marking,
-      a missing config, and a non-TTY stdin refusing to prompt.
+      a missing config, and a non-TTY stdin refusing to prompt. Build and vet
+      all six release platforms.
 - [ ] Document the command in `README.md`, the `incrmit(1)` man page, and
-      `doc/DEVELOPMENT.md` — including a release recipe (bump, commit by hand,
-      `incrmit tag`, then run the printed line or pipe it to `sh`), the
-      selector's keys, the `--version` flag CI needs because the prompt
-      requires a TTY, the stdout/stderr contract, and the fact that
-      authentication and signing are whatever the user's `git` does because
-      incrmit never runs it — and add a `CHANGELOG.md` entry under `Added`.
-      Confirm the `govulncheck` gate from Milestone 26 still passes with the
-      `x/term` tree in `go.sum`.
+      `doc/DEVELOPMENT.md` — including a release recipe (bump, commit and push
+      the branch, `incrmit tag`), the selector's keys, the `--version` flag CI
+      needs because the prompt requires a TTY, the checks made before tagging
+      (the commit on the remote, the version proven at the commit), the
+      stdout/stderr contract, `--dry-run` for running the commands by hand, the
+      trust model, the git variables incrmit clears, and the git 2.24 minimum,
+      and the fact that authentication and signing are whatever the user's
+      `git` does — and add a `CHANGELOG.md` entry under `Added`. Switch step 3
+      of the release checklist in §13 to `incrmit tag`. Confirm the
+      `govulncheck` gate from Milestone 26 still passes with the `x/term` tree
+      in `go.sum`.
 
-## Milestone 41 — Conventional-Commit Bump Inference (`--auto`)
+## Milestone 43 — Conventional-Commit Bump Inference (`--auto`)
 
 Reading the commits since the last tag and inferring the bump component turns
 `discover` + language-agnostic + single-binary from a narrow story into a real
 one: no other tool does automatic inference *and* arbitrary-file rewriting
-without a per-ecosystem plugin. As in Milestone 40, incrmit does not run git:
-`--auto` reads commit messages from stdin, and the user's own `git log`
-supplies them.
+without a per-ecosystem plugin. `--auto` reads the history through Milestone
+41's `internal/git`, under the same rules, and runs only read-only commands: it
+finds the last release tag and reads the commit messages since it. A bump still
+never writes to the repository.
 
-- [ ] Add `--auto` to the bump command: read commit messages from stdin,
-      separated by NUL bytes, as produced by
-      `git log --format=%B%x00 "$(git describe --tags --abbrev=0)..HEAD"`,
-      and infer the component. When stdin is a terminal, refuse with exit `2`
-      and a usage hint showing that pipeline instead of waiting for input.
+- [ ] Add `--auto` to the bump command: find the work tree from the project
+      directory (`projectDir`, so `--file` works too) as `incrmit tag` does,
+      read the messages since the last release tag with
+      `git log --format=%B%x00 refs/tags/v1.2.3..HEAD --`, split them on the
+      NUL bytes as they stream in rather than reading the whole log into
+      memory, and infer the component. The range is built from full ref names,
+      so it can never be read as an option. Outside a repository, exit `1`
+      saying that `--auto` needs the history and `--major`, `--minor`, and
+      `--patch` do not.
+- [ ] Make sure the history is the project's. The work tree is found by walking
+      up from the project directory, so a project that is not a repository but
+      sits inside one (a home directory kept in git, say) would be inferred
+      from that repository's commits. Before reading the log, require every
+      target to exist at `HEAD` (`git cat-file -e HEAD:./<path>` from the
+      config's directory), and exit `1` naming the first one that does not.
+- [ ] Decide how to find the last release tag. Recommend
+      `git for-each-ref --merged=HEAD --format=%(refname) refs/tags/v*` (with
+      the config's `[git] tag_prefix` from Milestone 42, default `v`), keeping
+      the names whose remainder after the prefix parses as a version and taking
+      the highest by `version.Compare`. Prefer it over
+      `git describe --tags --abbrev=0`, which reports a repository with no tag
+      only as an error message that would have to be parsed and changes with
+      the locale; `for-each-ref` prints nothing instead. The prefix passed
+      Milestone 42's ref-name rules, which refuse `*`, `?`, and `[`, so it goes
+      into the pattern as it is. Decide too whether a prerelease tag counts as
+      the last release: recommend not, so the commits since the last stable
+      release decide the component. Record the decisions and the reasons.
+- [ ] Refuse a shallow clone. When `git rev-parse --is-shallow-repository`
+      prints `true`, exit `1` with a hint naming `fetch-depth: 0`: a truncated
+      history can hide the last tag or the commits since it, and the bump
+      inferred from it is then too small, with no error at all.
 - [ ] Implement the inference rules and document them: a `feat:` commit implies
       minor, a `fix:`/`perf:` commit implies patch, and `BREAKING CHANGE:` in a
       trailer or a `!` before the colon implies major. The highest match wins.
       Non-conforming commits are ignored, not errors.
-- [ ] Decide and document what happens when nothing is inferable (empty input,
-      or no conforming commits): recommend exiting `0` with "no
+- [ ] Decide and document what happens when nothing is inferable (no commits
+      since the tag, or no conforming commits): recommend exiting `0` with "no
       version-relevant commits; nothing to bump" and writing nothing, with
       `--auto --fallback patch` available for CI that wants a bump regardless.
-      Before the first tag, `git describe` fails and the pipeline above feeds
-      no commits, so document the first-release form that logs from the root
-      (`git log --format=%B%x00 | incrmit --auto`).
+      With no release tag yet, read the whole history of `HEAD`
+      (`git log --format=%B%x00 HEAD --`), so the first release needs no
+      special form. The trailing `--` matters here: without it, a file named
+      `HEAD` in the work tree makes the argument ambiguous and git refuses
+      (tried).
 - [ ] Reject `--auto` combined with an explicit `--major`/`--minor`/`--patch`
       with exit code `2` rather than silently letting one win.
-- [ ] Make `--auto --dry-run` explain the decision: print the inferred component
-      and the subject line of each commit that drove it, so the inference is
-      auditable.
-- [ ] Add tests that feed fixed stdin byte streams through `cli.Main` — no git
-      and no scripted repository — covering each rule, the highest-wins
-      precedence, the `!` and trailer forms of a breaking change, CRLF line
-      endings, empty input, no conforming commits, the `--fallback` path, and a
-      terminal stdin refusing to wait.
+- [ ] Make `--auto --dry-run` explain the decision: print the tag it measured
+      from (or that there is none and the whole history was read), the
+      inferred component, and the subject line of each commit that drove it,
+      so the inference is auditable. The subjects are whatever contributors
+      wrote, so they go through the `terminalWriter` like every other line.
+- [ ] Test the parsing apart from the history. Feed fixed byte streams to the
+      parser: each rule, the highest-wins precedence, the `!` and trailer forms
+      of a breaking change, CRLF line endings, empty input, and records split
+      on NUL with the newline git adds between them. Through `cli.Main`, use
+      Milestone 42's `gittest` repositories: no tag (the whole history read),
+      the highest of several version tags, a tag on a branch not merged into
+      `HEAD` ignored, a tag with the prefix but no version ignored, a
+      prerelease tag per the decision above, no conforming commits, the
+      `--fallback` path, `--file`, a file named `HEAD` in the work tree, a
+      project inside a repository that does not track it refused, a shallow
+      clone refused (`git clone --depth 1` from a `file://` URL, since a plain
+      local path ignores `--depth`), a directory outside any repository, and a
+      commit subject holding an escape sequence printed escaped.
 - [ ] Document the rules and a full CI recipe in `README.md`, the man page, and
-      `doc/DEVELOPMENT.md` — the `git log | incrmit --auto` pipeline, matching
-      the Milestone 40 tag prefix with `git describe --match 'v*'`, and
-      `fetch-depth: 0` on `actions/checkout` so the tags and history are there
-      to read; add a `CHANGELOG.md` entry under `Added`.
+      `doc/DEVELOPMENT.md` — `incrmit --auto`, then a commit and a push of the
+      branch, then `incrmit tag --yes`; how the last release tag is found, with
+      the same `[git] tag_prefix` as `incrmit tag`; and `fetch-depth: 0` on
+      `actions/checkout`, without which the run is refused as a shallow clone.
+      Say that a tag pushed with the workflow's default `GITHUB_TOKEN` does not
+      start other workflows, so the tag-triggered release workflow
+      (Milestone 13) never runs from it: release in the same job, or push with
+      a deploy key limited to the repository, rather than a personal access
+      token that reaches every repository its owner can. Add a `CHANGELOG.md`
+      entry under `Added`.
 
-## Milestone 42 — Crash-Safe Multi-File Writes
-
-Planning is already fail-fast (Milestone 22's phase 1/2 split), but phase 2 is
-not: `runBump` writes files one at a time, so a failure on file 3 of 5 leaves
-1–2 bumped and 3–5 untouched. Worse, `recordHistory` runs *after* every write
-succeeds, so exactly the case where `undo` is needed is the case where no
-journal entry exists. Close this before v1.0.0.
-
-- [ ] Write the journal entry *before* phase 2 rather than after, marked
-      `pending`, and flip it to `complete` once every write lands. Bump
-      `history` file format handling so an older state file still loads.
-- [ ] On a phase-2 write failure, roll back the files already written in this
-      run (the pre-bump bytes are still in memory from planning) before
-      returning, and report both the original failure and whether the rollback
-      itself succeeded.
-- [ ] When rollback is impossible or partially fails, leave the `pending` entry
-      in place and print an explicit recovery instruction naming `incrmit undo`
-      and the affected files, rather than exiting with a bare error.
-- [ ] Teach `undo` to recognize a `pending` entry and treat it as the thing to
-      revert, tolerating files that were never written (the recorded `new` token
-      is absent because the write never happened, which is not the "file was
-      edited since" case that currently aborts the whole undo).
-- [ ] Order the config rewrite and the target writes so a crash between them is
-      recoverable in one direction only, and document which one is written first
-      and why in `doc/DEVELOPMENT.md`.
-- [ ] Add tests that inject a write failure mid-run (e.g. a read-only directory
-      or an unwritable target as the Nth of M files) and assert: files are
-      restored, the journal reflects the interrupted run, and a following `undo`
-      leaves the tree exactly as it started.
-- [ ] Document the crash-safety guarantee — and its limits — in
-      `doc/DEVELOPMENT.md`; add a `CHANGELOG.md` entry under `Fixed`.
-
-## Milestone 43 — Code and Repository Hygiene
+## Milestone 44 — Code and Repository Hygiene
 
 Small cleanups worth doing before v1.0.0 freezes the surface.
 
@@ -2395,7 +2697,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
       build artifact or stray file appears at the repo root, so the tree stays
       clean without relying on remembering.
 
-## Milestone 44 — v1.0.0 Release: Publish
+## Milestone 45 — v1.0.0 Release: Publish
 
 - [ ] Bump the tool version to `1.0.0` across all tracked files (run `incrmit`
       on its own `incrmit.toml`) and confirm `README.md` "Version" and
@@ -2410,7 +2712,7 @@ Small cleanups worth doing before v1.0.0 freezes the surface.
 - [ ] Post-release verification: `go install github.com/sasmaq/incrmit@v1.0.0`
       resolves, and each published artifact installs and reports `1.0.0`.
 
-## Milestone 45 — apt / dnf Repo via GitHub Pages
+## Milestone 46 — apt / dnf Repo via GitHub Pages
 
 Host signed apt and dnf repositories on GitHub Pages so users can
 `apt install incrmit` / `dnf install incrmit` after adding the repo once.
