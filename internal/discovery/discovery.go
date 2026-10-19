@@ -4,6 +4,7 @@ package discovery
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -19,25 +20,35 @@ import (
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
-// Occurrence is a single version token found inside a file: the parsed version,
-// the 1-based line it appears on, and the trimmed text of that line (used for
-// human-readable dry-run output). A long line is clipped to the stretch around
-// the token, with "..." marking each cut (see contextText).
+// Occurrence is a single version candidate found inside a file: the parsed
+// version, the 1-based line it appears on, the trimmed text of that line (used
+// for human-readable dry-run output), and the key it sits under when the
+// file's parser reads its format (nil for text). A long line is clipped to the
+// stretch around the token, with "..." marking each cut (see contextText).
 type Occurrence struct {
 	Version version.Version
 	Line    int
 	Text    string
+	Key     files.KeyPath
 }
 
 // Result is a single discovered target: its path as a config names it, relative
-// to the config's directory in slash form (see DiscoverWithLimit), and every
-// version occurrence detected inside it, in the order they appear. A file
-// with the same version in several places yields several occurrences; distinct
-// versions in one file are all captured here (see Generate for how they map to
-// config entries).
+// to the config's directory in slash form (see DiscoverWithLimit), the parser
+// that read it, and every version occurrence detected inside it, in the order
+// they appear. A file with the same version in several places yields several
+// occurrences; distinct versions in one file are all captured here (see
+// Generate for how they map to config entries).
+//
+// A .json or .toml file its parser cannot read is scanned as text instead:
+// Parser is then files.ParserText and Fallback says why. Skipped lists the
+// values the parser passed over although they decode to a version (an escape
+// such as \u002e), so the dry run can say so.
 type Result struct {
 	Path        string
+	Parser      files.Parser
+	Fallback    *files.ParseError
 	Occurrences []Occurrence
+	Skipped     []files.Skipped
 }
 
 // ignoredDirs are directory names skipped during the walk: version-control
@@ -60,17 +71,22 @@ var ignoredDirs = map[string]struct{}{
 // scan bounded when a tree contains very large files.
 const DefaultMaxScanBytes = 32 << 20 // 32 MiB
 
-// Candidate version tokens are located with version.FindTokens — the same
-// function package files rewrites with, so what discovery records is exactly
-// what a bump later replaces. Each candidate is validated with version.Parse,
-// which accepts only exactly three numeric components, so an IPv4 address such
-// as 192.168.1.1 (matched whole, never sliced) and two-component numbers are
-// skipped. See version.FindTokens for the pattern and the filename guard.
+// Candidates are located with the parser each file's name selects
+// (files.ParserFor) — the same parser a bump of the generated config reads the
+// file with, so what discovery records is exactly what a bump later replaces.
+// The text parser takes every token version.FindTokens finds and version.Parse
+// accepts, so an IPv4 address such as 192.168.1.1 (matched whole, never
+// sliced) and two-component numbers are skipped; the JSON and TOML parsers
+// take only those that are a whole string value. See version.FindTokens for
+// the pattern and the filename guard.
 
 // Discover walks the tree rooted at root and returns every file that contains a
 // semantic version token, sorted by path for deterministic output. It scans the
 // contents of any text file rather than relying on file names: every version
-// token found in a file is recorded as an occurrence of that file's version.
+// candidate found in a file is recorded as an occurrence of that file's
+// version. A file's name decides only how it is read: a .json or .toml file by
+// its format, falling back to text when it is not that format, and anything
+// else as text.
 //
 // The optional ignore patterns come from the config's `ignore` list and are
 // applied in addition to the built-in ignoredDirs: any file or directory whose
@@ -165,11 +181,12 @@ func DiscoverWithLimit(root, configDir string, maxBytes int64, ignore ...string)
 			return nil
 		}
 
-		occ, ok := detect(p, maxBytes)
+		r, ok := detect(p, maxBytes)
 		if !ok {
 			return nil
 		}
-		results = append(results, Result{Path: relSlash, Occurrences: occ})
+		r.Path = relSlash
+		results = append(results, r)
 		return nil
 	})
 	if err != nil {
@@ -231,7 +248,9 @@ func relativeTo(base, target string) string {
 // config file. Each file contributes one [[files]] entry per distinct version
 // it contains (in first-seen order): identical repeats collapse to a single
 // entry, while a file with several differing versions yields several entries
-// that share the same path.
+// that share the same path. An entry records its `parser` only when the file
+// was read with another parser than its name selects, which is a .json or
+// .toml file scanned as text, so a bump reads it the way discover did.
 //
 // The ignore patterns (typically carried over from an existing config) are
 // written back verbatim so regenerating the config never drops user-authored
@@ -258,7 +277,11 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 				continue
 			}
 			seen[v] = struct{}{}
-			cfg.Files = append(cfg.Files, config.EntryFor(r.Path, o.Version))
+			e := config.EntryFor(r.Path, o.Version)
+			if r.Parser != files.ParserFor(r.Path) {
+				e.Parser = string(r.Parser)
+			}
+			cfg.Files = append(cfg.Files, e)
 		}
 	}
 
@@ -276,15 +299,15 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// detect reads the file at path and returns every [v]MAJOR.MINOR.PATCH token it
-// contains, in the order they appear, each tagged with its 1-based line number
-// and the text of that line. Files larger than maxBytes are skipped (maxBytes <=
-// 0 means no cap). It is best-effort: unreadable, oversized, non-regular, and
-// binary files yield ok == false. The matcher also yields dotted-number runs
-// that are not versions (two-component numbers like 3.9, four-octet IPv4
-// addresses like 192.168.1.1, ...); those fail version.Parse and are skipped, so
-// only real three-component versions are reported.
-func detect(path string, maxBytes int64) ([]Occurrence, bool) {
+// detect reads the file at path and returns every version candidate its parser
+// finds, in the order they appear, each tagged with its 1-based line number,
+// the text of that line, and its key. Files larger than maxBytes are skipped
+// (maxBytes <= 0 means no cap). It is best-effort: unreadable, oversized,
+// non-regular, and binary files yield ok == false, and so does a file with no
+// candidate and nothing skipped. A .json or .toml file its parser cannot read
+// is scanned as text, with the parser's error recorded as the Result's
+// Fallback.
+func detect(path string, maxBytes int64) (Result, bool) {
 	capped := maxBytes > 0
 
 	// Establish the file type before opening: opening a FIFO blocks until a
@@ -294,30 +317,39 @@ func detect(path string, maxBytes int64) ([]Occurrence, bool) {
 	// excluded symlinks, so Lstat reports the entry itself.
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || (capped && info.Size() > maxBytes) {
-		return nil, false
+		return Result{}, false
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, false
+		return Result{}, false
 	}
 	defer func() { _ = f.Close() }()
 
 	// Re-check on the descriptor, so a path swapped for something else between
 	// the stat and the open is still rejected.
 	if fi, ferr := f.Stat(); ferr != nil || !fi.Mode().IsRegular() || (capped && fi.Size() > maxBytes) {
-		return nil, false
+		return Result{}, false
 	}
 
 	data, ok := readAtMost(f, maxBytes)
 	if !ok || isBinary(data) {
-		return nil, false
+		return Result{}, false
 	}
-	occ := scan(data)
-	if len(occ) == 0 {
-		return nil, false
+	r := Result{Parser: files.ParserFor(path)}
+	loc, err := r.Parser.Locate(data)
+	if err != nil {
+		if !errors.As(err, &r.Fallback) {
+			return Result{}, false
+		}
+		r.Parser = files.ParserText
+		if loc, err = r.Parser.Locate(data); err != nil {
+			return Result{}, false
+		}
 	}
-	return occ, true
+	r.Occurrences = scan(data, loc.Candidates)
+	r.Skipped = loc.Skipped
+	return r, len(r.Occurrences) > 0 || len(r.Skipped) > 0
 }
 
 // readAtMost reads r to the end, refusing it (ok == false) when it holds more
@@ -338,22 +370,19 @@ func readAtMost(r io.Reader, maxBytes int64) ([]byte, bool) {
 	return data, true
 }
 
-// scan returns every version token in data as an occurrence, in the order they
-// appear, each tagged with its 1-based line number and the text around it.
-func scan(data []byte) []Occurrence {
-	var occ []Occurrence
+// scan returns every candidate a parser found in data as an occurrence, in the
+// order they appear, each tagged with its 1-based line number and the text
+// around it. cands must be in byte order, as Parser.Locate returns them.
+func scan(data []byte, cands []files.Candidate) []Occurrence {
+	occ := make([]Occurrence, 0, len(cands))
 	lines := newLineCursor(data)
-	for _, loc := range version.FindTokens(data) {
-		start, end := loc[0], loc[1]
-		v, err := version.Parse(string(data[start:end]))
-		if err != nil {
-			continue
-		}
-		lines.seek(start)
+	for _, c := range cands {
+		lines.seek(c.Start)
 		occ = append(occ, Occurrence{
-			Version: v,
+			Version: c.Version,
 			Line:    lines.num,
-			Text:    contextText(data, lines.start, lines.end, start, end),
+			Text:    contextText(data, lines.start, lines.end, c.Start, c.End),
+			Key:     c.Key,
 		})
 	}
 	return occ

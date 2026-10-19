@@ -1,0 +1,11 @@
+{
+  "$schema": "https://example.com/schemas/2.0.0/package.schema.json",
+  "name": "example",
+  "version": "1.2.3",
+  "dependencies": {
+    "left-pad": "1.2.3",
+    "lodash": "4.17.21",
+    "react": "^18.3.1"
+  },
+  "engines": { "node": ">=20.0.0" }
+}

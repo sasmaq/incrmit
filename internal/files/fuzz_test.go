@@ -50,7 +50,7 @@ func FuzzSetKnownVersions(f *testing.F) {
 		// Nothing to replace means nothing may change: the no-op case is the one
 		// a rewriter is most likely to get wrong by rebuilding the buffer.
 		if len(repls) == 0 {
-			out, counts := SetKnownVersions(data, nil)
+			out, counts := SetKnownVersions(data, TextCandidates(data), nil)
 			if !bytes.Equal(out, data) {
 				t.Fatalf("no replacements changed the data:\n in: %q\nout: %q", data, out)
 			}
@@ -60,7 +60,7 @@ func FuzzSetKnownVersions(f *testing.F) {
 			return
 		}
 
-		out, counts := SetKnownVersions(data, repls)
+		out, counts := SetKnownVersions(data, TextCandidates(data), repls)
 
 		// Every pin must be reported on, present or not, so a caller can tell an
 		// out-of-sync config from a successful rewrite.

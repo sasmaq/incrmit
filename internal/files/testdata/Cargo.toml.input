@@ -1,0 +1,29 @@
+[package]
+name = "example"
+version = "1.2.3"
+edition = "2021"
+rust-version = "1.70.0"
+description = "An example crate; 1.2.3 adds the report command"
+documentation = "https://docs.rs/example/1.2.3"
+
+[dependencies]
+serde = { version = "1.0.200", features = ["derive"] }
+log = "0.4.21"
+
+[dependencies.tokio]
+version = "1.37.0"
+features = ["full"]
+
+[[bin]]
+name = "example"
+path = "src/main.rs"
+
+[[bin]]
+name = "example-cli"
+path = "src/cli.rs"
+
+[package.metadata.release]
+# The README pins 1.2.3 in its install line.
+pre-release-replacements = [
+  { file = "README.md", search = "example = \"1.2.3\"", replace = "example = \"{{version}}\"" },
+]

@@ -2069,13 +2069,26 @@ dependency pins from moving, since `"left-pad": "1.2.3"` and
 `serde = "1.0.200"` are whole string values too; Milestone 40 selects the
 project's version by the key this milestone records.
 
-- [ ] Reproduce first, with the two files above plus a `pyproject.toml`:
+- [x] Reproduce first, with the two files above plus a `pyproject.toml`:
       assert what `discover --dry-run` lists, what `discover` writes, and what
       a bump changes, byte for byte. The schema URL, both ranges, and the TOML
       comment must stop being candidates; the dependency pins are still
       candidates, which is Milestone 40's case. Keep the fixtures for
       Milestone 40's tests.
-- [ ] Put the parser behind one seam, so §9's rule still holds: what discovery
+      `internal/cli/parsers_test.go` (`TestReproductionReadsManifestsByFormat`).
+      The fixtures are `internal/files/testdata/repro/{package.json,
+      Cargo.toml,pyproject.toml}`, under their real names since the extension
+      picks the parser; `.gitignore` ignores `*.toml`, so it now un-ignores
+      that directory's. The pyproject adds the version in its description, a
+      URL, a comment, `requests>=2.31.0`, and `click==8.1.7`. Goldens hold the
+      dry run, the written config, the `--minor` summary, and each bumped file
+      (`internal/cli/testdata/repro_*.golden`); `undo` then restores every
+      byte. As text the three files hold seventeen candidates; read by format,
+      eight, each with its key. The schema URL, both ranges, the comment, the
+      description, the URL, and the specifiers are gone; `left-pad`, `lodash`,
+      `serde`, `anyhow`'s `version`, and pyproject's `tool.example.schema-version`
+      remain for Milestone 40.
+- [x] Put the parser behind one seam, so §9's rule still holds: what discovery
       records is exactly what a bump rewrites. A parser takes a file's bytes
       and returns each candidate as a byte range, its parsed version, and its
       key path (none from the text scanner). `discovery.scan`,
@@ -2086,7 +2099,19 @@ project's version by the key this milestone records.
       as before. Fix the comment at the top of `internal/files/files.go`: it
       says structured detection lives in `discovery`, but nothing there reads
       a format today.
-- [ ] Choose the parser by extension, ignoring case: `.json` gets the JSON
+      `internal/files/parser.go`: `files.Parser` (`text`, `json`, `toml`) and
+      `Parser.Locate`, which returns a `Located` of `Candidate`s
+      (`Start`, `End`, `Version`, `Key files.KeyPath`) in byte order plus the
+      `Skipped` values. `FindVersion`, `SetVersion`, `SetKnownVersion`, and
+      `SetKnownVersions` take the candidates instead of scanning; `ReadVersion`
+      and `ApplyBump` locate with `ParserFor(path)`. `discovery.scan`,
+      `readGroups`/`planGroups` (shared by `preview`), and `planReverts` take
+      their ranges from `Locate`, and nothing outside `files` calls `FindTokens`
+      to find a version in a file. The text parser is `TextCandidates`:
+      `FindTokens` plus `version.Parse`, so existing tests pass it explicitly
+      and are otherwise unchanged. The comment at the top of `files.go` now
+      says where candidates come from.
+- [x] Choose the parser by extension, ignoring case: `.json` gets the JSON
       parser, `.toml` the TOML parser, and everything else text. Add an
       optional `parser` key to `[[files]]` (`"json"`, `"toml"`, or `"text"`)
       that overrides it, for a `.json` file with comments (`tsconfig.json`,
@@ -2097,7 +2122,15 @@ project's version by the key this milestone records.
       bump's config rewrite rebuilds each entry with
       `config.EntryFor(path, version)`, which would drop the key, so carry it
       through and test that a bump keeps it.
-- [ ] JSON: use the standard library's `encoding/json` `Decoder`, walking
+      `files.ParserFor` and `FileEntry.FileParser`. `Validate` refuses an
+      unknown value (`config: files[1] (tsconfig.json): unknown parser
+      "jsonc"; use "json", "toml", or "text"`, exit `1`) and entries for one
+      path that read it two ways, since the file is read once; an omitted key
+      and the extension's own parser count as the same choice. `bumpedConfig`
+      sets `Parser` on each `EntryFor` result, and the CLI tests check a bump
+      keeps it for `text` and `toml` overrides. `LoadIgnore` accepts the key
+      with no change beyond the field.
+- [x] JSON: use the standard library's `encoding/json` `Decoder`, walking
       `Token()` with a stack of object keys and array indexes, and take each
       string value's byte range from `InputOffset()`. That needs no new
       dependency; `encoding/json/jsontext` reports offsets directly, but it is
@@ -2111,7 +2144,17 @@ project's version by the key this milestone records.
       `\u002e`) is not a candidate, and the dry run says so, rather than
       incrmit re-encoding the string. `encoding/json` accepts duplicate keys,
       so both values are candidates under the same key path.
-- [ ] TOML: `BurntSushi/toml`, which already reads the config, is the only
+      `internal/files/json.go`. `json.Valid` decides whether the file is JSON
+      at all, because the `Decoder` reads `{} {}` as a stream; a
+      `SyntaxError`'s offset gives the line. The value's bytes start at the
+      first `"` after the previous `InputOffset`, since separators and
+      whitespace come first. Numbers stay `json.Number` (`1e999` is valid JSON
+      but no `float64`). A candidate must also be one of the text parser's
+      tokens with the same range. An escaped value that decodes to exactly a
+      version (`version.Parse` alone trims whitespace) is `Skipped`, and the
+      dry run prints `L2 version: skipped, "1.2.3" is a version only once its
+      escapes are decoded; ...`.
+- [x] TOML: `BurntSushi/toml`, which already reads the config, is the only
       TOML reader. It decides whether the file is TOML and what each key
       holds, but v1.6.0 keeps key positions in an unexported field, so it
       cannot say where a value's bytes are. Find them by probing rather than
@@ -2124,7 +2167,16 @@ project's version by the key this milestone records.
       placeholder is in no value was in a comment or a key. Token boundaries
       stay `FindTokens`'s, so §9's single definition of a token holds in TOML
       files too.
-- [ ] Make the probe exact and cheap. Placeholders are digits and dots, so
+      `internal/files/toml.go` (`locateTOML`). One change to the plan: a
+      placeholder has one digit run per dot-separated segment of its token,
+      not one fixed `A.B.N` shape, so a token used as a bare dotted key
+      (`[versions.1.2.3]`, `x-1.2.3`) splits into as many keys as before and
+      the key path maps back segment by segment (`probe.unmap`). The walk
+      covers tables, inline tables, `[]any` arrays, and `[]map[string]any`
+      arrays of tables. A string that holds a placeholder's prefix but is not
+      a placeholder is a longer string; one that holds none but decodes to a
+      version is an escape, `Skipped` as in JSON.
+- [x] Make the probe exact and cheap. Placeholders are digits and dots, so
       each is valid wherever its token was, have a fixed width
       (`987654321.987654321.000000001`), and must not already occur in the
       file. In a prototype, unpadded placeholders collided (`...1` is a
@@ -2135,14 +2187,31 @@ project's version by the key this milestone records.
       while one decode per token took 2.8 s at 1,000 and grows quadratically.
       After planning a bump, decode the rewritten bytes in phase 1 and check
       that exactly the planned keys changed, to the planned values.
-- [ ] Record the TOML decision in `doc/DEVELOPMENT.md`. A hand-written locator
+      Each run is a prefix plus a counter zero-padded to nine digits (wider
+      past a billion segments). The prefix is `987654321` unless the file, or
+      any key or string it decodes to, holds it; then `absentDigits` picks one
+      a digit at a time by least frequency, nine passes however the file is
+      planted. One more check than planned: the probe's answer is compared
+      with the file's own decode (`probe.agrees`), scalars at the same keys,
+      because the first fuzzing run found `BurntSushi/toml` v1.6.0 accepting a
+      key defined twice (`1.0.0 = "x"` then `"1" = "y"`, the second dropped),
+      which masking hid from the copy. A copy that disagrees is refused like
+      one that does not decode, and so is the one valid shape it splits, a
+      version naming an array of tables declared twice. `files.Rewrite` does
+      the planned phase-1 check for both formats (`checkRewrite`), and
+      `TestRewriteRefusesUnplannedChanges` feeds it a comment token reported
+      as `bin[0].version`. `TestLocateTOMLIsLinearInTokens` locates 5,000
+      tokens within the 10 s test deadline.
+- [x] Record the TOML decision in `doc/DEVELOPMENT.md`. A hand-written locator
       that lexes TOML to find byte ranges was the first plan, and
       `pelletier/go-toml/v2` exposes ranges through its `unstable` package.
       Both were rejected: each is a second TOML reader that could disagree with
       the one the config is read with, and the second is also a new dependency
       with an API marked as subject to change. The probe leaves every question
       of TOML syntax to `BurntSushi/toml`.
-- [ ] Decide what happens when a file does not parse. Recommend: `discover`
+      §9.6, "The TOML decision", beside why the probe is checked against the
+      file and what that check refuses.
+- [x] Decide what happens when a file does not parse. Recommend: `discover`
       scans a `.json` or `.toml` file that fails to parse as text, writes
       `parser = "text"` into its entries so a bump uses what discover used, and
       says why in the dry run (`tsconfig.json: not JSON (line 3: invalid
@@ -2151,13 +2220,29 @@ project's version by the key this milestone records.
       and line and suggesting `parser = "text"`, in phase 1, so nothing is
       written. A file that parsed when discover ran and no longer does has
       changed shape, and guessing is how a bump goes wrong silently.
-- [ ] Show the key in discover's output: `Occurrence` gains the key path, and
+      As recommended. `discovery.Result` gains `Parser` and `Fallback` (the
+      `*files.ParseError`), `Generate` writes `parser = "text"` for a fallback,
+      the dry run heads the file with `tsconfig.json: not JSON (line 2: invalid
+      character '/' looking for beginning of object key string), scanned as
+      text`, and the summary marks its entries `(not JSON, scanned as text)`.
+      A bump's entry fails in `readGroups` with exit `3`: `package.json: not
+      JSON (line 2: ...); to read it as text, set parser = "text" on its
+      [[files]] entry`. One case the item did not cover: a `--file` target has
+      no entry, so it is read as discover would read it, falling back with
+      `incrmit: note: ...` on stderr, which is also what `--file` did before.
+      `classify` maps a `*files.ParseError` to exit `3`.
+- [x] Show the key in discover's output: `Occurrence` gains the key path, and
       the dry run prints it next to the line number. `Generate` still writes
       one entry per distinct version with no key, so the generated config for
       a JSON or TOML file changes only by losing the entries that are no
       longer candidates. Write `parser` only when it differs from the
       extension's default.
-- [ ] Existing configs change meaning: an entry for a `.json` or `.toml` file
+      `Occurrence.Key`; the dry run prints `L3 package.version: version =
+      "0.4.0" # was 0.3.9`, and text files print `L3: ...` as before. A file
+      whose only versions were skipped is listed by the dry run but gives no
+      entry, and a tree of only such files is still `no version-bearing files
+      found`.
+- [x] Existing configs change meaning: an entry for a `.json` or `.toml` file
       now matches only whole string values, so an entry pinning a version that
       appeared only in a comment, a URL, or a range (four of the eight above)
       finds nothing, and the bump exits `3` with the existing "not found"
@@ -2170,7 +2255,16 @@ project's version by the key this milestone records.
       to keep the old behavior for that file. `undo` uses the parser the bump
       used: record it in the journal entry, and read an older entry that has
       none as text, which is what wrote it.
-- [ ] Test each parser with golden fixtures in `internal/files/testdata`: the
+      The pinned-version check has run in phase 1 (`planGroups`) since
+      Milestone 38, so nothing needed moving. `TestOldConfigFailsBeforeAnythingIsWritten`
+      runs the eight entries the old discover wrote, behind a `VERSION` entry,
+      and asserts exit `3`, `Cargo.toml: files: expected version not found:
+      0.3.9`, the snapshot unchanged, and no journal; `--dry-run` fails the
+      same way. `history.Change` gains `parser`, written by the bump, and
+      `planReverts` reads each file with it, refusing an unknown parser or two
+      for one file. `CHANGELOG.md` has the `Changed` entry, plus `Added` (the
+      key) and `Fixed` (the reproduction).
+- [x] Test each parser with golden fixtures in `internal/files/testdata`: the
       existing `package.json`, `package.min.json`, `appsettings.json`, and
       `pyproject.toml`, plus a `Cargo.toml` and the reproduction files. Cover
       a BOM, CRLF, minified and tab-indented JSON, nested arrays, duplicate
@@ -2184,18 +2278,49 @@ project's version by the key this milestone records.
       `parser` override in both directions, a bump keeping `parser`, an
       unknown `parser` value, and an old config failing in phase 1 with every
       file unchanged.
-- [ ] Fuzz the JSON locator and the TOML probe (§12.1, Milestone 30): for any
+      `internal/files/parser_test.go`, with candidate goldens in
+      `testdata/candidates/` for the four existing fixtures, a new
+      `Cargo.toml.input` (`[dependencies.tokio]`, two `[[bin]]`s, inline
+      tables, a URL, comments), and the reproduction files. JSON and TOML
+      table tests cover every shape listed, and more (a root array and string,
+      a token welded into a key, a line-ending backslash, dates and floats).
+      Collisions: twenty-five `[[bin]]`s with comment tokens between them, the
+      placeholder in a comment, a value, a key, and an escape, and two
+      thousand planted prefixes. The fallback, the override both ways, a bump
+      keeping `parser`, an unknown value, and the old config are in
+      `internal/cli/parsers_test.go`, with `internal/discovery/parsers_test.go`
+      and `internal/config/parser_test.go` at the unit level.
+- [x] Fuzz the JSON locator and the TOML probe (§12.1, Milestone 30): for any
       input the decoder accepts, every candidate's bytes decode to the value
       the decoder reports at its key path, and rewriting one candidate with a
       version of a different length, then decoding again, changes that key
       and no other. Neither may panic on input the decoder rejects. Seed the
       corpora with the fixtures.
-- [ ] Document the parsers in `README.md`, `doc/USAGE.md`,
+      `files.FuzzLocateJSON` and `files.FuzzLocateTOML`
+      (`parser_fuzz_test.go`), seeded with the golden fixtures. The reference
+      reads the document independently of the parser's walk, and TOML the
+      decoder accepts may be refused only with the probe's own error. The TOML
+      target failed within seconds on the decoder leniency above; the input
+      is kept as `testdata/fuzz/FuzzLocateTOML/key_defined_twice_hidden_by_masking`.
+      After the fix, 120 s ran 17 million TOML inputs and 60 s 4.5 million JSON
+      inputs with nothing found. `config.FuzzLoad` gained `parser` seeds and
+      checks every loaded entry's parser is known.
+- [x] Document the parsers in `README.md`, `doc/USAGE.md`,
       `incrmit help discover`, and the man page: which file gets which parser,
       what counts as a candidate, the `parser` key, and the fallback. In
       `doc/DEVELOPMENT.md`, rewrite the §9 bullet that calls discovery
       "content-based and format-agnostic", and cover the parser seam in §5,
       the `parser` key in §6.1, and the fuzz targets in §12.1.
+      README (Features and Configuration), USAGE ("How a file is read" under
+      Configuration, Discovery, `--output`, Undo, exit codes), `incrmit help
+      discover` (`parsersNote`), and the man page (a PARSERS section, plus
+      DESCRIPTION, `discover`, `--output`, FILES, and EXIT STATUS).
+      DEVELOPMENT.md: §1, §5, §6.1, §6.2 (the journal's `parser`), §8.1, §8.2,
+      §8.4, the §9 bullets, a new §9.6 for the design, §10, §11, §12, and
+      §12.1 (the targets and what the first run found). `make check` passes,
+      and coverage is 97.6% (97.7% before); the lines not covered are
+      branches for input already validated, such as a probe copy that fails
+      to decode.
 
 ## Milestone 40 — Version Key per Parser
 

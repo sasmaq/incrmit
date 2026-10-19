@@ -1,5 +1,6 @@
 // Package files reads and writes target files, replacing only the version
-// token so surrounding formatting is preserved.
+// token so surrounding formatting is preserved, and locates the versions in a
+// file with a parser chosen for its format (parser.go).
 package files
 
 import (
@@ -22,13 +23,16 @@ var ErrNoVersion = errors.New("files: no semantic version found")
 // version is not present in the file (e.g. the config is out of sync).
 var ErrVersionNotFound = errors.New("files: expected version not found")
 
-// Candidate version tokens are located with version.FindTokens, which is the
-// single definition of where a version begins and ends (see its documentation
-// for the pattern and the filename guard). This package deliberately does not
-// understand any file format; structured detection for specific formats lives
-// in the discovery package. A candidate that version.Parse rejects — an IPv4
-// address, a two-component number — is skipped, and a "v"-prefixed token is
-// distinct from its bare form so the exact written token is rewritten.
+// Every function here that finds or rewrites a version takes its candidates
+// from a Parser (parser.go): the text parser's are the tokens
+// version.FindTokens finds, which is the single definition of where a version
+// begins and ends (see its documentation for the pattern and the filename
+// guard), and the JSON and TOML parsers' are the subset of those that are a
+// whole string value. Nothing here calls FindTokens itself, so a file is read
+// the same way whichever command reads it. A token version.Parse rejects (an
+// IPv4 address, a two-component number) is never a candidate, and a
+// "v"-prefixed token is distinct from its bare form so the exact written token
+// is rewritten.
 
 // AmbiguousError reports that a file contains more than one distinct version
 // token, so a generic replacement cannot pick one safely.
@@ -40,27 +44,22 @@ func (e *AmbiguousError) Error() string {
 	return fmt.Sprintf("files: ambiguous version: found multiple distinct versions %v", e.Versions)
 }
 
-// FindVersion locates the semantic version in data. It returns ErrNoVersion if
-// no token is present and an *AmbiguousError if multiple distinct versions are
-// found. Repeated occurrences of the same version are not ambiguous.
+// FindVersion returns the one version among cands, the candidates a parser
+// found in a file. It returns ErrNoVersion if there is none and an
+// *AmbiguousError if they hold several distinct versions. Repeated occurrences
+// of the same version are not ambiguous.
 //
-// The matcher also yields dotted-number runs that are not versions
-// (two-component numbers, four-octet IPv4 addresses, ...); those fail
-// version.Parse and are ignored, so neither ErrNoVersion nor ambiguity is
-// affected by them.
-func FindVersion(data []byte) (version.Version, error) {
-	locs := version.FindTokens(data)
-
-	distinct := make(map[string]struct{}, len(locs))
-	var sole string
-	for _, loc := range locs {
-		s := string(data[loc[0]:loc[1]])
-		if _, err := version.Parse(s); err != nil {
-			continue
-		}
+// Distinct means a distinct token, so v1.2.3 and 1.2.3 are two versions; a
+// candidate's token is exactly its Version's String(), which version.Parse
+// guarantees by refusing any spelling it would not write back.
+func FindVersion(cands []Candidate) (version.Version, error) {
+	distinct := make(map[string]struct{}, len(cands))
+	var sole version.Version
+	for _, c := range cands {
+		s := c.Version.String()
 		if _, seen := distinct[s]; !seen {
 			distinct[s] = struct{}{}
-			sole = s
+			sole = c.Version
 		}
 	}
 	if len(distinct) == 0 {
@@ -74,31 +73,31 @@ func FindVersion(data []byte) (version.Version, error) {
 		sort.Strings(vs)
 		return version.Version{}, &AmbiguousError{Versions: vs}
 	}
-
-	return version.Parse(sole)
+	return sole, nil
 }
 
-// SetVersion returns a copy of data in which every occurrence of the current
-// version token is replaced by newVer. Only the version token is rewritten; all
-// surrounding bytes (whitespace, quotes, keys, trailing newline) are preserved.
-// It returns the same errors as FindVersion when the current version cannot be
-// uniquely identified.
-func SetVersion(data []byte, newVer version.Version) ([]byte, error) {
-	cur, err := FindVersion(data)
+// SetVersion returns a copy of data in which every candidate holding the
+// current version is replaced by newVer, where cands are the candidates a
+// parser found in data. Only the version token is rewritten; all surrounding
+// bytes (whitespace, quotes, keys, trailing newline) are preserved. It returns
+// the same errors as FindVersion when the current version cannot be uniquely
+// identified.
+func SetVersion(data []byte, cands []Candidate, newVer version.Version) ([]byte, error) {
+	cur, err := FindVersion(cands)
 	if err != nil {
 		return nil, err
 	}
-	out, _ := SetKnownVersions(data, []Replacement{{Old: cur, New: newVer}})
+	out, _ := SetKnownVersions(data, cands, []Replacement{{Old: cur, New: newVer}})
 	return out, nil
 }
 
-// SetKnownVersion replaces every occurrence of oldVer's token with newVer's
+// SetKnownVersion replaces every candidate holding oldVer's token with newVer's
 // token, leaving any other version-like strings in the file untouched. Unlike
 // SetVersion it does not require the file to contain a single unambiguous
 // version, so it is used when the current version is known from configuration.
-// It returns ErrVersionNotFound if oldVer's token does not appear in data.
-func SetKnownVersion(data []byte, oldVer, newVer version.Version) ([]byte, error) {
-	out, counts := SetKnownVersions(data, []Replacement{{Old: oldVer, New: newVer}})
+// It returns ErrVersionNotFound if no candidate holds oldVer's token.
+func SetKnownVersion(data []byte, cands []Candidate, oldVer, newVer version.Version) ([]byte, error) {
+	out, counts := SetKnownVersions(data, cands, []Replacement{{Old: oldVer, New: newVer}})
 	if counts[oldVer.String()] == 0 {
 		return nil, fmt.Errorf("%w: %s", ErrVersionNotFound, oldVer)
 	}
@@ -113,10 +112,11 @@ type Replacement struct {
 	New version.Version
 }
 
-// SetKnownVersions applies several replacements in a single pass over data.
-// Every occurrence of a Replacement's Old version is rewritten to its New
-// version; all other bytes (including version-like tokens not listed) are left
-// untouched.
+// SetKnownVersions applies several replacements in a single pass over data,
+// whose candidates a parser found as cands (in byte order). Every candidate
+// holding a Replacement's Old version is rewritten to its New version; all
+// other bytes (including version-like tokens that are not candidates, or that
+// no Replacement lists) are left untouched.
 //
 // Doing this in one pass over the original data is what makes overlapping bumps
 // safe: replacing 1.2.3 -> 1.2.4 alongside 1.2.4 -> 1.2.5 does not cascade,
@@ -130,8 +130,16 @@ type Replacement struct {
 // "incrmit-1.2.3-rc.1.zip" back to its numeric core, because it cannot tell a
 // prerelease from a hyphenated filename part on grammar alone; a Replacement
 // pinning 1.2.3-rc.1 says which suffix is real, so exactly that suffix is
-// consumed and the whole "1.2.3-rc.1" is rewritten, leaving ".zip" alone.
-func SetKnownVersions(data []byte, repls []Replacement) ([]byte, map[string]int) {
+// consumed and the whole "1.2.3-rc.1" is rewritten, leaving ".zip" alone. A
+// JSON or TOML candidate is a whole string value, so no suffix follows one.
+func SetKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]byte, map[string]int) {
+	out, counts, _ := setKnownVersions(data, cands, repls)
+	return out, counts
+}
+
+// setKnownVersions is SetKnownVersions, also returning each rewrite it made,
+// for the check Rewrite makes afterwards.
+func setKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]byte, map[string]int, []rewrite) {
 	counts := make(map[string]int, len(repls))
 	for _, r := range repls {
 		counts[r.Old.String()] = 0
@@ -148,9 +156,10 @@ func SetKnownVersions(data []byte, repls []Replacement) ([]byte, map[string]int)
 
 	var b strings.Builder
 	b.Grow(len(data))
+	var done []rewrite
 	prev := 0
-	for _, loc := range version.FindTokens(data) {
-		start, end := loc[0], loc[1]
+	for _, c := range cands {
+		start, end := c.Start, c.End
 		// A previous replacement may have consumed a recorded suffix that
 		// happens to contain a candidate token of its own; skip anything that
 		// falls inside what was already written.
@@ -166,11 +175,12 @@ func SetKnownVersions(data []byte, repls []Replacement) ([]byte, map[string]int)
 			b.WriteString(r.New.String())
 			prev = matchEnd
 			counts[r.Old.String()]++
+			done = append(done, rewrite{key: c.Key, old: string(data[start:matchEnd]), new: r.New.String()})
 			break
 		}
 	}
 	b.Write(data[prev:])
-	return []byte(b.String()), counts
+	return []byte(b.String()), counts, done
 }
 
 // matchAt reports where an occurrence of pin ends at the candidate token
@@ -309,13 +319,19 @@ func ReadOwnFile(path string) ([]byte, error) {
 	return ReadTargetWithLimit(path, MaxOwnFileBytes)
 }
 
-// ReadVersion reads path and returns the semantic version it contains.
+// ReadVersion reads path and returns the semantic version it contains, read
+// with the parser its name selects (ParserFor). A .json or .toml file that is
+// not its format is an error, a *ParseError, rather than scanned as text.
 func ReadVersion(path string) (version.Version, error) {
 	data, err := ReadTarget(path)
 	if err != nil {
 		return version.Version{}, fmt.Errorf("files: reading %q: %w", path, err)
 	}
-	v, err := FindVersion(data)
+	loc, err := ParserFor(path).Locate(data)
+	if err != nil {
+		return version.Version{}, fmt.Errorf("files: %q: %w", path, err)
+	}
+	v, err := FindVersion(loc.Candidates)
 	if err != nil {
 		return version.Version{}, fmt.Errorf("files: %q: %w", path, err)
 	}
@@ -324,7 +340,8 @@ func ReadVersion(path string) (version.Version, error) {
 
 // ApplyBump reads path, transforms its version with bump, and (unless dryRun)
 // writes the result back in place atomically. It returns the old and new
-// versions. The selection of which component to bump is the caller's concern;
+// versions. The file is read with the parser its name selects, as ReadVersion
+// reads it. The selection of which component to bump is the caller's concern;
 // this function only applies the supplied transform, and a transform that fails
 // (a *version.OverflowError from a component already at math.MaxInt) fails the
 // call before anything is written.
@@ -334,7 +351,12 @@ func ApplyBump(path string, bump func(version.Version) (version.Version, error),
 		return version.Version{}, version.Version{}, fmt.Errorf("files: reading %q: %w", path, err)
 	}
 
-	oldVer, err = FindVersion(data)
+	p := ParserFor(path)
+	loc, err := p.Locate(data)
+	if err != nil {
+		return version.Version{}, version.Version{}, fmt.Errorf("files: %q: %w", path, err)
+	}
+	oldVer, err = FindVersion(loc.Candidates)
 	if err != nil {
 		return version.Version{}, version.Version{}, fmt.Errorf("files: %q: %w", path, err)
 	}
@@ -347,7 +369,7 @@ func ApplyBump(path string, bump func(version.Version) (version.Version, error),
 		return oldVer, newVer, nil
 	}
 
-	updated, err := SetVersion(data, newVer)
+	updated, _, err := Rewrite(p, data, loc.Candidates, []Replacement{{Old: oldVer, New: newVer}})
 	if err != nil {
 		return version.Version{}, version.Version{}, fmt.Errorf("files: %q: %w", path, err)
 	}

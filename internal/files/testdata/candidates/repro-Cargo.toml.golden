@@ -1,0 +1,5 @@
+parser: toml
+L3	0.4.0	package.version
+L3	0.3.9	(not a candidate)
+L7	1.0.200	dependencies.serde
+L8	0.4.0	dependencies.anyhow.version

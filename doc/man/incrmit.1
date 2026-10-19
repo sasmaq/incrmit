@@ -49,6 +49,12 @@ semantic version
 .Pq MAJOR.MINOR.PATCH ,
 locates the version token in each file, increments the major, minor, or patch
 component, and writes the new value back atomically.
+A
+.Pa .json
+or
+.Pa .toml
+file is read by its format, so only a whole string value counts as its version
+.Pq see Sx PARSERS .
 Only the version token is changed; surrounding file contents and permissions
 are preserved.
 .Pp
@@ -147,6 +153,78 @@ Use
 to promote a prerelease in place and
 .Fl -pre
 to start or advance one.
+.Sh PARSERS
+Each file is read with a parser chosen by its extension, ignoring case:
+.Pa .json
+files with the JSON parser,
+.Pa .toml
+files with the TOML parser, and every other file as text.
+.Pp
+As text, every version token in the file counts.
+Read as JSON or TOML, a token counts only when it is a whole string value,
+such as
+.Sy \(dqversion\(dq: \(dq1.2.3\(dq
+or
+.Sy version = \(dq1.2.3\(dq ;
+a version inside a longer string
+.Pq a URL, a range such as Sy ^18.3.1 , a description ,
+in a comment, or in a key does not.
+Each one that counts knows the key it sits under, written the way TOML writes a
+dotted key
+.Pq Sy package.version , Sy bin[0].version , Sy \(dqa.b\(dq ,
+which
+.Cm discover Fl -dry-run
+prints next to its line number.
+A dependency pinned at the project's version is a whole string value too, so it
+is bumped with it.
+A value that holds a version only once its escapes are decoded
+.Pq Sy \(dq1\eu002e2.3\(dq
+does not count, since
+.Nm
+rewrites bytes and never re-encodes a string.
+.Pp
+The
+.Sy parser
+key of a
+.Sy [[files]]
+entry
+.Pq \(dqjson\(dq , \(dqtoml\(dq , or \(dqtext\(dq
+overrides the extension, for a JSON file with comments such as
+.Pa tsconfig.json
+or TOML under another name such as
+.Pa Pipfile .
+Entries for one file must agree on it.
+.Pp
+.Cm discover
+reads a
+.Pa .json
+or
+.Pa .toml
+file that does not parse as text instead, says why in the dry run, and writes
+.Sy parser = \(dqtext\(dq
+into its entries.
+A bump never falls back: an entry whose parser cannot read its file fails with
+exit 3, naming the file and the line, and nothing is written.
+A
+.Fl -file
+target has no entry, so it is read as
+.Cm discover
+would read it, falling back to text with a note.
+A TOML file that the reader accepts although the TOML specification forbids it,
+such as one defining a key twice, can also be refused, because the versions in
+it cannot be placed with certainty.
+.Pp
+A config written before the parsers may list a version found only in a URL, a
+range, or a comment of a JSON or TOML file; its bump now fails with
+.Sq expected version not found
+.Pq exit 3
+before writing anything.
+Run
+.Nm
+.Cm discover
+again, or set
+.Sy parser = \(dqtext\(dq
+on the entry.
 .Sh COMMANDS
 .Bl -tag -width Ds
 .It Cm bump
@@ -169,6 +247,9 @@ may name different directories; a scanned file outside the config's directory
 is listed with a leading
 .Pa ../ .
 The config's ignore patterns are matched against the same paths.
+Each file is read with its parser
+.Pq see Sx PARSERS ,
+and the dry run prints a JSON or TOML occurrence's key next to its line number.
 .It Cm preview
 Show, for every file in the config, the version it holds today alongside what a
 .Fl -patch ,
@@ -359,9 +440,9 @@ config: TOML that sets only
 and
 .Sy files
 .Po with
-.Sy path , version , prerelease ,
+.Sy path , version , prerelease , build ,
 and
-.Sy build
+.Sy parser
 .Pc ,
 which is regenerated with its ignore list kept.
 Any other file, such as a README, a target, a manifest, another tool's TOML,
@@ -401,11 +482,19 @@ A token written whole in
 .Sy version
 .Pq Qq 1.2.3-rc.1
 is still accepted and is split on the next rewrite.
+An optional
+.Sy parser
+key chooses how the file is read; see
+.Sx PARSERS .
 .It Pa .incrmit.state.toml
 Bump-history state file written next to the config, used by
 .Cm undo .
 A bump records its entry there before changing any other file, marked
 pending, and marks it complete once every file is written.
+Each change records the parser the bump read its file with, and
+.Cm undo
+reads the file with that parser; an entry from before parsers were recorded is
+read as text.
 It is local, tool-maintained working state and is not meant to be committed
 .Pq add it to Pa .gitignore .
 A bump reads it before writing anything, so one that cannot be read stops the
@@ -496,8 +585,8 @@ run).
 .It 2
 Invalid arguments or flags.
 .It 3
-No version found, an ambiguous or unparseable version, or a version with a
-number too large to bump.
+No version found, an ambiguous or unparseable version, a file its parser
+cannot read, or a version with a number too large to bump.
 .El
 .Sh EXAMPLES
 Bump the patch version in all configured files:

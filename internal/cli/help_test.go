@@ -206,6 +206,20 @@ func TestDiscoverHelpDocumentsOutputRule(t *testing.T) {
 	}
 }
 
+// The discover help says which file gets which parser, what counts as a
+// candidate, the parser key, and the fallback.
+func TestDiscoverHelpDocumentsParsers(t *testing.T) {
+	if !strings.Contains(discoverHelp, parsersNote) {
+		t.Errorf("discoverHelp does not embed parsersNote:\n%s", discoverHelp)
+	}
+	code, stdout, _ := runMain(t, "", "help", "discover")
+	for _, want := range []string{"whole string value", `parser = "text"`, "A bump never falls back"} {
+		if code != ExitOK || !strings.Contains(stdout, want) {
+			t.Errorf("incrmit help discover: exit = %d, stdout lacks %q", code, want)
+		}
+	}
+}
+
 // The discover help says paths are written relative to --output's directory.
 func TestDiscoverHelpDocumentsPaths(t *testing.T) {
 	if !strings.Contains(discoverHelp, pathsNote) {

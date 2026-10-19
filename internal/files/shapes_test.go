@@ -65,10 +65,10 @@ func TestSetVersionKeepsFileShape(t *testing.T) {
 			in := shaped(tt.tmpl, "1.2.3")
 			want := shaped(tt.tmpl, "1.2.4")
 
-			if got, err := FindVersion(in); err != nil || got != v123 {
+			if got, err := FindVersion(TextCandidates(in)); err != nil || got != v123 {
 				t.Fatalf("FindVersion = %v, %v; want %v", got, err, v123)
 			}
-			got, err := SetVersion(in, v124)
+			got, err := SetVersion(in, TextCandidates(in), v124)
 			if err != nil {
 				t.Fatalf("SetVersion: %v", err)
 			}
@@ -132,13 +132,13 @@ func TestUTF16HasNoVersion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			in := utf16("<Version>1.2.3</Version>\r\n", tt.bigEndian)
 
-			if _, err := FindVersion(in); !errors.Is(err, ErrNoVersion) {
+			if _, err := FindVersion(TextCandidates(in)); !errors.Is(err, ErrNoVersion) {
 				t.Errorf("FindVersion err = %v, want ErrNoVersion", err)
 			}
-			if _, err := SetKnownVersion(in, v123, v124); !errors.Is(err, ErrVersionNotFound) {
+			if _, err := SetKnownVersion(in, TextCandidates(in), v123, v124); !errors.Is(err, ErrVersionNotFound) {
 				t.Errorf("SetKnownVersion err = %v, want ErrVersionNotFound", err)
 			}
-			out, counts := SetKnownVersions(in, []Replacement{{Old: v123, New: v124}})
+			out, counts := SetKnownVersions(in, TextCandidates(in), []Replacement{{Old: v123, New: v124}})
 			if counts["1.2.3"] != 0 || !bytes.Equal(out, in) {
 				t.Errorf("SetKnownVersions rewrote a UTF-16 file: counts %v\n in: %q\nout: %q", counts, in, out)
 			}
@@ -183,7 +183,7 @@ func TestTokensAtTheEdgesOfTheFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := SetKnownVersion([]byte(tt.in), oldVer, newVer)
+			got, err := SetKnownVersion([]byte(tt.in), TextCandidates([]byte(tt.in)), oldVer, newVer)
 			if tt.want == "" {
 				if !errors.Is(err, ErrVersionNotFound) {
 					t.Errorf("SetKnownVersion(%q) = %q, %v; want ErrVersionNotFound", tt.in, got, err)
@@ -205,13 +205,13 @@ func TestTokensAtTheEdgesOfTheFile(t *testing.T) {
 func TestEmptyAndBlankFilesHaveNoVersion(t *testing.T) {
 	for _, body := range []string{"", " ", "\n", "\r\n", "\r", " \t\r\n\n\t", bomUTF8, bomUTF8 + "\r\n"} {
 		t.Run(strconv.Quote(body), func(t *testing.T) {
-			if _, err := FindVersion([]byte(body)); !errors.Is(err, ErrNoVersion) {
+			if _, err := FindVersion(TextCandidates([]byte(body))); !errors.Is(err, ErrNoVersion) {
 				t.Errorf("FindVersion err = %v, want ErrNoVersion", err)
 			}
-			if _, err := SetVersion([]byte(body), v124); !errors.Is(err, ErrNoVersion) {
+			if _, err := SetVersion([]byte(body), TextCandidates([]byte(body)), v124); !errors.Is(err, ErrNoVersion) {
 				t.Errorf("SetVersion err = %v, want ErrNoVersion", err)
 			}
-			if _, err := SetKnownVersion([]byte(body), v123, v124); !errors.Is(err, ErrVersionNotFound) {
+			if _, err := SetKnownVersion([]byte(body), TextCandidates([]byte(body)), v123, v124); !errors.Is(err, ErrVersionNotFound) {
 				t.Errorf("SetKnownVersion err = %v, want ErrVersionNotFound", err)
 			}
 
@@ -263,7 +263,7 @@ func TestSetKnownVersionsMinifiedSingleLine(t *testing.T) {
 	tmpl := minifiedManifest(deps)
 	in, want := shaped(tmpl, "1.2.3"), shaped(tmpl, "1.2.4")
 
-	got, counts := SetKnownVersions(in, []Replacement{{Old: v123, New: v124}})
+	got, counts := SetKnownVersions(in, TextCandidates(in), []Replacement{{Old: v123, New: v124}})
 	if counts["1.2.3"] != 1 {
 		t.Errorf("replaced 1.2.3 %d times, want once", counts["1.2.3"])
 	}
@@ -295,7 +295,7 @@ func TestSetKnownVersionsThousandsOfOccurrences(t *testing.T) {
 	}
 	in, want := shaped(tmpl.String(), "1.2.3"), shaped(tmpl.String(), "10.0.0")
 
-	got, counts := SetKnownVersions(in, []Replacement{{Old: v123, New: version.Version{Major: 10}}})
+	got, counts := SetKnownVersions(in, TextCandidates(in), []Replacement{{Old: v123, New: version.Version{Major: 10}}})
 	if counts["1.2.3"] != n {
 		t.Errorf("replaced 1.2.3 %d times, want %d", counts["1.2.3"], n)
 	}
@@ -304,7 +304,7 @@ func TestSetKnownVersionsThousandsOfOccurrences(t *testing.T) {
 	}
 
 	// FindVersion reads the same file as one version, not n of them.
-	if v, err := FindVersion(in); err != nil || v != v123 {
+	if v, err := FindVersion(TextCandidates(in)); err != nil || v != v123 {
 		t.Errorf("FindVersion = %v, %v; want %v", v, err, v123)
 	}
 }

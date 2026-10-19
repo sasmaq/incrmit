@@ -41,14 +41,14 @@ func TestSetVersionPropagatesFindVersionErrors(t *testing.T) {
 	newVer := version.Version{Major: 9, Minor: 9, Patch: 9}
 
 	t.Run("no version", func(t *testing.T) {
-		if _, err := SetVersion([]byte("nothing here\n"), newVer); !errors.Is(err, ErrNoVersion) {
+		if _, err := SetVersion([]byte("nothing here\n"), TextCandidates([]byte("nothing here\n")), newVer); !errors.Is(err, ErrNoVersion) {
 			t.Errorf("err = %v, want ErrNoVersion", err)
 		}
 	})
 
 	t.Run("ambiguous", func(t *testing.T) {
 		var ambiguous *AmbiguousError
-		_, err := SetVersion([]byte("1.2.3 and 4.5.6\n"), newVer)
+		_, err := SetVersion([]byte("1.2.3 and 4.5.6\n"), TextCandidates([]byte("1.2.3 and 4.5.6\n")), newVer)
 		if !errors.As(err, &ambiguous) {
 			t.Fatalf("err = %v, want *AmbiguousError", err)
 		}

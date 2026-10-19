@@ -1,0 +1,8 @@
+parser: toml
+L3	2.1.0	project.version
+L4	2.1.0	(not a candidate)
+L7	2.31.0	(not a candidate)
+L8	8.1.7	(not a candidate)
+L12	2.1.0	(not a candidate)
+L15	2.2.0	(not a candidate)
+L16	2.1.0	tool.example.schema-version

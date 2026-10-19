@@ -43,7 +43,7 @@ func TestSetVersionGolden(t *testing.T) {
 				t.Fatalf("read input: %v", err)
 			}
 
-			got, err := SetVersion(in, newVer)
+			got, err := SetVersion(in, TextCandidates(in), newVer)
 			if err != nil {
 				t.Fatalf("SetVersion: %v", err)
 			}
@@ -134,7 +134,7 @@ func TestFindVersion(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := FindVersion([]byte(tt.in))
+			got, err := FindVersion(TextCandidates([]byte(tt.in)))
 			if err != nil {
 				t.Fatalf("FindVersion(%q) error: %v", tt.in, err)
 			}
@@ -147,7 +147,7 @@ func TestFindVersion(t *testing.T) {
 
 func TestFindVersionNoVersion(t *testing.T) {
 	for _, in := range []string{"", "no version here", "1.2", "year 2024", "v1"} {
-		if _, err := FindVersion([]byte(in)); !errors.Is(err, ErrNoVersion) {
+		if _, err := FindVersion(TextCandidates([]byte(in))); !errors.Is(err, ErrNoVersion) {
 			t.Errorf("FindVersion(%q) error = %v, want ErrNoVersion", in, err)
 		}
 	}
@@ -162,7 +162,7 @@ func TestFindVersionIgnoresIPv4(t *testing.T) {
 		"mask 255.255.255.255 broadcast 10.0.0.255",
 		"net 1.2.3.4",
 	} {
-		if _, err := FindVersion([]byte(in)); !errors.Is(err, ErrNoVersion) {
+		if _, err := FindVersion(TextCandidates([]byte(in))); !errors.Is(err, ErrNoVersion) {
 			t.Errorf("FindVersion(%q) error = %v, want ErrNoVersion", in, err)
 		}
 	}
@@ -171,7 +171,7 @@ func TestFindVersionIgnoresIPv4(t *testing.T) {
 // A real version alongside an IPv4 address is found unambiguously: the IP is not
 // a competing version, and no three-component slice is pulled out of it.
 func TestFindVersionWithIPv4Present(t *testing.T) {
-	got, err := FindVersion([]byte("server 192.168.1.1 version 1.2.3\n"))
+	got, err := FindVersion(TextCandidates([]byte("server 192.168.1.1 version 1.2.3\n")))
 	if err != nil {
 		t.Fatalf("FindVersion: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestFindVersionWithIPv4Present(t *testing.T) {
 // Bumping a file that also contains an IPv4 address rewrites only the version.
 func TestSetKnownVersionLeavesIPv4Untouched(t *testing.T) {
 	in := []byte("endpoint 10.0.0.255\nversion 1.2.3\n")
-	out, err := SetKnownVersion(in,
+	out, err := SetKnownVersion(in, TextCandidates(in),
 		version.Version{Major: 1, Minor: 2, Patch: 3},
 		version.Version{Major: 1, Minor: 2, Patch: 4})
 	if err != nil {
@@ -196,7 +196,7 @@ func TestSetKnownVersionLeavesIPv4Untouched(t *testing.T) {
 
 func TestFindVersionAmbiguous(t *testing.T) {
 	in := []byte(`"version": "1.2.3", "dep": "4.5.6"`)
-	_, err := FindVersion(in)
+	_, err := FindVersion(TextCandidates(in))
 	var ae *AmbiguousError
 	if !errors.As(err, &ae) {
 		t.Fatalf("FindVersion error = %v, want *AmbiguousError", err)
@@ -208,7 +208,7 @@ func TestFindVersionAmbiguous(t *testing.T) {
 
 func TestSetVersionRepeatedToken(t *testing.T) {
 	in := []byte("badge: 1.2.3\nheader: 1.2.3\n")
-	out, err := SetVersion(in, version.Version{Major: 1, Minor: 2, Patch: 4})
+	out, err := SetVersion(in, TextCandidates(in), version.Version{Major: 1, Minor: 2, Patch: 4})
 	if err != nil {
 		t.Fatalf("SetVersion: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestSetVersionRepeatedToken(t *testing.T) {
 func TestSetKnownVersion(t *testing.T) {
 	// A file with several distinct versions; only the known one is rewritten.
 	in := []byte("title 0.1.0\nexample 1.2.3 -> 1.2.4\n")
-	out, err := SetKnownVersion(in,
+	out, err := SetKnownVersion(in, TextCandidates(in),
 		version.Version{Major: 0, Minor: 1, Patch: 0},
 		version.Version{Major: 0, Minor: 2, Patch: 0})
 	if err != nil {
@@ -235,7 +235,7 @@ func TestSetKnownVersion(t *testing.T) {
 
 func TestSetKnownVersionAllOccurrences(t *testing.T) {
 	in := []byte("a 1.2.3 b 1.2.3 c 4.5.6\n")
-	out, err := SetKnownVersion(in,
+	out, err := SetKnownVersion(in, TextCandidates(in),
 		version.Version{Major: 1, Minor: 2, Patch: 3},
 		version.Version{Major: 1, Minor: 2, Patch: 4})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestSetKnownVersionAllOccurrences(t *testing.T) {
 // containing both is ambiguous rather than a repeated single version.
 func TestFindVersionPrefixedAndBareAreAmbiguous(t *testing.T) {
 	in := []byte("docs say v1.2.3 but file has 1.2.3\n")
-	_, err := FindVersion(in)
+	_, err := FindVersion(TextCandidates(in))
 	var ae *AmbiguousError
 	if !errors.As(err, &ae) {
 		t.Fatalf("FindVersion error = %v, want *AmbiguousError", err)
@@ -260,7 +260,7 @@ func TestFindVersionPrefixedAndBareAreAmbiguous(t *testing.T) {
 // SetVersion preserves the original "v" prefix when rewriting the token.
 func TestSetVersionPreservesPrefix(t *testing.T) {
 	in := []byte("release = \"v1.2.3\"\n")
-	cur, err := FindVersion(in)
+	cur, err := FindVersion(TextCandidates(in))
 	if err != nil {
 		t.Fatalf("FindVersion: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestSetVersionPreservesPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BumpMinor: %v", err)
 	}
-	out, err := SetVersion(in, next)
+	out, err := SetVersion(in, TextCandidates(in), next)
 	if err != nil {
 		t.Fatalf("SetVersion: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestSetVersionPreservesPrefix(t *testing.T) {
 // not matched against a "v"-prefixed occurrence and vice versa.
 func TestSetKnownVersionDistinguishesPrefix(t *testing.T) {
 	in := []byte("bare 1.2.3 and tag v1.2.3\n")
-	out, err := SetKnownVersion(in,
+	out, err := SetKnownVersion(in, TextCandidates(in),
 		version.Version{Major: 1, Minor: 2, Patch: 3, Prefix: "v"},
 		version.Version{Major: 1, Minor: 2, Patch: 4, Prefix: "v"})
 	if err != nil {
@@ -294,7 +294,7 @@ func TestSetKnownVersionDistinguishesPrefix(t *testing.T) {
 
 func TestSetKnownVersionNotFound(t *testing.T) {
 	in := []byte("only 1.2.3 here\n")
-	_, err := SetKnownVersion(in,
+	_, err := SetKnownVersion(in, TextCandidates(in),
 		version.Version{Major: 9, Minor: 9, Patch: 9},
 		version.Version{Major: 9, Minor: 9, Patch: 10})
 	if !errors.Is(err, ErrVersionNotFound) {
@@ -325,7 +325,7 @@ func repls(t *testing.T, pairs ...string) []Replacement {
 // every occurrence of each and leaving unrelated version-like tokens alone.
 func TestSetKnownVersions(t *testing.T) {
 	in := []byte("app 1.2.3\nlib 2.0.0\napp 1.2.3 again\nkeep 4.5.6\n")
-	out, counts := SetKnownVersions(in, repls(t, "1.2.3", "1.2.4", "2.0.0", "2.0.1"))
+	out, counts := SetKnownVersions(in, TextCandidates(in), repls(t, "1.2.3", "1.2.4", "2.0.0", "2.0.1"))
 	want := "app 1.2.4\nlib 2.0.1\napp 1.2.4 again\nkeep 4.5.6\n"
 	if string(out) != want {
 		t.Errorf("SetKnownVersions = %q, want %q", out, want)
@@ -343,7 +343,7 @@ func TestSetKnownVersions(t *testing.T) {
 // exactly once rather than turning the first token into the second's input.
 func TestSetKnownVersionsNoCascade(t *testing.T) {
 	in := []byte("first 1.2.3 then 1.2.4\n")
-	out, counts := SetKnownVersions(in, repls(t, "1.2.3", "1.2.4", "1.2.4", "1.2.5"))
+	out, counts := SetKnownVersions(in, TextCandidates(in), repls(t, "1.2.3", "1.2.4", "1.2.4", "1.2.5"))
 	want := "first 1.2.4 then 1.2.5\n"
 	if string(out) != want {
 		t.Errorf("SetKnownVersions = %q, want %q", out, want)
@@ -357,7 +357,7 @@ func TestSetKnownVersionsNoCascade(t *testing.T) {
 // out-of-sync config.
 func TestSetKnownVersionsMissingToken(t *testing.T) {
 	in := []byte("only 1.2.3 here\n")
-	out, counts := SetKnownVersions(in, repls(t, "1.2.3", "1.2.4", "9.9.9", "9.9.10"))
+	out, counts := SetKnownVersions(in, TextCandidates(in), repls(t, "1.2.3", "1.2.4", "9.9.9", "9.9.10"))
 	if want := "only 1.2.4 here\n"; string(out) != want {
 		t.Errorf("SetKnownVersions = %q, want %q", out, want)
 	}
@@ -668,7 +668,7 @@ func TestFindVersionWholeToken(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := FindVersion([]byte(tt.in))
+			got, err := FindVersion(TextCandidates([]byte(tt.in)))
 			if err != nil {
 				t.Fatalf("FindVersion(%q): %v", tt.in, err)
 			}
@@ -688,7 +688,7 @@ func TestSetKnownVersionDistinguishesPrerelease(t *testing.T) {
 	bare := version.Version{Major: 1, Minor: 2, Patch: 3}
 	next := version.Version{Major: 1, Minor: 2, Patch: 4}
 
-	got, err := SetKnownVersion(in, pre, next)
+	got, err := SetKnownVersion(in, TextCandidates(in), pre, next)
 	if err != nil {
 		t.Fatalf("SetKnownVersion(prerelease): %v", err)
 	}
@@ -696,7 +696,7 @@ func TestSetKnownVersionDistinguishesPrerelease(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 
-	got, err = SetKnownVersion(in, bare, next)
+	got, err = SetKnownVersion(in, TextCandidates(in), bare, next)
 	if err != nil {
 		t.Fatalf("SetKnownVersion(release): %v", err)
 	}
@@ -709,7 +709,7 @@ func TestSetKnownVersionDistinguishesPrerelease(t *testing.T) {
 // can be rewritten in the same pass without either matching the other.
 func TestSetKnownVersionsDistinguishesPrerelease(t *testing.T) {
 	in := []byte("preview: 1.2.4-rc.1\nstable: 1.2.3\n")
-	got, counts := SetKnownVersions(in, repls(t, "1.2.4-rc.1", "1.2.4-rc.2", "1.2.3", "1.2.4"))
+	got, counts := SetKnownVersions(in, TextCandidates(in), repls(t, "1.2.4-rc.1", "1.2.4-rc.2", "1.2.3", "1.2.4"))
 	if want := "preview: 1.2.4-rc.2\nstable: 1.2.4\n"; string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -724,7 +724,7 @@ func TestSetKnownVersionsDistinguishesPrerelease(t *testing.T) {
 // a generic (unpinned) replacement is ambiguous rather than silently guessing.
 func TestFindVersionPrereleaseAndBareAreAmbiguous(t *testing.T) {
 	var ambiguous *AmbiguousError
-	if _, err := FindVersion([]byte("1.2.3-rc.1 and 1.2.3\n")); !errors.As(err, &ambiguous) {
+	if _, err := FindVersion(TextCandidates([]byte("1.2.3-rc.1 and 1.2.3\n"))); !errors.As(err, &ambiguous) {
 		t.Fatalf("err = %v, want *AmbiguousError", err)
 	}
 }
@@ -757,7 +757,7 @@ func TestSetVersionPreservesReleaseFilenames(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cur, err := FindVersion([]byte(tt.in))
+			cur, err := FindVersion(TextCandidates([]byte(tt.in)))
 			if err != nil {
 				t.Fatalf("FindVersion: %v", err)
 			}
@@ -765,7 +765,7 @@ func TestSetVersionPreservesReleaseFilenames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BumpPatch: %v", err)
 			}
-			got, err := SetVersion([]byte(tt.in), next)
+			got, err := SetVersion([]byte(tt.in), TextCandidates([]byte(tt.in)), next)
 			if err != nil {
 				t.Fatalf("SetVersion: %v", err)
 			}
@@ -781,7 +781,7 @@ func TestSetVersionPreservesReleaseFilenames(t *testing.T) {
 // differently in the same pass.
 func TestSetKnownVersionsMixedFilenameAndPrerelease(t *testing.T) {
 	in := []byte("version = \"1.2.3-rc.1\"\nasset: incrmit-1.2.3-linux-amd64.tar.gz\n")
-	got, counts := SetKnownVersions(in, repls(t, "1.2.3-rc.1", "1.2.3-rc.2", "1.2.3", "1.2.4"))
+	got, counts := SetKnownVersions(in, TextCandidates(in), repls(t, "1.2.3-rc.1", "1.2.3-rc.2", "1.2.3", "1.2.4"))
 	want := "version = \"1.2.3-rc.2\"\nasset: incrmit-1.2.4-linux-amd64.tar.gz\n"
 	if string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -837,7 +837,7 @@ func TestSetKnownVersionsConsumesPinnedSuffixInFilenames(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := SetKnownVersions([]byte(tt.in), repls(t, tt.pairs...))
+			got, _ := SetKnownVersions([]byte(tt.in), TextCandidates([]byte(tt.in)), repls(t, tt.pairs...))
 			if string(got) != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
@@ -882,7 +882,7 @@ func TestSetKnownVersionsPinnedSuffixBoundaries(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := SetKnownVersions([]byte(tt.in), repls(t, tt.pairs...))
+			got, _ := SetKnownVersions([]byte(tt.in), TextCandidates([]byte(tt.in)), repls(t, tt.pairs...))
 			if string(got) != tt.want {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
@@ -894,7 +894,7 @@ func TestSetKnownVersionsPinnedSuffixBoundaries(t *testing.T) {
 // suffixed one wins: it is the pin that says the suffix belongs to the version.
 func TestSetKnownVersionsPrefersTheSuffixedPin(t *testing.T) {
 	in := []byte("asset: app-1.2.3-rc.1.zip\nplain: 1.2.3\n")
-	got, counts := SetKnownVersions(in, repls(t,
+	got, counts := SetKnownVersions(in, TextCandidates(in), repls(t,
 		"1.2.3", "1.2.4",
 		"1.2.3-rc.1", "1.2.4",
 	))

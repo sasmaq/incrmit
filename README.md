@@ -8,6 +8,8 @@ or more files and increments it, keeping them all in sync (increment + commit).
 ## Features
 
 - Discovers files containing version strings and generates a config for you.
+- Reads `.json` and `.toml` files by their format, so a version inside a URL,
+  a range such as `^18.3.1`, or a comment is never mistaken for the project's.
 - Bumps the major, minor, or patch component in every configured file at once.
 - Handles prereleases: start or advance one with `--pre rc`, promote it with
   `--release`.
@@ -165,7 +167,19 @@ or you can write it by hand:
 
 Paths are relative to the config file. `version` pins the exact value to bump,
 which matters when a file holds several version-like strings. After each bump
-`incrmit` rewrites the config with the new versions. An optional `ignore` list
+`incrmit` rewrites the config with the new versions.
+
+A `.json` or `.toml` file is read by its format: a version counts only where it
+is a whole string value, such as `"version": "1.2.3"`, so a `$schema` URL, a
+dependency range, or a TOML comment holding a version is left alone. Every
+other file is scanned as text, where any version token counts. An entry's
+optional `parser` key (`"json"`, `"toml"`, or `"text"`) chooses for that file,
+for a `tsconfig.json` with comments or TOML under another name such as
+`Pipfile`. `discover` scans a `.json` or `.toml` file that does not parse as
+text and writes `parser = "text"` into its entries; a bump never guesses, and
+an entry whose parser cannot read its file fails with nothing written. A
+dependency pinned at the project's version (`"left-pad": "1.2.3"`) is a whole
+string value too, so it is still bumped along with it. An optional `ignore` list
 tells `discover` which folders and files to skip; its patterns are relative to
 the config file too. `discover` writes every path relative to the config it
 writes, so `incrmit discover --path src -o release/incrmit.toml` lists

@@ -58,9 +58,13 @@ A prerelease or build section is recorded in its own key rather than inside
   prerelease = "rc.1"   # the file holds 1.2.3-rc.1
 ```
 
+An entry may also set `parser` to choose how its file is read: `"json"`,
+`"toml"`, or `"text"`. Omitted, the file's extension decides (see
+[How a file is read](#how-a-file-is-read)).
+
 That rewrite regenerates the file from its parsed contents in a fixed layout, so
-your `[[files]]` entries and `ignore` list are preserved but hand-written
-comments and custom formatting are not. Keep notes you want to survive a bump
+your `[[files]]` entries (with their `parser`) and `ignore` list are preserved
+but hand-written comments and custom formatting are not. Keep notes you want to survive a bump
 outside `incrmit.toml`.
 
 A `--dry-run` previews the change and writes nothing — neither the targets
@@ -132,6 +136,94 @@ follows from that:
   regular file, as described above.)
 - **Ownership, extended attributes, and ACLs** are those of a new file created
   by the user running `incrmit`, not the original's.
+
+### How a file is read
+
+Which occurrences of a version count depends on the file's format, which
+`incrmit` takes from its extension, ignoring case:
+
+| File          | Read as | A version counts where      |
+| ------------- | ------- | --------------------------- |
+| `*.json`      | JSON    | it is a whole string value  |
+| `*.toml`      | TOML    | it is a whole string value  |
+| anything else | text    | any version token appears   |
+
+In a JSON or TOML file, `"version": "1.2.3"` and `version = "v1.2.3"` count, and
+so does a version in an array (`["1.2.3"]`). A version inside a longer string
+does not (a `$schema` URL, a range such as `"^18.3.1"` or `">=20.0.0"`, a
+description), and neither does one in a comment, in a key, or in a multi-line
+string holding other text. Each occurrence that counts knows the key it sits
+under, written the way TOML writes a dotted key (`package.version`,
+`dependencies.serde.version`, `bin[0].version`, and `"a.b"` for one key holding
+a dot), and `discover --dry-run` prints it next to the line number.
+
+A dependency pinned at the project's version is a whole string value as well
+(`"left-pad": "1.2.3"`, `serde = "1.0.200"`), so it still counts, and is bumped
+along with the project's version.
+
+A value that is a version only once its escapes are decoded, such as
+`"1\u002e2.3"`, does not count: `incrmit` rewrites a version's bytes in place
+and never re-encodes a string. `discover --dry-run` lists it as skipped.
+
+Set `parser` on an entry to choose for yourself:
+
+```toml
+[[files]]
+  path = "tsconfig.json"   # JSON with comments, which is not JSON
+  version = "5.4.2"
+  parser = "text"
+
+[[files]]
+  path = "Pipfile"         # TOML under another name
+  version = "1.2.3"
+  parser = "toml"
+```
+
+The values are `"json"`, `"toml"`, and `"text"`, spelled exactly; anything else
+is a config error naming the entry (exit `1`). Omitting the key means "by
+extension", so every config written before the key existed still loads.
+Entries listing the same file must agree on its parser, since the file is read
+once. A bump keeps each entry's `parser` when it rewrites the config.
+
+**When a file does not parse.** `discover` scans a `.json` or `.toml` file its
+parser cannot read as text, says why in the dry run, and writes
+`parser = "text"` into its entries, so a bump reads the file the way `discover`
+did:
+
+```text
+  tsconfig.json: not JSON (line 2: invalid character '/' looking for beginning of object key string), scanned as text
+    L3: "version": "5.4.2"
+```
+
+A bump never falls back. An entry whose parser cannot read its file fails while
+planning, with exit `3` and nothing written, naming the file and the line:
+
+```text
+incrmit: package.json: not JSON (line 4: invalid character '}' looking for beginning of object key string); to read it as text, set parser = "text" on its [[files]] entry
+```
+
+A file that parsed when `discover` ran and no longer does has changed shape, and
+guessing is how a bump goes wrong silently. A `--file` target has no entry
+recording how it was read, so it is read the way `discover` would read it for
+the first time: by its extension, falling back to text with a note on stderr.
+
+A TOML file can also be refused because `incrmit` cannot be sure where its
+versions are. It is read with the same library as the config, which accepts a
+few things the TOML specification forbids, chiefly a key defined twice
+(`a.b = "x"` followed by `a = "y"`), of which it silently keeps the first. In
+such a file, and in one that names an array of tables after a version more
+than once (`[[1.2.3]]`), the message reads `TOML whose versions incrmit cannot
+place`. Fix the file, or set `parser = "text"`.
+
+**Configs written by an earlier version.** An entry for a `.json` or `.toml`
+file now matches only whole string values, so an entry an older `discover`
+wrote for a version that appeared only in a URL, a range, or a comment finds
+nothing. The bump fails with `expected version not found` (exit `3`) before it
+writes anything. None of those versions was the project's: run
+`incrmit discover` again to regenerate the config, or set `parser = "text"` on
+an entry to keep the old behavior for that file. `undo` reads each file with the
+parser the bump used, which the state file records, so a bump made by an earlier
+version is undone as text, the way it was made.
 
 ### Ignoring folders and files
 
@@ -409,10 +501,11 @@ the project for files that contain a semantic version string and generate an
 Discovery walks the directory tree and inspects the contents of every text
 file, recording every `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]` token it
 finds in each — the whole token, so a prerelease target survives a
-regeneration of the config exactly as written in the file. It is
-not limited to specific file names or types — any file (`VERSION`,
-`package.json`, `pyproject.toml`, `Cargo.toml`, source files, plain text,
-etc.) is matched the same way.
+regeneration of the config exactly as written in the file. It is not limited to
+specific file names: `VERSION`, source files, plain text, and anything else is
+scanned. A file's name decides only how it is read: a `.json` or `.toml` file
+by its format, where only a whole string value counts, and anything else as
+text (see [How a file is read](#how-a-file-is-read)).
 
 A file may contain a version in more than one place. Discovery captures every
 occurrence and records **one `[[files]]` entry per distinct version**: if all
@@ -505,14 +598,22 @@ Wrote release/incrmit.toml with 1 file(s):
 ```
 
 `--dry-run` prints each occurrence it finds, with its line number and the text
-of the line for context, rather than writing the config:
+of the line for context, rather than writing the config. In a JSON or TOML
+file, each occurrence's key comes after its line number:
 
 ```text
-Discovered 1 file(s) under . (no config written):
+Discovered 2 file(s) under . (no config written):
+  Cargo.toml:
+    L3 package.version: version = "0.4.0" # was 0.3.9
+    L8 dependencies.anyhow.version: anyhow = { version = "0.4.0" }
   notes.md:
     L1: release 1.2.3
     L5: legacy 2.0.0
 ```
+
+A file read as text when its name says JSON or TOML is headed by the reason
+(`tsconfig.json: not JSON (line 2: ...), scanned as text`), and the summary of
+a real run marks its entries `(not JSON, scanned as text)`.
 
 Line numbers count `\n`, `\r\n`, and a lone `\r` as line breaks, so they match
 what an editor shows whatever the file's line endings. A long line — a minified
@@ -564,7 +665,7 @@ incrmit discover --output release/incrmit.toml
 `--output` may name a file that does not exist yet, an empty file, or an
 `incrmit` config, which is regenerated with its `ignore` list kept. A config
 here means TOML that sets only the keys `incrmit` uses (`ignore`, and `files`
-with its `path`, `version`, `prerelease`, and `build`), so every config
+with its `path`, `version`, `prerelease`, `build`, and `parser`), so every config
 `incrmit` writes qualifies, and so does a hand-written one. Anything else is
 refused with exit `1` before the scan, and left exactly as it was:
 
@@ -750,6 +851,11 @@ A few details worth knowing:
   new bump refuses to run, because the config no longer matches the files, and
   points at `undo`. `undo` is protected the same way: one that fails puts the
   files back, and one that stops partway can simply be run again.
+- **Undo reads each file as the bump did.** The state file records the parser
+  the bump read each file with, and `undo` uses it rather than the config's
+  `parser`, so the same occurrences are put back. An entry written before the
+  parser was recorded is read as text, which is how that bump was made. A file
+  that parser cannot read any more is refused (exit `3`), with nothing written.
 - **Nothing to undo is not an error.** With no recorded history, `undo` prints a
   friendly message and exits `0`.
 - **`--dry-run` previews the revert** (`new -> old`) without writing anything.
@@ -915,12 +1021,12 @@ is empty.
 `incrmit` returns predictable exit codes so it can be used reliably in
 scripts and CI pipelines:
 
-| Code | Meaning                                                                       |
-| ---- | ----------------------------------------------------------------------------- |
-| 0    | Success.                                                                      |
-| 1    | Generic runtime error (e.g. missing config, filesystem error).                |
-| 2    | Invalid arguments or flags.                                                   |
-| 3    | No version found, an ambiguous/unparseable version, or one too large to bump. |
+| Code | Meaning                                                                                                   |
+| ---- | --------------------------------------------------------------------------------------------------------- |
+| 0    | Success.                                                                                                  |
+| 1    | Generic runtime error (e.g. missing config, filesystem error).                                            |
+| 2    | Invalid arguments or flags.                                                                               |
+| 3    | No version found, an ambiguous/unparseable version, a file its parser cannot read, or one too large to bump. |
 
 A run that finds the project already held by another `incrmit` also exits `1`,
 having written nothing — see [Concurrent runs](#concurrent-runs).

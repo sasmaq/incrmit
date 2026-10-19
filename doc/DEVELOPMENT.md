@@ -14,7 +14,8 @@ must share the same version number and be incremented together.
 In scope:
 
 - Parsing semantic versions (`[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`) from
-  text files.
+  text files, and reading JSON and TOML files by their format so that only a
+  whole string value counts as a version there.
 - Incrementing the major, minor, or patch component.
 - Promoting a prerelease to its release (`--release`) and starting or advancing
   one (`--pre`).
@@ -108,7 +109,10 @@ packages:
 - `version` — parses semantic versions and applies major/minor/patch bumps,
   prerelease promotion, and prerelease iteration.
 - `discovery` — walks the filesystem, detects version strings, and emits config.
-- `files` — reads and writes target files, replacing only the version token.
+- `files` — reads and writes target files, replacing only the version token,
+  and locates the versions in a file with a parser chosen for its format (text,
+  JSON, or TOML). The parser is the seam every command takes its ranges from
+  (see [section 9.6](#96-parsers-reading-json-and-toml-by-format)).
 - `lock` — takes one exclusive advisory lock per project so only one `incrmit`
   writes to it at a time (see [section 8.6](#86-concurrency-one-writer-per-project)).
 - `output` — formats human-readable results and dry-run previews.
@@ -126,6 +130,7 @@ path = "VERSION"
 version = "1.2.3"     # optional; populated by `discover`
 prerelease = "rc.1"   # optional; the section after "-" in the file's token
 build = "exp.sha.5"   # optional; the section after "+"
+parser = "text"       # optional; "json", "toml", or "text" (default: by extension)
 ```
 
 A semver token is stored in three keys rather than one string: `version` holds
@@ -176,8 +181,23 @@ type FileEntry struct {
     Version    string `toml:"version,omitempty"`
     Prerelease string `toml:"prerelease,omitempty"`
     Build      string `toml:"build,omitempty"`
+    Parser     string `toml:"parser,omitempty"`
 }
 ```
+
+`parser` (Milestone 39) chooses how the entry's file is read
+(`FileEntry.FileParser`): `"json"`, `"toml"`, or `"text"`, spelled exactly.
+Omitted, the extension decides (`files.ParserFor`), which is what every config
+written before the key existed means, so they all still load. It is there for
+a `.json` file with comments (`tsconfig.json`, VS Code's `settings.json`) to be
+read as text, and for TOML under another name (`Pipfile`) to be read as TOML.
+An unknown value is a config error naming the entry, and entries that list one
+path must agree on its parser, however each spells it, since the file is read
+once and rewritten in one pass. `discover` writes the key only when it differs
+from the extension's choice, which is a `.json` or `.toml` file it scanned as
+text, and a bump's config rewrite carries each entry's value through
+(`config.EntryFor` builds an entry without it, so `bumpedConfig` sets it).
+Declaring the field is all `LoadIgnore`'s known-key check needed.
 
 `config.LoadIgnore` reads only the `ignore` list, without validating the listed
 targets, so `discover` can honor a stale config's patterns. It is also where
@@ -230,6 +250,13 @@ landed (see [section 8.7](#87-crash-safety-all-or-nothing-across-files)).
 - **`--file` mode records nothing:** a single-file bump has no config-anchored
   location to keep or later find the state file, so no history is written and
   `undo` is a config-mode operation only.
+- **Parser:** each change records the parser the bump read its file with
+  (Milestone 39), and `undo` reads the file with that parser rather than the
+  one the config names now, so it reverts the occurrences the bump wrote. An
+  entry written before the field existed was written by the text scanner, so a
+  missing `parser` is read as text. A parser this version does not know, or
+  two for one file, refuses the undo instead of guessing; a bump only pushes
+  onto the journal, so it does not check.
 - **Status:** `pending` marks an entry whose changes a run was writing when it
   stopped (or is writing now), so each file may hold either side of its
   change; `complete` marks a bump that wrote them all. An undo marks the entry
@@ -249,6 +276,7 @@ type Change struct {
     Path string `toml:"path"` // the path exactly as the config lists it
     Old  string `toml:"old"`  // version token before the bump
     New  string `toml:"new"`  // version token after the bump
+    Parser string `toml:"parser,omitempty"` // "json", "toml", or "text"; "" is text
 }
 
 type Entry struct {
@@ -511,17 +539,24 @@ list every flag without duplicating the flag text.
 5. Group config entries by file (a file listed once per distinct version is a
    single group) and read each file once, refusing one larger than
    `--max-file-size` when a cap is set (see
-   [section 9.1](#91-scan-boundaries)). For every entry, determine the old
-   version (from the config `version`, or by scanning the file when none is
-   recorded) and apply the bump to get the new version. A bump that fails for
+   [section 9.1](#91-scan-boundaries)), and locate its candidates with the
+   entry's parser (see
+   [section 9.6](#96-parsers-reading-json-and-toml-by-format)). An entry whose
+   parser cannot read its file fails here with exit `3`, never falling back to
+   text; a `--file` target, which has no entry, falls back with a note. For
+   every entry, determine the old version (from the config `version`, or the
+   one version among the candidates when none is recorded) and apply the bump
+   to get the new version. A bump that fails for
    one entry (`--release` on a version with no prerelease, or a number already
    at `math.MaxInt`; see [section 9.2](#92-prerelease-and-build-metadata))
    fails the whole command here, before anything is written. If the newest
    journal entry is `pending`, a failure here also says to run `incrmit undo`:
    a run that stopped partway is the likeliest reason the config and the files
    disagree.
-6. Compute the bytes each file will hold, replacing all of its known version
-   tokens in a single pass (`files.SetKnownVersions`). A single pass over the
+6. Compute the bytes each file will hold, replacing every candidate holding one
+   of its pinned versions in a single pass (`files.Rewrite`, which applies
+   `files.SetKnownVersions` and, for JSON and TOML, decodes the result to check
+   that exactly the planned values changed, to the planned versions). A single pass over the
    original bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4`
    alongside `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering
    another's when two versions live in the same file. A pinned version the
@@ -529,7 +564,8 @@ list every flag without duplicating the flag text.
    used to run as each file was written, so a config out of sync with its
    third file left the first two bumped. In config mode, render the config too:
    each entry's `version` set to the new value (one entry per distinct version
-   per file), keeping the config in sync for the next run. It is regenerated
+   per file, each keeping its `parser`), keeping the config in sync for the
+   next run. It is regenerated
    through `config.Marshal`, so the `[[files]]` entries and `ignore` list
    survive but user-authored comments and formatting do not. The output is
    deterministic: the same config bumped twice produces byte-identical layout.
@@ -591,15 +627,22 @@ list every flag without duplicating the flag text.
    `excludeOutput` then drops the result that is `--output` itself, which is
    the one whose path `config.TargetPath` resolves to `--output`, exactly as a
    bump would.
-4. For each candidate file, extract *every* semantic version occurrence,
-   recording each one's line number and the trimmed text of its line
-   (`discovery.Occurrence`). A file with at least one occurrence becomes a
+4. For each candidate file, extract *every* semantic version occurrence its
+   parser finds (the one its name selects, see
+   [section 9.6](#96-parsers-reading-json-and-toml-by-format)), recording each
+   one's line number, the trimmed text of its line, and its key path
+   (`discovery.Occurrence`). A `.json` or `.toml` file its parser cannot read
+   is scanned as text, and the `Result` keeps the parser's error as
+   `Fallback`; values skipped because they hold a version only once decoded
+   are kept as `Skipped`, for the dry run. A file with at least one occurrence becomes a
    `Result`. Only regular files no larger than the scan cap
    (`--max-file-size`, default `discovery.DefaultMaxScanBytes` = 32 MiB) are
    read; see [section 9.1](#91-scan-boundaries).
 5. Turn results into config entries: one `[[files]]` entry per distinct version
    in each file (first-seen order), so identical repeats collapse and differing
-   versions each get an entry sharing the path. The `ignore` list is written
+   versions each get an entry sharing the path. An entry records `parser` only
+   when the file was read with a parser other than its extension's, which is a
+   fallback to text, so a bump reads the file the way discover did. The `ignore` list is written
    back verbatim so regeneration never drops it (a bump preserves it the same
    way when it rewrites the config). A description of the `ignore` option is
    always written above it; when there are no patterns yet, a commented-out
@@ -607,8 +650,12 @@ list every flag without duplicating the flag text.
    discoverable from a freshly written config. The comment block
    (`config.IgnoreComment`) is shared by both the discover generation and the
    bump-time rewrite (`config.Marshal`) so both files carry identical guidance.
-6. If `--dry-run`, print each occurrence with its line number and context,
-   then exit. When `--path` and `--output`'s directory differ
+6. If `--dry-run`, print each occurrence with its line number, its key (for
+   JSON and TOML, `L3 package.version: ...`), and context, then exit. A file
+   that fell back is headed by the reason (`tsconfig.json: not JSON (line 2:
+   ...), scanned as text`), and a skipped value gets a line saying why. A file
+   whose only versions were skipped is listed by the dry run but gives the
+   config no entry. When `--path` and `--output`'s directory differ
    (`discovery.SameDir`), a `(paths relative to <output>)` line comes first,
    since the paths listed are then not relative to the directory in the
    heading; the applied ignore rules follow on an `(ignoring: …)` line.
@@ -675,7 +722,8 @@ directory.
    at neither, or split between the two, is refused.
 5. Resolve each recorded `path` against the config's directory
    (`config.TargetPath`, as `resolveTargets` does for a bump). Read every
-   recorded file once, group its changes, and build the reverse
+   recorded file once, with the parser the journal records for it (text for an
+   entry written before Milestone 39), group its changes, and build the reverse
    (`new -> old`) replacement in a single pass (`files.SetKnownVersions`), so
    overlapping reverts do not cascade. If a file no longer contains the recorded
    `new` token, it was edited since the bump — or another run bumped past it,
@@ -911,9 +959,11 @@ the next `undo` writes nothing and only pops the entry.
 ## 9. Version Detection Strategy
 
 - `version.FindTokens` is the single definition of where a version begins and
-  ends. Both `discovery` (scanning) and `files` (rewriting) call it, so the two
-  cannot disagree about what counts as a token — they used to hold identical
-  copies of the pattern, which is exactly the kind of duplication that drifts.
+  ends. Both `discovery` (scanning) and `files` (rewriting) take their tokens
+  from it, through the parsers of
+  [section 9.6](#96-parsers-reading-json-and-toml-by-format), so the two cannot
+  disagree about what counts as a token — they used to hold identical copies
+  of the pattern, which is exactly the kind of duplication that drifts.
   It matches candidates with:
 
   ```text
@@ -1187,11 +1237,17 @@ Two consequences worth knowing:
   separate config field is needed. A `v`-prefixed token and its bare form are
   therefore distinct tokens (a file containing both `v1.2.3` and `1.2.3` is
   ambiguous), and a bump rewrites only the exact written token.
-- Discovery is content-based and format-agnostic: it scans the bytes of every
-  text file, regardless of name or extension, and records every
-  `[v]MAJOR.MINOR.PATCH` token found in each (with its line number and context).
-  Distinct versions in one file become one config entry each; identical repeats
-  collapse to a single entry and are all rewritten together on bump.
+- Discovery is content-based: it scans every text file, whatever its name, and
+  records every candidate the file's parser finds in it (with its line number,
+  context, and key). The name decides only the parser. A `.json` or `.toml`
+  file is read by its format, so there only a whole string value is a
+  candidate, and every other file is scanned as text, where every
+  `[v]MAJOR.MINOR.PATCH` token is one (see
+  [section 9.6](#96-parsers-reading-json-and-toml-by-format)). Before Milestone
+  39 it read every file as text, and a version in a manifest's URL, range, or
+  comment counted the same as its `version` key. Distinct versions in one file
+  become one config entry each; identical repeats collapse to a single entry
+  and are all rewritten together on bump.
 - Binary files (those containing a NUL byte) are skipped so version-like byte
   sequences in compiled artifacts are not matched.
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
@@ -1297,6 +1353,171 @@ tab. It also asserts that every hostile name appears only in its quoted form,
 which is how a print site that forgot `displayName` is found: the writer would
 have kept the output safe, so only that check notices the ambiguity.
 
+### 9.6 Parsers: reading JSON and TOML by format
+
+Until Milestone 39 every file went through the text scanner, which knows
+nothing about the format it reads, so in a JSON or TOML manifest every
+version-shaped run was a candidate: one inside a URL, a dependency range, or a
+comment counted the same as the project's own `version` key. With a
+`package.json` holding `"version": "1.2.3"`, a `$schema` URL with `2.0.0` in its
+path, three dependencies (`1.2.3`, `4.17.21`, `^18.3.1`), and
+`"engines": { "node": ">=20.0.0" }`, next to a `Cargo.toml` whose `version`
+line ends in `# was 0.3.9`, `discover` wrote eight entries, and `--minor`
+moved all eight, the schema URL and the comment included, with exit `0`. Those
+files, and a `pyproject.toml` with the version in its description, a URL, a
+comment, and dependency specifiers, are kept in `internal/files/testdata/repro`.
+
+**The seam.** `files.Parser` (`text`, `json`, `toml`) is the one place a file's
+bytes become candidates. `Parser.Locate` returns each candidate as a byte
+range, its parsed version, and its key path (`files.KeyPath`, nil from the text
+parser), along with the values it skipped. `discovery.scan`,
+`files.FindVersion`, `files.SetKnownVersions`, the bump's planning
+(`readGroups` and `planGroups`, which `preview` shares), and `undo`'s
+`planReverts` all take their ranges from it, and nothing outside `files` calls
+`version.FindTokens` to find a version in a file. So the rule at the top of
+§9 still holds: what discovery records is exactly what a bump rewrites, and
+every command reads a file the same way. The text parser is `FindTokens` plus
+`version.Parse`, unchanged, so every file that is not `.json` or `.toml`
+behaves exactly as before. The JSON and TOML parsers return a subset of the
+text parser's candidates with the same boundaries, so §9's single definition of
+a token holds in those files too; the golden test checks it on every fixture.
+Before this milestone the comment at the top of `files.go` said structured
+detection lived in `discovery`, but nothing there read a format.
+
+**Choosing a parser.** By extension, ignoring case (`files.ParserFor`): `.json`
+gets the JSON parser, `.toml` the TOML parser, and everything else text. An
+entry's `parser` key overrides it (§6.1).
+
+**What counts.** A candidate is a string value, never an object key, whose
+whole content is one token `version.Parse` accepts: `"1.2.3"` and `"v1.2.3"`
+are candidates, and `"^18.3.1"`, `">=20.0.0"`, and a URL holding `2.0.0` are
+not. Each knows its key path, rendered the way TOML writes a dotted key:
+`package.version`, `bin[0].version`, `dependencies."@types/node"`, and `"a.b"`
+for one key holding a dot. A dependency pin (`"left-pad": "1.2.3"`,
+`serde = "1.0.200"`) is a whole string value too, so it is still a candidate;
+Milestone 40 selects the project's version by the key path recorded here.
+
+**JSON.** The standard library's `encoding/json` `Decoder`, walked with
+`Token()` keeping a stack of object keys and array indexes (`walkJSON`). A
+string value's bytes run from the first `"` at or after the `InputOffset`
+before the token (the separators and whitespace ahead of a value come first)
+to the `InputOffset` after it. That needs no dependency:
+`encoding/json/jsontext` reports offsets directly, but it is still behind
+`GOEXPERIMENT=jsonv2` in Go 1.27. `json.Valid` decides whether a file is JSON,
+since the `Decoder` alone would read a second top-level value as a stream
+rather than refuse the file. The decoder rejects a UTF-8 byte-order mark,
+which §9.4 says incrmit keeps, so the parser decodes the bytes after it and
+offsets every range by three. A value whose raw bytes differ from its decoded
+text (an escape such as `\u002e`) is not a candidate, because rewriting it
+would mean re-encoding the string; one that decodes to exactly a version is
+reported as `Skipped`, and the dry run says so. `encoding/json` accepts
+duplicate keys, so both values are candidates under the same key path.
+
+**TOML: probing rather than lexing.** `BurntSushi/toml`, which already reads
+the config, is the only TOML reader. It decides whether a file is TOML and what
+each key holds, but v1.6.0 keeps key positions in an unexported field, so it
+cannot say where a value's bytes are. `locateTOML` finds them by probing:
+replace every token the text parser finds with a placeholder of its own,
+decode the copy once, and walk it (`walkTOML`) through tables, inline tables,
+arrays, and arrays of tables (`bin[0]`). A token whose placeholder is now a
+value's whole text is a candidate at that value's key. One whose placeholder
+is part of a longer string (a URL, a description, a multi-line string) is not,
+and one whose placeholder is in no value was in a comment or a key.
+
+A placeholder is built so the probe is exact:
+
+- It is digits and dots, so it is valid wherever its token was: in any string,
+  in a comment, and in a bare key, whose characters include digits.
+- Each dot-separated segment of the token becomes one run of digits, so a token
+  used as a bare dotted key (`[versions.1.2.3]`) splits into exactly as many
+  keys as it did, and a key path maps back to the file's keys segment by
+  segment (`probe.unmap`), even where a token is welded into a longer bare key
+  (`x-1.2.3`).
+- Every run is one prefix plus a zero-padded counter of fixed width. In a
+  prototype, unpadded placeholders collided (`...1` is a prefix of `...10`),
+  and a comment's token was reported as part of `bin[0].version`.
+- The prefix occurs nowhere in the file, nor in any key or string the file
+  decodes to, since an escape can decode to digits the bytes do not hold. It is
+  `987654321` when that is free, as it nearly always is. Otherwise
+  `absentDigits` builds one a digit at a time, each time taking the digit that
+  fewest runs of digits in the text continue the prefix with: the count falls
+  at least tenfold per digit, so nine digits suffice for any file with fewer
+  than a billion digits, and a file planted with likely prefixes costs nine
+  passes rather than one per candidate.
+
+All tokens share one probe decode. The prototype classified 2,000 tokens in
+under 0.1 s, while one decode per token took 2.8 s at 1,000 and grows
+quadratically; `TestLocateTOMLIsLinearInTokens` locates 5,000.
+
+**The probe is checked before it is trusted.** With every placeholder put back,
+in keys and in strings, the decoded copy must hold exactly the file's scalar
+values, each at the same key, none missing and none extra (`probe.agrees`).
+The first fuzzing run showed why within seconds: `BurntSushi/toml` v1.6.0
+accepts some TOML the specification forbids. `a.b = "x"` followed by `a = "y"`
+decodes without an error, keeping the first definition and silently dropping
+the second. Mask a token in the first key (`1.0.0 = "x"`, then `"1" = "0.0.0"`)
+and the two no longer collide, so the copy held a value the file's own decode
+does not, and the probe reported a candidate whose key held a table. A copy
+that disagrees is refused the way a copy that does not decode is, as TOML
+whose versions incrmit cannot place (exit `3` for a bump, a fallback to text
+for `discover`). It also refuses one valid shape: a version naming an array of
+tables declared more than once (`[[1.2.3]]` twice), because each declaration
+gets its own placeholder and the array splits in two, renumbering its
+elements. Tables themselves are not compared, only scalars, since a table
+named by a token splits harmlessly (`[1.2.3]` and `[1.2.3.x]` become two tables
+in the copy, and every value still maps back to its key).
+
+**Rewrites are checked too.** After planning, `files.Rewrite` decodes the
+rewritten bytes in phase 1 and compares them with the original
+(`checkRewrite`): every value must be as it was except the planned ones, which
+must now hold the planned versions. JSON gets the same check, although its
+offsets come from the decoder itself; it costs two decodes of a small file. A
+rewrite that fails it is refused before anything is written.
+
+**The TOML decision.** A hand-written locator that lexes TOML to find byte
+ranges was the first plan, and `pelletier/go-toml/v2` exposes ranges through
+its `unstable` package. Both were rejected: each is a second TOML reader that
+could disagree with the one the config is read with, and the second is also a
+new dependency with an API marked as subject to change. The probe leaves every
+question of TOML syntax to `BurntSushi/toml`, and the agreement check is what
+keeps that reader's leniencies from becoming a wrong answer.
+
+**When a file does not parse.** `discover` scans a `.json` or `.toml` file its
+parser cannot read as text (`Result.Fallback` holds the `*files.ParseError`),
+writes `parser = "text"` into its entries so a bump uses what discover used,
+and says why in the dry run (`tsconfig.json: not JSON (line 2: invalid
+character '/' ...), scanned as text`). A bump never falls back: an entry whose
+parser cannot read its file fails with exit `3` in phase 1, naming the file and
+the line and suggesting `parser = "text"`, so nothing is written. A file that
+parsed when discover ran and no longer does has changed shape, and guessing is
+how a bump goes wrong silently. A `--file` target (for the bump and for
+`preview`) has no entry recording how it was read, which is the position
+discover is in, so it is read by its extension and falls back to text with a
+note on stderr; that is also what `--file` did before the parsers.
+
+**Existing configs change meaning.** An entry for a `.json` or `.toml` file now
+matches only whole string values, so an entry an older `discover` wrote for a
+version found only in a comment, a URL, or a range (four of the reproduction's
+eight) finds nothing, and the bump exits `3` with the existing "expected
+version not found" error. That check has run in phase 1 since Milestone 38
+(§8.7), so an old config fails with nothing written. None of those versions
+was the project's. `undo` uses the parser the bump used, recorded in the
+journal (§6.2), and reads an older entry that has none as text, which is what
+wrote it.
+
+**Limits.**
+
+- JSON with comments (`tsconfig.json`, VS Code's `settings.json`) and JSON5 are
+  not JSON: such a file is scanned as text, by discover's fallback or by
+  `parser = "text"`.
+- A value written with escapes is never rewritten, even when it decodes to the
+  pinned version.
+- A TOML file the reader accepts but the specification forbids (a key defined
+  twice) can be refused rather than placed, and so can a version naming an
+  array of tables declared twice.
+- A dependency pinned at the project's version still moves with it; that is
+  Milestone 40.
+
 ## 10. Error Handling
 
 - Missing config file: clear message; suggest running `incrmit discover`.
@@ -1310,6 +1531,26 @@ have kept the output safe, so only that check notices the ambiguity.
   counts only up to 9223372036854775807`, write nothing, and exit `3`.
   `--dry-run` fails the same way; `preview` shows the projection as `n/a`.
 - Filesystem/permission errors: surface the underlying error and exit non-zero.
+- A config entry whose parser cannot read its file (see
+  [section 9.6](#96-parsers-reading-json-and-toml-by-format)): report
+  `<path>: not JSON (line <n>: <reason>); to read it as text, set parser =
+  "text" on its [[files]] entry` (or `not TOML`, or `TOML whose versions
+  incrmit cannot place` when the TOML probe is refused) and exit `3` in
+  planning, before anything is written, `--dry-run` and `preview` included. A
+  `--file` target is read as text instead, after a note on stderr
+  (`incrmit: note: <path>: not JSON (...), so it is read as text`).
+- A `parser` value incrmit does not know, or two parsers for one path: report
+  `config: files[<i>] (<path>): unknown parser "<value>"; use "json", "toml",
+  or "text"` (or that the entries read the file two ways) and exit `1`.
+- A rewrite that the phase-1 decode does not confirm (a JSON or TOML value
+  changed that was not planned, or a planned one that did not change): report
+  `<path>: files: the rewrite would change <key>, which was not planned` and
+  exit `1` (`3` when the result no longer parses), with nothing written. This
+  would be a parser bug; the check is there so it cannot reach a file.
+- Undo of a change whose journal `parser` this version does not know, or that
+  records two parsers for one file: refuse and exit `1`. A file the recorded
+  parser cannot read any more: report it, as for a bump, and exit `3`. Nothing
+  is written either way.
 - A target that is not an ordinary file (a named pipe, device, or socket, whether
   named directly or reached through a symlink): report
   `reading <path>: not a regular file` and exit `1`. `files.ReadTarget` checks the
@@ -1386,7 +1627,7 @@ incrmit/
 │   ├── discovery/          # filesystem scan and config generation
 │   ├── history/            # bump journal (state file) for undo
 │   ├── lock/               # per-project advisory lock (one writer at a time)
-│   ├── files/              # read/write helpers
+│   ├── files/              # parsers (text, JSON, TOML) and read/write helpers
 │   ├── buildinfo/          # tool version (stamped via -ldflags)
 │   └── testutil/           # helpers shared by tests in several packages
 ├── doc/
@@ -1481,6 +1722,39 @@ incrmit/
   be written, which must now stop the bump before any target changes. Undo of
   hand-written `pending` entries covers files never written, edited files that
   hold both sides or neither, and configs at neither version or split.
+- The parsers (`internal/files/parser_test.go`). Golden fixtures in
+  `internal/files/testdata`: the existing `package.json`, `package.min.json`,
+  `appsettings.json` (a BOM), and `pyproject.toml`, a `Cargo.toml`, and the
+  reproduction files in `testdata/repro`. Each golden
+  (`testdata/candidates/*.golden`, regenerated with `go test ./internal/files/
+  -update`) lists every token the text parser finds, with the key the file's
+  parser places it at or `(not a candidate)`, so it shows what reading the
+  format excludes; the test also checks that each candidate is one of the text
+  parser's, and rewrites every candidate through `files.Rewrite` and compares
+  the bytes outside them. Table tests cover, for JSON, a BOM, CRLF, minified and
+  tab-indented files, nested arrays, a root array and a root string, duplicate
+  keys, escaped values, keys holding dots, and rejected input with its line;
+  for TOML, dotted keys, a quoted key holding a dot, a quoted key and a bare key
+  that are versions, a token welded into a key, inline tables, a sub-table
+  (`[dependencies.tokio]`), arrays of tables, an array of version strings, a
+  URL, multi-line strings holding `version = "1.2.3"` as text, comments, and
+  escapes. Placeholder collisions get their own: more than ten tokens with
+  comment tokens between them, a file already holding the placeholder text in
+  a comment, a value, a key, or an escape, and a file planted with two thousand
+  likely prefixes. Further tests cover the probe's agreement check, `Rewrite`
+  refusing an unplanned change, and a TOML file of 5,000 tokens located within
+  a deadline.
+- The reproduction and the parser's effect on each command
+  (`internal/cli/parsers_test.go`): `discover --dry-run`, the config `discover`
+  writes, and a `--minor` bump compared byte for byte against goldens
+  (`internal/cli/testdata/repro_*.golden`), then an `undo` back to the original
+  bytes. Also discover's fallback writing `parser = "text"` and a bump keeping
+  it, a bump refusing a file its parser cannot read with every file unchanged,
+  the `parser` override in both directions, an unknown `parser` value, a config
+  written before the parsers failing in phase 1 with every file unchanged, undo
+  reading each file with the journal's parser (and an older entry's as text),
+  `--file` and `preview --file` reading by format, and escaped values in the dry
+  run.
 - Fuzz targets over the parsers, the rewriter, discovery's scan, and the
   terminal escaping (§12.1).
 
@@ -1538,6 +1812,15 @@ What each target proves:
   and its context holds the token, no line terminator, and no more than the
   context window. The scan finds lines with a forward-only cursor to stay linear
   on minified files, and a cursor has state for `\r\n` to be counted twice in.
+- `files.FuzzLocateJSON` / `files.FuzzLocateTOML` — for any input the decoder
+  accepts, every candidate's bytes are exactly the string the decoder reports
+  at the candidate's key path, and rewriting one candidate with a version of a
+  different length, then decoding again, changes that key and no other. The
+  reference reads the document independently of the parser's own walk: a
+  recursive `Decoder` read that keeps duplicate keys for JSON, and a map lookup
+  in a plain `toml.Decode` for TOML. Input the decoder rejects must be refused,
+  never panicked on, and TOML the decoder accepts may be refused only with the
+  probe's own error. The corpora are seeded with the golden fixtures.
 - `cli.FuzzDisplayName` / `cli.FuzzTerminalText` — a rendered name is
   printable and reads back, with `strconv.Unquote` when quoted, to the one name
   it came from, which is what makes the rendering injective; and escaped text
@@ -1604,6 +1887,15 @@ then no command could find it. It is the limit that sits beside the two
 spellings `Parse` refuses: every number incrmit counts stops at
 9223372036854775807, and a bump past it is refused (§9.2). `FuzzBump`, seeded
 with each component and a prerelease counter at the boundary, now guards it.
+
+Milestone 39's first run of `FuzzLocateTOML` found, within seconds, that the
+TOML reader is more lenient than the specification. `#00`, `1.0.0= "00000"`,
+`"1"="0.0.0"` decodes without an error, the second definition of `1` silently
+dropped, and with the first key's token masked the probe no longer saw the
+collision, so it reported a candidate at a key that held a table. The probe now
+checks its answer against the file's own decode and refuses the file when they
+differ (§9.6). The input is kept as
+`internal/files/testdata/fuzz/FuzzLocateTOML/key_defined_twice_hidden_by_masking`.
 
 ## 13. Build and Release
 

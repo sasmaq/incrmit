@@ -53,11 +53,15 @@ import (
 const MaxEntries = 20
 
 // Change is a single version-token rewrite within one file during a bump: the
-// path exactly as the config lists it, and the old and new version tokens.
+// path exactly as the config lists it, the old and new version tokens, and
+// the parser the bump read the file with (see files.Parser), which undo reads
+// it with too. Entries written before the parser was recorded were written by
+// the text scanner, so an empty Parser means text.
 type Change struct {
-	Path string `toml:"path"`
-	Old  string `toml:"old"`
-	New  string `toml:"new"`
+	Path   string `toml:"path"`
+	Old    string `toml:"old"`
+	New    string `toml:"new"`
+	Parser string `toml:"parser,omitempty"`
 }
 
 // The values Entry.Status takes.

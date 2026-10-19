@@ -41,6 +41,8 @@ func FuzzLoad(f *testing.F) {
 	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  version = \"not-a-version\"\n"))
 	f.Add([]byte("[[files]]\n  path = \"missing.txt\"\n"))
 	f.Add([]byte("[[files]]\n  path = \"\"\n"))
+	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  parser = \"toml\"\n"))
+	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  parser = \"yaml\"\n"))
 	f.Add([]byte("files = 3\n"))
 	f.Add([]byte("ignore = [\"\"]\n[[files]]\n  path = \"app.txt\"\n"))
 	f.Add([]byte(""))
@@ -93,6 +95,9 @@ func FuzzLoad(f *testing.F) {
 		for i, fe := range cfg.Files {
 			if fe.Path == "" {
 				t.Errorf("Load accepted files[%d] with an empty path: %q", i, data)
+			}
+			if _, err := fe.FileParser(); err != nil {
+				t.Errorf("Load accepted files[%d] with a parser incrmit does not know: %q", i, data)
 			}
 			if fe.Version == "" && (fe.Prerelease != "" || fe.Build != "") {
 				t.Errorf("Load accepted files[%d] pinning a prerelease/build with no version: %q", i, data)

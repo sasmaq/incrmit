@@ -6,3 +6,5 @@
 # written rather than normalizing them to LF.
 internal/files/testdata/*.input -text
 internal/files/testdata/*.golden -text
+internal/files/testdata/repro/* -text
+internal/files/testdata/candidates/* -text

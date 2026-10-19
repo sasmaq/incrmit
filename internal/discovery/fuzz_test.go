@@ -5,6 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sasmaq/incrmit/internal/files"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -29,7 +30,7 @@ func FuzzScan(f *testing.F) {
 	f.Add(append(bytes.Repeat([]byte("版"), 60), []byte(" 1.2.3 \xA9\xA9\xA9")...))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		occ := scan(data)
+		occ := scan(data, files.TextCandidates(data))
 
 		var starts []int
 		for _, loc := range version.FindTokens(data) {

@@ -1,0 +1,7 @@
+parser: json
+L2	2.0.0	(not a candidate)
+L4	1.2.3	version
+L6	1.2.3	dependencies.left-pad
+L7	4.17.21	dependencies.lodash
+L8	18.3.1	(not a candidate)
+L10	20.0.0	(not a candidate)

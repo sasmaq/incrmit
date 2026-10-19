@@ -1,0 +1,10 @@
+parser: toml
+L3	1.2.3	package.version
+L5	1.70.0	package.rust-version
+L6	1.2.3	(not a candidate)
+L7	1.2.3	(not a candidate)
+L10	1.0.200	dependencies.serde.version
+L11	0.4.21	dependencies.log
+L14	1.37.0	dependencies.tokio.version
+L26	1.2.3	(not a candidate)
+L28	1.2.3	(not a candidate)

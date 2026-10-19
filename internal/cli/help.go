@@ -146,7 +146,26 @@ const discoverHelp = `usage: incrmit discover [flags]
 Scan a directory tree for version-bearing files and generate a config.
 
 Flags:
-` + discoverFlags + pathsNote + outputNote + sizeNote + concurrencyNote
+` + discoverFlags + parsersNote + pathsNote + outputNote + sizeNote + concurrencyNote
+
+// parsersNote says how discover reads each file, and what the dry run shows of
+// it. It is appended to the discover help, since discover is where a file's
+// parser is first chosen and recorded.
+const parsersNote = `
+A .json or .toml file is read by its format (the extension is compared
+ignoring case): a version counts only where it is a whole string value, such
+as "version": "1.2.3", and never inside a URL, a range such as ^18.3.1, or a
+comment. The dry run prints each one's key next to its line number
+(L3 package.version: ...). Every other file is scanned as text, where any
+version token counts.
+
+A .json or .toml file that does not parse, such as a tsconfig.json with
+comments, is scanned as text instead: the dry run says why, and its entries
+get parser = "text". An entry's parser key ("json", "toml", or "text")
+chooses for that file whatever its name. A bump never falls back: an entry
+whose parser cannot read its file fails with exit 3, naming the line, and
+nothing is written.
+`
 
 // pathsNote says what the paths discover writes are relative to. It is
 // appended to the discover help, where --path and --output live.

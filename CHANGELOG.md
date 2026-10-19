@@ -5,6 +5,45 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- An optional `parser` key on a `[[files]]` entry (`"json"`, `"toml"`, or
+  `"text"`) chooses how its file is read: `"text"` for a `.json` file with
+  comments such as `tsconfig.json`, and `"toml"` for TOML under another name
+  such as `Pipfile`. Omitted, the extension decides. `discover` scans a `.json`
+  or `.toml` file that does not parse as text, writes `parser = "text"` into
+  its entries, and says why in `--dry-run`, which also prints each JSON or
+  TOML occurrence's key next to its line number (`L3 package.version: ...`). A
+  bump never falls back to text: an entry whose parser cannot read its file
+  fails with exit `3`, naming the line, and nothing is written.
+
+### Changed
+
+- **A config written by an earlier `discover` may need regenerating.** An
+  entry for a `.json` or `.toml` file now matches only whole string values, so
+  an entry that pinned a version found only in a URL, a range, or a comment
+  finds nothing, and the bump fails with `expected version not found` (exit
+  `3`) before it writes anything. Run `incrmit discover` again, or set
+  `parser = "text"` on an entry to keep the old behavior for that file. `undo`
+  reads each file the way the bump that wrote it did, so a bump made by an
+  earlier version is undone as text.
+
+### Fixed
+
+- A version inside a JSON or TOML file's URL, range, or comment is no longer
+  taken for the project's. Every file was scanned as text, so a `package.json`
+  with a `$schema` URL holding `2.0.0`, `"react": "^18.3.1"`, and
+  `"engines": { "node": ">=20.0.0" }`, beside a `Cargo.toml` whose `version`
+  line ended in `# was 0.3.9`, gave `discover` eight entries, and `--minor`
+  moved all eight with exit `0`: the URL became `.../2.1.0/...`, the ranges
+  `^18.4.0` and `>=20.1.0`, and the comment `# was 0.4.0`. A `.json` or
+  `.toml` file is now read by its format, and a version counts there only as a
+  whole string value, such as `"version": "1.2.3"`. A dependency pinned at the
+  project's version (`"left-pad": "1.2.3"`) is a whole string value too, so it
+  still moves with it.
+
 ## [0.3.10] - 2026-10-17
 
 ### Added

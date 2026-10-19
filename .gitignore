@@ -31,6 +31,9 @@ go.work.sum
 # Configuration files
 *.toml
 !incrmit.toml
+# The parser fixtures keep their real names, since a file's extension decides
+# how incrmit reads it.
+!internal/files/testdata/repro/*.toml
 
 # Local, tool-maintained state (see internal/lock): the project lock file is
 # recreated on demand and belongs to one working copy, never to the repository.

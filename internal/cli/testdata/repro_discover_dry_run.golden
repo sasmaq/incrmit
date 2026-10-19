@@ -1,0 +1,12 @@
+Discovered 3 file(s) under . (no config written):
+  Cargo.toml:
+    L3 package.version: version = "0.4.0" # was 0.3.9
+    L7 dependencies.serde: serde = "1.0.200"
+    L8 dependencies.anyhow.version: anyhow = { version = "0.4.0" }
+  package.json:
+    L4 version: "version": "1.2.3",
+    L6 dependencies.left-pad: "left-pad": "1.2.3",
+    L7 dependencies.lodash: "lodash": "4.17.21",
+  pyproject.toml:
+    L3 project.version: version = "2.1.0"
+    L16 tool.example.schema-version: schema-version = "2.1.0"

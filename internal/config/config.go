@@ -69,11 +69,30 @@ type Config struct {
 //
 // Older configs wrote the whole token in Version ("1.2.4-rc.1"); Load splits
 // those into the three fields, and the next rewrite emits the split form.
+//
+// Parser overrides how the file is read (see files.Parser): "json", "toml",
+// or "text". Omitted, the file's extension decides (files.ParserFor), which
+// is what every config written before the key existed means. It is there for
+// a .json file with comments (tsconfig.json) to be read as text, or TOML under
+// another name (Pipfile) to be read as TOML. discover writes it only when it
+// differs from the extension's choice.
 type FileEntry struct {
 	Path       string `toml:"path"`
 	Version    string `toml:"version,omitempty"`
 	Prerelease string `toml:"prerelease,omitempty"`
 	Build      string `toml:"build,omitempty"`
+	Parser     string `toml:"parser,omitempty"`
+}
+
+// FileParser returns the parser the entry's file is read with: the one its
+// `parser` key names, or the one its path's extension selects when the key is
+// omitted. It fails only for a `parser` value incrmit does not know, which
+// Validate refuses, so a loaded config's entries never fail here.
+func (f FileEntry) FileParser() (files.Parser, error) {
+	if f.Parser == "" {
+		return files.ParserFor(f.Path), nil
+	}
+	return files.ParseParser(f.Parser)
 }
 
 // Token returns the full version token the entry pins, reassembled from its
@@ -331,8 +350,10 @@ func (c *Config) normalizeIgnore() {
 }
 
 // Validate checks that the config is usable: it must list at least one file,
-// each entry must have a non-empty path, and every target must exist on disk as
-// an ordinary file (not a directory, named pipe, device, or socket).
+// each entry must have a non-empty path and a `parser` incrmit knows, and every
+// target must exist on disk as an ordinary file (not a directory, named pipe,
+// device, or socket). Entries that share a path must agree on its parser,
+// since the file is read once and rewritten in one pass.
 // A path may be listed in more than one entry as long as each such entry pins a
 // distinct, non-empty version (so a file containing several differing versions
 // can be tracked); exact (path, version) duplicates are rejected, as is a
@@ -352,10 +373,20 @@ func (c *Config) Validate(baseDir string) error {
 
 	seen := make(map[string]struct{}, len(c.Files))
 	pathsSeen := make(map[string]struct{}, len(c.Files))
+	parsers := make(map[string]files.Parser, len(c.Files))
 	for i, f := range c.Files {
 		if f.Path == "" {
 			return fmt.Errorf("config: files[%d] has an empty path", i)
 		}
+		p, err := f.FileParser()
+		if err != nil {
+			return fmt.Errorf("config: files[%d] (%s): %w", i, f.Path, err)
+		}
+		if prev, ok := parsers[f.Path]; ok && prev != p {
+			return fmt.Errorf("config: files[%d] (%s) reads the file as %s, but an earlier entry for it reads it as %s; one file has one parser",
+				i, f.Path, p, prev)
+		}
+		parsers[f.Path] = p
 		token := f.Token()
 		key := f.Path + "\x00" + token
 		if _, dup := seen[key]; dup {
