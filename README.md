@@ -3,7 +3,7 @@
 A small command-line tool written in Go that finds the semantic version in one
 or more files and increments it, keeping them all in sync (increment + commit).
 
-## Version: 0.3.10
+## Version: 0.3.11
 
 ## Features
 
@@ -44,14 +44,14 @@ the download on the release page. To verify a download, recompute its hash and
 compare it with the one listed there:
 
 ```bash
-VERSION=0.3.10
+VERSION=0.3.11
 shasum -a 256 "incrmit-${VERSION}-linux-amd64.tar.gz"   # sha256sum on Linux
 ```
 
 **Tarball or zip** — extract the binary and place it on your `PATH`:
 
 ```bash
-VERSION=0.3.10
+VERSION=0.3.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-linux-amd64.tar.gz"
 tar xzf "incrmit-${VERSION}-linux-amd64.tar.gz"
 sudo install -m 0755 incrmit /usr/local/bin/
@@ -62,7 +62,7 @@ sudo install -m 0755 incrmit /usr/local/bin/
 Download the `.deb` from the release page, then install:
 
 ```bash
-VERSION=0.3.10
+VERSION=0.3.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit_${VERSION}-1_amd64.deb"
 sudo dpkg -i "incrmit_${VERSION}-1_amd64.deb"   # use _arm64.deb on arm64
 incrmit -v
@@ -74,7 +74,7 @@ Download the `.rpm` from the
 release page, then install:
 
 ```bash
-VERSION=0.3.10
+VERSION=0.3.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-1.x86_64.rpm"
 sudo dnf install "./incrmit-${VERSION}-1.x86_64.rpm"   # use .aarch64.rpm on arm64
 incrmit -v
@@ -87,7 +87,7 @@ places `incrmit` in `/usr/local/bin` and the man page in
 `/usr/local/share/man/man1`):
 
 ```bash
-VERSION=0.3.10
+VERSION=0.3.11
 curl -fsSL -O "https://github.com/sasmaq/incrmit/releases/download/v${VERSION}/incrmit-${VERSION}-darwin-arm64.pkg"
 # use -darwin-amd64.pkg on Intel Macs
 sudo installer -pkg "incrmit-${VERSION}-darwin-arm64.pkg" -target /
@@ -108,7 +108,7 @@ sudo pkgutil --forget com.github.sasmaq.incrmit
 Requires Go 1.27 or later:
 
 ```bash
-go install github.com/sasmaq/incrmit@v0.3.10
+go install github.com/sasmaq/incrmit@v0.3.11
 ```
 
 ### Build from source

@@ -15,7 +15,7 @@ import (
 
 // version is the current release version. It may be overridden via -ldflags at
 // build time; see the package doc.
-var version = "0.3.10"
+var version = "0.3.11"
 
 // readBuildInfo is debug.ReadBuildInfo, held in a variable so tests can stand
 // in for the module version a `go install module@version` build records.
