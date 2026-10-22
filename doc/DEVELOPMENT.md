@@ -604,10 +604,10 @@ list every flag without duplicating the flag text.
 6. Compute the bytes each file will hold, replacing every candidate holding one
    of its pinned versions, and for an entry with a key only the candidates it
    claimed (a `files.Replacement` carries them, `Keyed` and `At`), in a single
-   pass (`files.Rewrite`, which applies
-   `files.SetKnownVersions` and, for JSON and TOML, decodes the result to check
-   that exactly the planned values changed, to the planned versions). A single pass over the
-   original bytes keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4`
+   pass (`files.Rewrite`, which applies `files.SetKnownVersions` and, for JSON
+   and TOML, decodes the result to check that exactly the planned values
+   changed, to the planned versions). A single pass over the original bytes
+   keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4`
    alongside `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering
    another's when two versions live in the same file. A pinned version the
    file no longer holds fails the bump here, `--dry-run` included. This check
@@ -622,10 +622,10 @@ list every flag without duplicating the flag text.
 7. If `--dry-run`, print `old -> new` for each entry, after its path and key
    (`package.json version: 1.2.3 -> 1.2.4`), and exit (no writes).
 8. In config mode, push a history entry (each file's path as the config lists
-   it, its `old`/`new` tokens, its parser, and its key, plus a timestamp) marked `pending` onto the
-   journal read in step 4, and save it beside the config (see
-   [section 6.2](#62-bump-history--state-file-internalhistory)). If that save
-   fails, nothing has been written.
+   it, its `old`/`new` tokens, its parser, and its key, plus a timestamp)
+   marked `pending` onto the journal read in step 4, and save it beside the
+   config (see [section 6.2](#62-bump-history--state-file-internalhistory)). If
+   that save fails, nothing has been written.
 9. Write each target, then the config (`commitWrites`). If a write fails, put
    back the files already written and the journal, and report both the failure
    and the rollback (see
@@ -685,10 +685,10 @@ list every flag without duplicating the flag text.
    (`discovery.Occurrence`). A `.json` or `.toml` file its parser cannot read
    is scanned as text, and the `Result` keeps the parser's error as
    `Fallback`; values skipped because they hold a version only once decoded
-   are kept as `Skipped`, for the dry run. A file with at least one occurrence becomes a
-   `Result`. Only regular files no larger than the scan cap
-   (`--max-file-size`, default `discovery.DefaultMaxScanBytes` = 32 MiB) are
-   read; see [section 9.1](#91-scan-boundaries).
+   are kept as `Skipped`, for the dry run. A file with at least one
+   occurrence becomes a `Result`. Only regular files no larger than the scan
+   cap (`--max-file-size`, default `discovery.DefaultMaxScanBytes` = 32 MiB)
+   are read; see [section 9.1](#91-scan-boundaries).
 5. Turn results into config entries (`discovery.Result.Entries`). A file read
    as text gets one `[[files]]` entry per distinct version (first-seen order),
    so identical repeats collapse and differing versions each get an entry
@@ -707,16 +707,16 @@ list every flag without duplicating the flag text.
    gets no entry at all rather than one per dependency. And anywhere, a
    candidate whose key names more than one value (a JSON key written twice) is
    `RepeatedKey`, since a key naming it would fail the bump. An entry records
-   `parser` only
-   when the file was read with a parser other than its extension's, which is a
-   fallback to text, so a bump reads the file the way discover did. The `ignore` list is written
-   back verbatim so regeneration never drops it (a bump preserves it the same
-   way when it rewrites the config). A description of the `ignore` option is
-   always written above it; when there are no patterns yet, a commented-out
-   example (`# ignore = [...]`) is emitted in their place so the feature is
-   discoverable from a freshly written config. The comment block
-   (`config.IgnoreComment`) is shared by both the discover generation and the
-   bump-time rewrite (`config.Marshal`) so both files carry identical guidance.
+   `parser` only when the file was read with a parser other than its
+   extension's, which is a fallback to text, so a bump reads the file the way
+   discover did. The `ignore` list is written back verbatim so regeneration
+   never drops it (a bump preserves it the same way when it rewrites the
+   config). A description of the `ignore` option is always written above it;
+   when there are no patterns yet, a commented-out example (`# ignore = [...]`)
+   is emitted in their place so the feature is discoverable from a freshly
+   written config. The comment block (`config.IgnoreComment`) is shared by
+   both the discover generation and the bump-time rewrite (`config.Marshal`)
+   so both files carry identical guidance.
 6. If `--dry-run`, print each occurrence with its line number, its key (for
    JSON and TOML, `L3 package.version: ...`), and context, then exit. A file
    that fell back is headed by the reason (`tsconfig.json: not JSON (line 2:
@@ -833,8 +833,9 @@ directory.
 2. Read each distinct target once and determine the version it holds
    (`readGroups`) — the config-pinned token when there is one, otherwise the
    version the key names or the version found by scanning. Keys are claimed
-   and checked here, so a key a bump would refuse fails the preview too. This is steps 2–3 of the bump flow, shared rather
-   than reimplemented, so a preview cannot disagree with the bump it previews.
+   and checked here, so a key a bump would refuse fails the preview too. This
+   is steps 2–3 of the bump flow, shared rather than reimplemented, so a
+   preview cannot disagree with the bump it previews.
 3. Project each version through all three component bumps and flatten the groups
    into rows, dropping an exact `(path, key, version)` repeat (`previewRows`).
    When any row has a key, a `KEY` column follows `PATH`, a text key quoted
@@ -1336,9 +1337,9 @@ to text. Neither direction can name a different occurrence than the one meant.
 A path read as text names nothing: a path ends in a letter, a digit, a quote,
 or a bracket, and `version.FindTokens` wants a word boundary before a version,
 so the bytes before a token never end in `version`. A text key read as a path
-is not a path (`VERSION ?= ` holds a space and a `?`), which `Validate` refuses
-with exit `1`, or names a key the file does not have, which the bump refuses
-with exit `3`. `TestKeyWhoseParserChangedFails` runs both directions.
+is not a path (`"VERSION ?= "` holds a space and a `?`), which `Validate`
+refuses with exit `1`, or names a key the file does not have, which the bump
+refuses with exit `3`. `TestKeyWhoseParserChangedFails` runs both directions.
 
 **Planning by occurrence.** A `files.Replacement` for an entry with a key is
 `Keyed` and carries the start offsets of the candidates it claimed (`At`), and

@@ -2371,7 +2371,7 @@ occurrences it names and nothing else in the file.
       `TestKeyWhoseParserChangedFails` runs both directions: `version` on a
       `package.json` with `parser = "text"` is `key "version" is not followed
       by a version anywhere in the file` (exit `3`), and `v=` on a JSON file,
-      or `VERSION ?= ` with `parser = "toml"`, is not a key path (exit `1`);
+      or `"VERSION ?= "` with `parser = "toml"`, is not a key path (exit `1`);
       a text key that happens to be a path names a key the file lacks.
 - [x] Define `key` for JSON and TOML: a dotted path from the document root,
       written the way TOML writes a dotted key, with bare segments,
@@ -2411,8 +2411,8 @@ occurrences it names and nothing else in the file.
       "VERSION = " is not followed by a version anywhere in the file`, and one
       that precedes only other versions `is followed by 2.0.0, not 1.2.3`.
       A key is the bytes right before the version wherever they start, so
-      `VERSION := ` also ends `TOOL_VERSION := `; the test keeps that case. The
-      §14 bullet now points at §9.3.
+      `"VERSION := "` also ends `"TOOL_VERSION := "`; the test keeps that
+      case. The §14 bullet now points at §9.3.
 - [x] Make `discover` write `key` where it can. Every JSON and TOML candidate
       now has a key path, so write one entry per candidate with its `key`:
       each entry then rewrites exactly one value, can be deleted on its own,

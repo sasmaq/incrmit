@@ -66,9 +66,9 @@ occurrence is the project's version, so a bump leaves a dependency pinned at
 the same version alone (see [Which occurrence: `key`](#which-occurrence-key)).
 
 That rewrite regenerates the file from its parsed contents in a fixed layout, so
-your `[[files]]` entries (with their `parser` and `key`) and `ignore` list are preserved
-but hand-written comments and custom formatting are not. Keep notes you want to survive a bump
-outside `incrmit.toml`.
+your `[[files]]` entries (with their `parser` and `key`) and `ignore` list are
+preserved but hand-written comments and custom formatting are not. Keep notes
+you want to survive a bump outside `incrmit.toml`.
 
 A `--dry-run` previews the change and writes nothing — neither the targets
 nor the config.
@@ -865,6 +865,7 @@ history. A few details:
   Cargo.toml    package.version  1.2.3    1.2.4  1.3.0  2.0.0
   Makefile      "VERSION ?= "    1.2.3    1.2.4  1.3.0  2.0.0
   ```
+
 - **A bump past the limit shows `n/a`**: a component already at
   9223372036854775807 cannot be bumped (see
   [Prereleases and build metadata](#prereleases-and-build-metadata)), so its
@@ -1153,11 +1154,11 @@ is empty.
 `incrmit` returns predictable exit codes so it can be used reliably in
 scripts and CI pipelines:
 
-| Code | Meaning                                                                                                   |
-| ---- | --------------------------------------------------------------------------------------------------------- |
-| 0    | Success.                                                                                                  |
-| 1    | Generic runtime error (e.g. missing config, filesystem error).                                            |
-| 2    | Invalid arguments or flags.                                                                               |
+| Code | Meaning                                                                                                                                           |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success.                                                                                                                                          |
+| 1    | Generic runtime error (e.g. missing config, filesystem error).                                                                                    |
+| 2    | Invalid arguments or flags.                                                                                                                       |
 | 3    | No version found, an ambiguous/unparseable version, a key that names no version to bump, a file its parser cannot read, or one too large to bump. |
 
 A run that finds the project already held by another `incrmit` also exits `1`,
