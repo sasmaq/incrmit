@@ -1,0 +1,7 @@
+parser: yaml
+L4	2.3.1+45	version
+L7	3.4.0	(not a candidate)
+L7	4.0.0	(not a candidate)
+L12	1.2.1	dependencies.http
+L13	6.1.2	(not a candidate)
+L18	4.0.0	dev_dependencies.flutter_lints

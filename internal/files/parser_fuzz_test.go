@@ -8,15 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"go.yaml.in/yaml/v3"
 )
 
-// The parser fuzz targets state what the JSON locator and the TOML probe
-// promise, and check it against the decoder itself rather than against the
-// parser's own walk: for any input the decoder accepts, every candidate's
+// The parser fuzz targets state what the JSON locator and the TOML and YAML
+// probes promise, and check it against the decoder itself rather than against
+// the parser's own walk: for any input the decoder accepts, every candidate's
 // bytes are exactly the string the decoder reports at the candidate's key,
 // and rewriting one candidate with a version of a different length, then
 // decoding again, changes that key and no other. A range off by a byte, a
@@ -336,6 +338,158 @@ func FuzzLocateTOML(f *testing.F) {
 			}
 			if av := after[c.Key.String()]; av != repl {
 				t.Fatalf("rewriting %s left it %#v, want %q", c.Key, av, repl)
+			}
+		}
+	})
+}
+
+// yamlRefLeaf is one node of a YAML document as the reference reads it: the
+// path a key names it by, or "?" for a node no key names, and what it holds.
+type yamlRefLeaf struct {
+	path, value string
+}
+
+// refYAML decodes data with the decoder alone and returns how many documents
+// it holds, every node of the first in document order, and whether the
+// decoder accepted the stream. It reads the tree independently of walkYAML:
+// a scalar key adds a step, a key that is not a scalar puts what is in and
+// under it out of any key's reach, and an alias is the anchor it names.
+func refYAML(data []byte) (docs int, leaves []yamlRefLeaf, ok bool) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	for {
+		var doc yaml.Node
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return docs, leaves, true
+		}
+		if err != nil {
+			return 0, nil, false
+		}
+		docs++
+		if docs > 1 || len(doc.Content) == 0 {
+			continue
+		}
+		// path is nil for a node no key names.
+		var node func(n *yaml.Node, path KeyPath)
+		node = func(n *yaml.Node, path KeyPath) {
+			where := "?"
+			if path != nil {
+				where = path.String()
+			}
+			step := func(s KeyStep) KeyPath {
+				if path == nil {
+					return nil
+				}
+				return append(append(KeyPath{}, path...), s)
+			}
+			switch n.Kind {
+			case yaml.MappingNode:
+				leaves = append(leaves, yamlRefLeaf{where, "mapping of " + itoa(len(n.Content)/2)})
+				for i := 0; i+1 < len(n.Content); i += 2 {
+					k, v := n.Content[i], n.Content[i+1]
+					node(k, nil)
+					if k.Kind == yaml.ScalarNode {
+						node(v, step(keyStep(k.Value)))
+					} else {
+						node(v, nil)
+					}
+				}
+			case yaml.SequenceNode:
+				leaves = append(leaves, yamlRefLeaf{where, "sequence of " + itoa(len(n.Content))})
+				for i, e := range n.Content {
+					node(e, step(indexStep(i)))
+				}
+			case yaml.AliasNode:
+				leaves = append(leaves, yamlRefLeaf{where, "alias of " + n.Value})
+			default:
+				leaves = append(leaves, yamlRefLeaf{where, n.ShortTag() + " " + strconv.Itoa(int(n.Style)) + " " + n.Value})
+			}
+		}
+		node(doc.Content[0], KeyPath{})
+	}
+}
+
+func FuzzLocateYAML(f *testing.F) {
+	addFixtureSeeds(f, ParserYAML)
+	f.Add([]byte("base: &v 1.2.3\npinned: *v\ndefaults: &d\n  version: 2.0.0\nprod:\n  <<: *d\n"))
+	f.Add([]byte("a: !!str 1.2.3\nb: !semver 1.2.3\nc: '1.2.3'\nd: \"1.2\\x2e3\"\ne: |-\n  1.2.3\n"))
+	f.Add([]byte("version: 1.2.3\nversion: 1.2.3\n? [1.2.3]\n: 1.2.3\n1.2.3: x\n"))
+	f.Add([]byte("{a: [1.2.3, {b: v2.0.0-rc.1}], \"c.d\": 3.0.0} # 4.0.0\n"))
+	f.Add([]byte(bomUTF8 + "a:\r\n  - 1.2.3\r\n"))
+	f.Add([]byte("a: 1.2.3\n---\nb: 1.2.3\n"))
+	f.Add([]byte("987654321: {987654321: 1.2.3}\n# 987654321.987654321.000000001\n"))
+	f.Add([]byte("1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6 1.0.7 1.0.8 1.0.9 1.0.10 1.0.11 1.0.12 1.0.13 1.0.14 1.0.15 1.0.16 1.0.17 1.0.18: x\n"))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		loc, err := ParserYAML.Locate(data)
+		docs, leaves, ok := refYAML(data)
+		var pe *ParseError
+		switch {
+		case !ok:
+			if err == nil {
+				t.Fatalf("Locate accepted input the decoder rejects: %q", data)
+			}
+			return
+		case docs > 1:
+			if !errors.As(err, &pe) || pe.Docs != docs {
+				t.Fatalf("Locate of %d documents gave %v, want the documents refused: %q", docs, err, data)
+			}
+			return
+		case err != nil:
+			// The one refusal allowed for one document the decoder
+			// accepts is the probe's own (see locateYAML).
+			if !errors.As(err, &pe) || !pe.Probe {
+				t.Fatalf("Locate refused YAML the decoder accepts, %q: %v", data, err)
+			}
+			return
+		}
+
+		for _, c := range loc.Candidates {
+			tok := string(data[c.Start:c.End])
+			if tok != c.Version.String() {
+				t.Fatalf("candidate bytes %q are not its version %s in %q", tok, c.Version, data)
+			}
+			found, n := false, 0
+			for _, l := range leaves {
+				if l.path != c.Key.String() {
+					continue
+				}
+				n++
+				for _, style := range []yaml.Style{0, yaml.TaggedStyle, yaml.SingleQuotedStyle, yaml.DoubleQuotedStyle, yaml.TaggedStyle | yaml.SingleQuotedStyle, yaml.TaggedStyle | yaml.DoubleQuotedStyle} {
+					found = found || l.value == "!!str "+strconv.Itoa(int(style))+" "+tok
+				}
+			}
+			if !found {
+				t.Fatalf("no plain or quoted string %q at %s in %q", tok, c.Key, data)
+			}
+			assertKeyResolves(t, ParserYAML, loc, c, n, data)
+		}
+
+		for _, c := range loc.Candidates[:min(len(loc.Candidates), maxRewrites)] {
+			tok := string(data[c.Start:c.End])
+			repl := tok + "0"
+			out := append(append(append([]byte(nil), data[:c.Start]...), repl...), data[c.End:]...)
+			outDocs, after, ok := refYAML(out)
+			if !ok || outDocs != 1 {
+				t.Fatalf("rewriting %s made %q something other than one YAML document", c.Key, out)
+			}
+			if len(after) != len(leaves) {
+				t.Fatalf("rewriting %s changed the document's shape: %q", c.Key, out)
+			}
+			changed := 0
+			for i := range leaves {
+				if leaves[i] == after[i] {
+					continue
+				}
+				changed++
+				b, a := leaves[i], after[i]
+				if b.path != c.Key.String() || a.path != b.path || !strings.HasSuffix(b.value, " "+tok) ||
+					strings.TrimSuffix(b.value, tok) != strings.TrimSuffix(a.value, repl) {
+					t.Fatalf("rewriting %s changed %v to %v in %q", c.Key, b, a, data)
+				}
+			}
+			if changed != 1 {
+				t.Fatalf("rewriting %s changed %d values in %q", c.Key, changed, data)
 			}
 		}
 	})

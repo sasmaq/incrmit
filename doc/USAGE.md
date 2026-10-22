@@ -145,24 +145,61 @@ follows from that:
 Which occurrences of a version count depends on the file's format, which
 `incrmit` takes from its extension, ignoring case:
 
-| File          | Read as | A version counts where      |
-| ------------- | ------- | --------------------------- |
-| `*.json`      | JSON    | it is a whole string value  |
-| `*.toml`      | TOML    | it is a whole string value  |
-| anything else | text    | any version token appears   |
+| File                        | Read as | A version counts where      |
+| --------------------------- | ------- | --------------------------- |
+| `*.json`                    | JSON    | it is a whole string value  |
+| `*.toml`                    | TOML    | it is a whole string value  |
+| `*.yaml`, `*.yml`, `*.cff`  | YAML    | it is a whole string value  |
+| anything else               | text    | any version token appears   |
 
-In a JSON or TOML file, `"version": "1.2.3"` and `version = "v1.2.3"` count, and
-so does a version in an array (`["1.2.3"]`). A version inside a longer string
-does not (a `$schema` URL, a range such as `"^18.3.1"` or `">=20.0.0"`, a
-description), and neither does one in a comment, in a key, or in a multi-line
-string holding other text. Each occurrence that counts knows the key it sits
-under, written the way TOML writes a dotted key (`package.version`,
-`dependencies.serde.version`, `bin[0].version`, and `"a.b"` for one key holding
-a dot), and `discover --dry-run` prints it next to the line number.
+A `.cff` file is a `CITATION.cff`, which the Citation File Format defines as
+YAML.
+
+In a JSON, TOML, or YAML file, `"version": "1.2.3"`, `version = "v1.2.3"`, and
+`version: 1.2.3` count, and so does a version in an array (`["1.2.3"]`). A
+version inside a longer string does not (a `$schema` URL, a range such as
+`"^18.3.1"` or `">=20.0.0"`, a description), and neither does one in a comment,
+in a key, or in a multi-line string holding other text. Each occurrence that
+counts knows the key it sits under, written the way TOML writes a dotted key
+(`package.version`, `dependencies.serde.version`, `bin[0].version`, and `"a.b"`
+for one key holding a dot), and `discover --dry-run` prints it next to the line
+number.
 
 A dependency pinned at the project's version is a whole string value as well
 (`"left-pad": "1.2.3"`, `serde = "1.0.200"`), so it still counts. An entry's
 [`key`](#which-occurrence-key) is what tells the two apart.
+
+**YAML.** A version counts written plain (`version: 1.2.3`), single-quoted, or
+double-quoted, and with the `!!str` tag (`!!str 1.2.3`). It does not count
+inside an image reference (`image: ghcr.io/me/app:1.4.2`), a range
+(`version: "~17.11.3"`, `kubeVersion: ">=1.22.0-0"`), or a description; in a
+`|` or `>` block, even one holding nothing else; with a tag of its own
+(`!semver 1.2.3`); or in a comment or a key. An anchored version counts once,
+where it is written:
+
+```yaml
+base: &v 1.2.3    # the version, key base
+pinned: *v        # an alias: no bytes of its own, so it changes with base
+```
+
+`discover --dry-run` lists the aliases a bump changes with it
+(`L1 base: base: &v 1.2.3 (aliased at pinned)`), including merge keys
+(`<<: *defaults`), and a [`key`](#which-occurrence-key) that names an alias
+fails, naming where the value is written. A key written twice gives two
+values at one key, as in JSON.
+
+A YAML file holds one document. One with several, such as a Kubernetes
+manifest with a `---` between a Deployment and a Service, is read as text,
+where every version token counts, image tags included. To move one image tag
+and nothing else, track it as text with the text in front of it as its key:
+
+```toml
+[[files]]
+  path = "deploy.yaml"     # two documents, so read as text
+  version = "1.4.2"
+  parser = "text"
+  key = "ghcr.io/me/app:"  # only the image tag, not the version labels
+```
 
 A value that is a version only once its escapes are decoded, such as
 `"1\u002e2.3"`, does not count: `incrmit` rewrites a version's bytes in place
@@ -182,21 +219,28 @@ Set `parser` on an entry to choose for yourself:
   parser = "toml"
 ```
 
-The values are `"json"`, `"toml"`, and `"text"`, spelled exactly; anything else
-is a config error naming the entry (exit `1`). Omitting the key means "by
-extension", so every config written before the key existed still loads.
-Entries listing the same file must agree on its parser, since the file is read
-once. A bump keeps each entry's `parser` when it rewrites the config.
+The values are `"json"`, `"toml"`, `"yaml"`, and `"text"`, spelled exactly;
+anything else is a config error naming the entry (exit `1`). Omitting the key
+means "by extension", so every config written before the key existed still
+loads. Entries listing the same file must agree on its parser, since the file is
+read once. A bump keeps each entry's `parser` when it rewrites the config.
 
-**When a file does not parse.** `discover` scans a `.json` or `.toml` file its
-parser cannot read as text, says why in the dry run, and writes
-`parser = "text"` into its entries, so a bump reads the file the way `discover`
-did:
+**When a file does not parse.** `discover` scans a `.json`, `.toml`, `.yaml`,
+`.yml`, or `.cff` file its parser cannot read as text, and so a YAML file of
+more than one document, says why in the dry run, and writes `parser = "text"`
+into its entries, so a bump reads the file the way `discover` did:
 
 ```text
   tsconfig.json: not JSON (line 2: invalid character '/' looking for beginning of object key string), scanned as text
     L3: "version": "5.4.2"
+  deploy.yaml: 2 YAML documents, scanned as text
+    L7: app.kubernetes.io/version: "1.4.2"
 ```
+
+A conda `meta.yaml` with Jinja templates (`{% set version = "1.2.3" %}`) is
+not YAML, and is read as text the same way. So is a file that declares
+`%YAML 1.2`, which the YAML reader refuses although it reads the same document
+without that line.
 
 A bump never falls back. An entry whose parser cannot read its file fails while
 planning, with exit `3` and nothing written, naming the file and the line:
@@ -216,7 +260,10 @@ few things the TOML specification forbids, chiefly a key defined twice
 (`a.b = "x"` followed by `a = "y"`), of which it silently keeps the first. In
 such a file, and in one that names an array of tables after a version more
 than once (`[[1.2.3]]`), the message reads `TOML whose versions incrmit cannot
-place`. Fix the file, or set `parser = "text"`.
+place`. Fix the file, or set `parser = "text"`. A YAML file is refused the same
+way, as `YAML whose versions incrmit cannot place`, when a key holds a few
+dozen versions: the YAML reader limits a key to 1,024 characters, and the copy
+`incrmit` reads to place versions widens each one.
 
 **Configs written by an earlier version.** An entry for a `.json` or `.toml`
 file now matches only whole string values, so an entry an older `discover`
@@ -227,6 +274,12 @@ writes anything. None of those versions was the project's: run
 an entry to keep the old behavior for that file. `undo` reads each file with the
 parser the bump used, which the state file records, so a bump made by an earlier
 version is undone as text, the way it was made.
+
+The same holds for a `.yaml`, `.yml`, or `.cff` file since YAML has been read
+by its format: an entry for a version found only in a comment, a range, or a
+longer string fails while planning, and so does an entry for a manifest of
+several documents, saying to set `parser = "text"`. The likeliest surprise is
+an image tag in a Kubernetes manifest; the recipe above keeps tracking it.
 
 ### Which occurrence: `key`
 
@@ -249,6 +302,11 @@ occurrences it names and nothing else in the file:
   key = "package.version"    # not anyhow = { version = "0.4.0" }
 
 [[files]]
+  path = "Chart.yaml"
+  version = "1.4.2"
+  key = "appVersion"         # not dependencies[0].version
+
+[[files]]
   path = "Makefile"
   version = "1.2.3"
   key = "VERSION ?= "        # not .../tool-1.2.3.tar.gz
@@ -256,7 +314,7 @@ occurrences it names and nothing else in the file:
 
 A key is read the way its file is (see [How a file is read](#how-a-file-is-read)):
 
-- **In a JSON or TOML file** it is a path from the top of the document,
+- **In a JSON, TOML, or YAML file** it is a path from the top of the document,
   written the way TOML writes a dotted key: bare parts made of letters,
   digits, `_`, and `-`; any other part in double quotes, with TOML's escapes;
   and an array index as `[N]` after the part it indexes. So
@@ -265,7 +323,8 @@ A key is read the way its file is (see [How a file is read](#how-a-file-is-read)
   `key = '"."'` the `.` key of a `.release-please-manifest.json`. The path is
   matched whole, never as a suffix: `version` is the top-level key alone, never
   `dependencies.version`. The value there must be a string holding the entry's
-  version.
+  version. In YAML it must be where the version is written: not an alias of
+  it, nor a path the data has only through an alias or a merge key.
 - **In any other file** it is the text right before the version on its line,
   with no pattern language: `key = "VERSION ?= "` names the version in
   `VERSION ?= 1.2.3` and not the one in `.../tool-1.2.3.tar.gz`. Matching is
@@ -283,15 +342,16 @@ incrmit: package.json: key dependencies.version is not in the file
 incrmit: package.json: key engines holds an object, not a version
 incrmit: package.json: key version holds 1.2.3, not 1.2.4
 incrmit: package.json: key name appears twice in the file, so it names no one value
+incrmit: values.yaml: key pinned reads base through an alias, and incrmit rewrites a value where it is written; name base instead
 incrmit: Makefile: key "VERSION = " is not followed by a version anywhere in the file
 ```
 
 A key its parser cannot read is a config error naming the entry (exit `1`): an
-empty key, a text key holding a line break, and anything that is not a path in
-a JSON or TOML file, such as `key = "VERSION ?= "` on a `package.json`. So is a
-pair of entries that would both rewrite one occurrence, such as a keyed entry
-and one without a key for the same version, or two keys naming the same value;
-that one is found while planning, since it takes the file to tell:
+empty key, a text key holding a line break, and anything that is not a path in a
+JSON, TOML, or YAML file, such as `key = "VERSION ?= "` on a `package.json`. So
+is a pair of entries that would both rewrite one occurrence, such as a keyed
+entry and one without a key for the same version, or two keys naming the same
+value; that one is found while planning, since it takes the file to tell:
 
 ```text
 incrmit: config: files[0] (key version) and files[1] (no key) both claim the 1.2.3 on line 2 of package.json; remove one, or give each a key that names its own occurrence
@@ -402,8 +462,8 @@ on its own; `--key` names the one to bump, read as an entry's
 [`key`](#which-occurrence-key) is, so
 `incrmit --file package.json --key version` and
 `incrmit --file Makefile --key 'VERSION ?= '` work without a config. `--key`
-without `--file`, an empty one, and one that is not a path for a JSON or TOML
-file are usage errors (exit `2`).
+without `--file`, an empty one, and one that is not a path for a JSON, TOML, or
+YAML file are usage errors (exit `2`).
 
 ### Examples
 
@@ -587,17 +647,17 @@ Rather than writing the config by hand, run the `discover` command to scan
 the project for files that contain a semantic version string and generate an
 `incrmit.toml` for you.
 
-Discovery walks the directory tree and inspects the contents of every text
-file, recording every `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]` token it
-finds in each — the whole token, so a prerelease target survives a
-regeneration of the config exactly as written in the file. It is not limited to
-specific file names: `VERSION`, source files, plain text, and anything else is
-scanned. A file's name decides only how it is read: a `.json` or `.toml` file
-by its format, where only a whole string value counts, and anything else as
-text (see [How a file is read](#how-a-file-is-read)).
+Discovery walks the directory tree and inspects the contents of every text file,
+recording every `[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]` token it finds in
+each — the whole token, so a prerelease target survives a regeneration of the
+config exactly as written in the file. It is not limited to specific file names:
+`VERSION`, source files, plain text, and anything else is scanned. A file's name
+decides only how it is read: a `.json`, `.toml`, `.yaml`, `.yml`, or `.cff` file
+by its format, where only a whole string value counts, and anything else as text
+(see [How a file is read](#how-a-file-is-read)).
 
-A file may contain a version in more than one place. In a JSON or TOML file,
-discovery records **one `[[files]]` entry per occurrence, with its
+A file may contain a version in more than one place. In a JSON, TOML, or YAML
+file, discovery records **one `[[files]]` entry per occurrence, with its
 [`key`](#which-occurrence-key)**, so each entry rewrites exactly one value, can
 be deleted on its own, and says in the config what it is. In a manifest it
 knows, it records the project's own version alone:
@@ -607,11 +667,25 @@ knows, it records the project's own version alone:
 | `package.json`, `composer.json`, `deno.json`, `jsr.json` | `version` |
 | `Cargo.toml` | `package.version` or `workspace.package.version` |
 | `pyproject.toml` | `project.version` or `tool.poetry.version` |
+| `pubspec.yaml`, `snapcraft.yaml`, `galaxy.yml`, `CITATION.cff` | `version` |
+| `Chart.yaml` | `version` and `appVersion` |
 
 Every other version in such a manifest is a dependency's, and `--dry-run` lists
 it as skipped with the key that would track it. A known manifest with none of
 those keys holding a version, such as a private monorepo root, gets no entry,
 and `--dry-run` says so rather than writing an entry per dependency.
+
+**`Chart.yaml`.** A Helm chart has two versions of its own: `version` is the
+chart's and `appVersion` the application's. Both belong to the project and
+many charts keep them equal, so discovery writes an entry for each; if you
+version them separately, delete the entry for the one a bump should leave
+alone.
+
+**`pubspec.yaml`.** Flutter reads the part after `+` in `version: 2.3.1+45` as
+the build number. A bump drops build metadata (see
+[Prereleases and build metadata](#prereleases-and-build-metadata)), so a patch
+bump writes `version: 2.3.2`, without a build number, as `incrmit` always has.
+Add the build number yourself if your release needs one.
 
 In any other file, discovery records **one `[[files]]` entry per distinct
 version**, with no key: if all the occurrences agree, that is a single entry
@@ -709,8 +783,8 @@ Wrote release/incrmit.toml with 1 file(s):
 ```
 
 `--dry-run` prints each occurrence it finds, with its line number and the text
-of the line for context, rather than writing the config. In a JSON or TOML
-file, each occurrence's key comes after its line number, and a manifest's
+of the line for context, rather than writing the config. In a JSON, TOML, or
+YAML file, each occurrence's key comes after its line number, and a manifest's
 dependencies are listed as skipped:
 
 ```text
@@ -726,11 +800,15 @@ Discovered 3 file(s) under . (no config written):
 ```
 
 The summary of a real run names each entry's key after its path
-(`Cargo.toml package.version: 0.4.0`).
+(`Cargo.toml package.version: 0.4.0`). A YAML occurrence that aliases read
+lists them at the end of its line (`L1 base: base: &v 1.2.3 (aliased at
+pinned)`), since a bump of it changes them too.
 
-A file read as text when its name says JSON or TOML is headed by the reason
-(`tsconfig.json: not JSON (line 2: ...), scanned as text`), and the summary of
-a real run marks its entries `(not JSON, scanned as text)`.
+A file read as text when its name says JSON, TOML, or YAML is headed by the
+reason (`tsconfig.json: not JSON (line 2: ...), scanned as text`,
+`deploy.yaml: 2 YAML documents, scanned as text`), and the summary of a real
+run marks its entries `(not JSON, scanned as text)` or `(2 YAML documents,
+scanned as text)`.
 
 Line numbers count `\n`, `\r\n`, and a lone `\r` as line breaks, so they match
 what an editor shows whatever the file's line endings. A long line — a minified

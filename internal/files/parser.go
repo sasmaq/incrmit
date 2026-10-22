@@ -19,10 +19,10 @@ import (
 // the file (doc/DEVELOPMENT.md section 9).
 //
 // The text parser is version.FindTokens plus version.Parse: every token Parse
-// accepts is a candidate, wherever it sits. The JSON and TOML parsers read the
-// format, so a candidate is a string value whose whole content is one such
-// token, and each one knows the key it sits under. Their candidates are
-// always a subset of the text parser's, with the same boundaries, so §9's
+// accepts is a candidate, wherever it sits. The JSON, TOML, and YAML parsers
+// read the format, so a candidate is a string value whose whole content is
+// one such token, and each one knows the key it sits under. Their candidates
+// are always a subset of the text parser's, with the same boundaries, so §9's
 // single definition of a token holds in every file.
 type Parser string
 
@@ -31,17 +31,21 @@ const (
 	ParserText Parser = "text"
 	ParserJSON Parser = "json"
 	ParserTOML Parser = "toml"
+	ParserYAML Parser = "yaml"
 )
 
 // ParserFor returns the parser a file gets by its name: JSON for a .json
-// file, TOML for a .toml file, and text for anything else. The extension is
-// compared ignoring case, so PACKAGE.JSON is JSON too.
+// file, TOML for a .toml file, YAML for a .yaml, .yml, or .cff file (the
+// Citation File Format is YAML by definition), and text for anything else.
+// The extension is compared ignoring case, so PACKAGE.JSON is JSON too.
 func ParserFor(path string) Parser {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
 		return ParserJSON
 	case ".toml":
 		return ParserTOML
+	case ".yaml", ".yml", ".cff":
+		return ParserYAML
 	default:
 		return ParserText
 	}
@@ -51,10 +55,10 @@ func ParserFor(path string) Parser {
 // is matched exactly, so "JSON" is an error rather than a guess.
 func ParseParser(name string) (Parser, error) {
 	switch p := Parser(name); p {
-	case ParserText, ParserJSON, ParserTOML:
+	case ParserText, ParserJSON, ParserTOML, ParserYAML:
 		return p, nil
 	default:
-		return "", fmt.Errorf("unknown parser %q; use %q, %q, or %q", name, ParserJSON, ParserTOML, ParserText)
+		return "", fmt.Errorf("unknown parser %q; use %q, %q, %q, or %q", name, ParserJSON, ParserTOML, ParserYAML, ParserText)
 	}
 }
 
@@ -90,15 +94,17 @@ type Located struct {
 	Candidates []Candidate
 	Skipped    []Skipped
 
-	data   []byte
-	parser Parser
-	keys   *keyIndex // built by the first key looked up (key.go)
+	data    []byte
+	parser  Parser
+	keys    *keyIndex   // built by the first key looked up (key.go)
+	aliases *aliasGraph // YAML's anchors and aliases (yaml.go), nil elsewhere
 }
 
 // Locate reads data with p and returns what it found. The text parser always
-// succeeds. The JSON and TOML parsers return a *ParseError for data that is
-// not their format, and the TOML parser also for TOML its probe cannot place
-// versions in (see locateTOML).
+// succeeds. The JSON, TOML, and YAML parsers return a *ParseError for data
+// that is not their format, the YAML parser also for a stream of more than
+// one document, and the TOML and YAML parsers for a file their probe cannot
+// place versions in (see locateTOML).
 func (p Parser) Locate(data []byte) (*Located, error) {
 	var loc *Located
 	var err error
@@ -109,6 +115,8 @@ func (p Parser) Locate(data []byte) (*Located, error) {
 		loc, err = locateJSON(data)
 	case ParserTOML:
 		loc, err = locateTOML(data)
+	case ParserYAML:
+		loc, err = locateYAML(data)
 	default:
 		err = fmt.Errorf("files: unknown parser %q", string(p))
 	}
@@ -149,12 +157,19 @@ type ParseError struct {
 	Parser Parser
 	Line   int
 	Msg    string
-	// Probe is set when the file is TOML but the probe copy locateTOML
-	// decodes is not, so the versions in it cannot be placed.
+	// Probe is set when the file is TOML or YAML but the probe copy the
+	// parser decodes is not, so the versions in it cannot be placed.
 	Probe bool
+	// Docs is set when the file is a YAML stream of more than one document,
+	// which the YAML parser does not read: a key path cannot say which
+	// document it means.
+	Docs int
 }
 
 func (e *ParseError) Error() string {
+	if e.Docs > 1 {
+		return fmt.Sprintf("%d %s documents", e.Docs, e.Parser.label())
+	}
 	what := "not " + e.Parser.label()
 	if e.Probe {
 		what = e.Parser.label() + " whose versions incrmit cannot place"
@@ -266,13 +281,15 @@ func lineAt(data []byte, offset int) int {
 // Rewrite returns data with repls applied to cands, exactly as
 // SetKnownVersions does, and how many candidates each replacement rewrote, in
 // repls' order. A keyed replacement must rewrite every candidate it claims.
-// For JSON and TOML it then decodes the result and checks it against data:
-// every value must be as it was except the ones the rewrite planned, which
-// must now hold the planned versions. A rewrite that would change anything
-// else is an error, and the caller writes nothing. The check costs a decode
-// of each side, and it is what makes the TOML probe's answer something a bump
-// can trust: the probe reasons about where values are, and the decoder
-// confirms it.
+// For JSON, TOML, and YAML it then decodes the result and checks it against
+// data: every value must be as it was except the ones the rewrite planned,
+// which must now hold the planned versions. A rewrite that would change
+// anything else is an error, and the caller writes nothing. The check costs a
+// decode of each side, and it is what makes the TOML and YAML probes' answers
+// something a bump can trust: the probe reasons about where values are, and
+// the decoder confirms it. A YAML alias is compared as the anchor it names,
+// not as the value it reads, so the aliases of a rewritten anchor change with
+// it as planned (see locateYAML).
 func Rewrite(p Parser, data []byte, cands []Candidate, repls []Replacement) ([]byte, []int, error) {
 	out, counts, done := setKnownVersions(data, cands, repls)
 	for i, r := range repls {
@@ -289,6 +306,8 @@ func Rewrite(p Parser, data []byte, cands []Candidate, repls []Replacement) ([]b
 		flatten = flattenJSON
 	case ParserTOML:
 		flatten = flattenTOML
+	case ParserYAML:
+		flatten = flattenYAML
 	default:
 		return nil, nil, fmt.Errorf("files: %s: unknown parser", p)
 	}

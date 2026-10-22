@@ -3,6 +3,7 @@ package files
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sasmaq/incrmit/internal/testutil"
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -475,6 +477,92 @@ func TestApplyBumpAwkwardNames(t *testing.T) {
 			if len(entries) != 1 || entries[0].Name() != name {
 				t.Errorf("directory holds %v, want only %q", entries, name)
 			}
+		})
+	}
+}
+
+// A YAML file nested past the decoder's limit of 10,000 levels is refused
+// with a *ParseError rather than exhausting the stack, which is what bounds
+// every walk of a decoded tree: 100,000 nested flow sequences or mappings, or
+// 20,000 block sequences opened on one line, take milliseconds. (Block
+// mappings nested that deep need a line of indentation per level, 50 MB of
+// it by the limit, which is past discover's 32 MiB cap; the prototype's
+// 20,000 were refused in 0.3 s.) One nested just inside the limit is located
+// in milliseconds too: the probe's check compares each node's last path
+// step, never its whole path, which would cost the square of the depth.
+func TestYAMLNestingIsRefused(t *testing.T) {
+	deep := []byte(strings.Repeat("{a: ", 9990) + "1.2.3" + strings.Repeat("}", 9990) + "\n")
+	testutil.Within(t, "locating a version nested just inside the decoder's limit", func() {
+		loc, err := ParserYAML.Locate(deep)
+		if err != nil || len(loc.Candidates) != 1 || len(loc.Candidates[0].Key) != 9990 {
+			t.Errorf("Locate = %v, %v; want the one version, 9,990 keys deep", loc, err)
+		}
+	})
+	for name, data := range map[string]string{
+		"flow sequences":  strings.Repeat("[", 100000) + "1.2.3",
+		"flow mappings":   "v: " + strings.Repeat("{a: ", 100000) + "1.2.3",
+		"block sequences": strings.Repeat("- ", 20000) + "1.2.3\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			testutil.Within(t, "locating versions in deeply nested YAML", func() {
+				_, err := ParserYAML.Locate([]byte(data))
+				var pe *ParseError
+				if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "exceeded max depth") {
+					t.Errorf("Locate error = %v, want the decoder's depth limit", err)
+				}
+			})
+		})
+	}
+}
+
+// Decoding into a yaml.Node expands no alias, so a billion-laughs document,
+// which decoded into Go values the decoder refuses as excessive aliasing,
+// decodes at once, and a version in it is placed, listed with its aliases,
+// and rewritten without expanding any. A chain of aliases, each of the
+// anchor before it, costs what the answer holds.
+func TestYAMLAliasBombs(t *testing.T) {
+	var laughs strings.Builder
+	laughs.WriteString(`a: &a ["1.2.3", "lol", "lol", "lol", "lol", "lol", "lol", "lol", "lol"]` + "\n")
+	for c := 'b'; c <= 'i'; c++ {
+		prev := string(c - 1)
+		fmt.Fprintf(&laughs, "%c: &%c [%s]\n", c, c, strings.TrimSuffix(strings.Repeat("*"+prev+", ", 9), ", "))
+	}
+	n := 20000
+	if testing.Short() {
+		n = 2000
+	}
+	var chain strings.Builder
+	chain.WriteString("a0: &a0 1.2.3\n")
+	for i := 1; i < n; i++ {
+		fmt.Fprintf(&chain, "a%d: &a%d [*a%d]\n", i, i, i-1)
+	}
+	for name, tt := range map[string]struct {
+		data, key string
+		aliases   int
+	}{
+		"billion laughs": {laughs.String(), "a[0]", 8 * 9},
+		"alias chain":    {chain.String(), "a0", n - 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := []byte(tt.data)
+			testutil.Within(t, "locating a version in a document of aliases", func() {
+				loc, err := ParserYAML.Locate(data)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if len(loc.Candidates) != 1 || loc.Candidates[0].Key.String() != tt.key {
+					t.Errorf("candidates = %+v, want the one anchored version", loc.Candidates)
+					return
+				}
+				if got := len(loc.Aliases(loc.Candidates[0])); got != tt.aliases {
+					t.Errorf("the version has %d aliases, want %d", got, tt.aliases)
+				}
+				out, _, err := Rewrite(ParserYAML, data, loc.Candidates, []Replacement{{Old: v123, New: v124}})
+				if err != nil || !bytes.Equal(out, bytes.Replace(data, []byte("1.2.3"), []byte("1.2.4"), 1)) {
+					t.Errorf("Rewrite = %v", err)
+				}
+			})
 		})
 	}
 }

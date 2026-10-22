@@ -358,8 +358,9 @@ type fileGroup struct {
 // out of sync with its third file left the first two bumped.
 //
 // Only the parser's candidates are rewritten, an entry with a key only the
-// ones it claims, and for JSON and TOML the rewritten bytes are decoded again
-// and checked against the plan (files.Rewrite) before anything is written.
+// ones it claims, and for JSON, TOML, and YAML the rewritten bytes are decoded
+// again and checked against the plan (files.Rewrite) before anything is
+// written.
 func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	groups, code := readGroups(targets, maxBytes, stderr)
 	if code != ExitOK {
@@ -543,8 +544,8 @@ func checkClaims(g fileGroup, stderr io.Writer) int {
 }
 
 // keyLabel renders an entry's key for a summary line, after the path:
-// " package.version" for a JSON or TOML key, ` "VERSION ?= "` for a text key,
-// whose spaces count, and nothing for an entry without one.
+// " package.version" for a JSON, TOML, or YAML key, ` "VERSION ?= "` for a
+// text key, whose spaces count, and nothing for an entry without one.
 func keyLabel(k *files.Key) string {
 	if k == nil {
 		return ""
@@ -882,7 +883,7 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 				case discovery.RepeatedKey:
 					fprintf(stdout, "    %s: skipped, %s appears more than once in the file, so no key names this one alone\n", where, o.Key)
 				default:
-					fprintf(stdout, "    %s: %s\n", where, o.Text)
+					fprintf(stdout, "    %s: %s%s\n", where, o.Text, aliasNote(o.Aliases))
 				}
 			}
 			for _, sk := range r.Skipped {
@@ -909,6 +910,8 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case r.Fallback != nil && r.Fallback.Probe:
 			note = " (scanned as text)"
+		case r.Fallback != nil && r.Fallback.Docs > 1:
+			note = fmt.Sprintf(" (%v, scanned as text)", r.Fallback)
 		case r.Fallback != nil:
 			note = fmt.Sprintf(" (not %s, scanned as text)", strings.ToUpper(string(r.Fallback.Parser)))
 		}
@@ -945,12 +948,37 @@ func tomlString(s string) string {
 }
 
 // keySuffix renders an occurrence's key for the dry run, after its line
-// number: " package.version" for a JSON or TOML candidate, nothing for text.
+// number: " package.version" for a JSON, TOML, or YAML candidate, nothing for
+// text.
 func keySuffix(k files.KeyPath) string {
 	if len(k) == 0 {
 		return ""
 	}
 	return " " + k.String()
+}
+
+// aliasNote lists, for the dry run, the YAML aliases that read an
+// occurrence's value, which a bump of it changes too: " (aliased at pinned)"
+// or " (aliased at pinned and copy)", nothing when there are none.
+func aliasNote(aliases []files.KeyPath) string {
+	if len(aliases) == 0 {
+		return ""
+	}
+	names := make([]string, len(aliases))
+	for i, a := range aliases {
+		names[i] = a.String()
+		if names[i] == "" {
+			names[i] = "the document's root"
+		}
+	}
+	list := names[0]
+	switch n := len(names); {
+	case n == 2:
+		list = names[0] + " and " + names[1]
+	case n > 2:
+		list = strings.Join(names[:n-1], ", ") + ", and " + names[n-1]
+	}
+	return " (aliased at " + list + ")"
 }
 
 // skippedWhere names a skipped value for the dry run: its line, when the

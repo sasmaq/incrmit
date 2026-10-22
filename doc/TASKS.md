@@ -2548,13 +2548,28 @@ Without it, Milestone 40's text `key` (`key = "appVersion: "`) still picks out
 the version in a YAML file, but discover keeps offering every range, comment,
 and dependency pin. The items below assume the dependency.
 
-- [ ] Reproduce first, once Milestones 39 and 40 have landed, since this
+- [x] Reproduce first, once Milestones 39 and 40 have landed, since this
       milestone builds on 39's parser seam and probe and on 40's `key`. Use
       the `Chart.yaml` and `pubspec.yaml` above and a two-document Kubernetes
       manifest; assert what `discover --dry-run` lists, what `discover`
       writes, and what a bump changes, byte for byte. Keep the fixtures for
       the tests below.
-- [ ] Record the dependency in `doc/DEVELOPMENT.md`: update §2 and the
+      `internal/files/testdata/repro/{Chart.yaml,pubspec.yaml,deploy.yaml}`,
+      beside Milestone 39's. Run through the 0.3.12 binary first: seven
+      candidates in the chart and six in the pubspec, eleven entries, and
+      `--minor` moved all of them with exit `0`, `kubeVersion: ">=1.22.0-0"`
+      becoming `">=1.23.0"`. `TestYAMLReproduction`
+      (`internal/cli/yaml_test.go`) asserts the dry run, the config, the bump
+      summary, and each bumped file against `yaml_repro_*.golden`, then `undo`
+      back to every original byte: three candidates each, entries for the
+      chart's `version` and `appVersion` and the pubspec's `version`, the
+      dependency pins listed as skipped, and `deploy.yaml: 2 YAML documents,
+      scanned as text`. `TestYAMLOldConfigFailsBeforeAnythingIsWritten` runs
+      the config the 0.3.12 `discover` wrote; with `parser = "text"` on its
+      entries it moves every token, and its `yaml_repro_text_minor_*.golden`
+      files are byte for byte what 0.3.12 wrote. This repository's `ci.yml`
+      and `release.yml` go from eighteen and twelve candidates to one each.
+- [x] Record the dependency in `doc/DEVELOPMENT.md`: update §2 and the
       sentence in §13 that counts two dependencies, and list what was
       rejected. `go.yaml.in/yaml/v4` is still a release candidate
       (`v4.0.0-rc.6`); revisit it at its first stable release.
@@ -2563,13 +2578,27 @@ and dependency pin. The items below assume the dependency.
       out of proportion to the job, since YAML's grammar is far larger than
       JSON's or TOML's. Measure the binary-size change on incrmit itself, not
       only on the minimal program above, and record it.
-- [ ] Choose the parser as Milestone 39 does, by extension and ignoring case:
+      `go.yaml.in/yaml/v3` v3.0.5, which requires no module. §2 names the
+      three dependencies, §13 counts three, and §9.7 ("The YAML decision")
+      lists what was rejected, with v4 under §14. On incrmit itself, built
+      with the release flags, the binary grows 0.31 to 0.38 MB, about 6 to 7
+      percent: 5.17 to 5.49 MB on `darwin/arm64`, 5.41 to 5.79 MB on
+      `linux/amd64`, 5.95 to 6.34 MB on `windows/amd64`. That is well under the
+      minimal program's 0.9 MB, since incrmit already links most of what the
+      decoder uses.
+- [x] Choose the parser as Milestone 39 does, by extension and ignoring case:
       `.yaml` and `.yml` get the YAML parser, and so does `.cff`, since the
       Citation File Format is YAML by definition. Add `"yaml"` to the values
       the `parser` key accepts. Milestone 39's fallback carries over
       unchanged: `discover` scans a YAML file that does not parse as text and
       writes `parser = "text"`, and a bump never falls back.
-- [ ] Reuse Milestone 39's TOML probe with the same placeholders, decoded with
+      `files.ParserYAML`, `ParserFor`, and `ParseParser`, whose error now
+      lists `"json", "toml", "yaml", or "text"`. The tests that used `yaml` as
+      the example of an unknown parser use `ini`. Nothing else in the seam
+      needed changing: `discovery.detect`, `readGroups`, and `planReverts`
+      already took any `*files.ParseError` as the fallback or the exit-`3`
+      refusal.
+- [x] Reuse Milestone 39's TOML probe with the same placeholders, decoded with
       `go.yaml.in/yaml/v3` into a `yaml.Node` tree, never into `any`. A
       candidate is a scalar that is a value, not a mapping key, whose decoded
       text is exactly one placeholder and whose tag is `!!str`, implicit or
@@ -2582,7 +2611,17 @@ and dependency pin. The items below assume the dependency.
       never changes a value's type. After planning a bump, decode the
       rewritten bytes in phase 1 and check that exactly the planned keys
       changed, as Milestone 39 does for TOML.
-- [ ] Handle anchors and aliases. A `yaml.Node` keeps an alias as an alias
+      `internal/files/yaml.go` (`locateYAML`). `newProbe` and `absentDigits`
+      now take the decoded strings rather than a TOML document, so both
+      formats share them; YAML gives every scalar and tag (`yamlTexts`). A
+      `|` or `>` block scalar is never a candidate, even `|-` holding exactly
+      a version, since the item names plain and quoted scalars as the ones
+      that qualify. A value under a key that is not a scalar (`? [a, b]`) is
+      not one either, since no key path can name it. As for TOML, the probe
+      copy is compared with the file before it is trusted (`agreesYAML`, over
+      `flattenYAMLTree`); no input is known to make them disagree. `Rewrite`
+      checks YAML with `flattenYAML`.
+- [x] Handle anchors and aliases. A `yaml.Node` keeps an alias as an alias
       node, so an anchored version (`base: &v 1.2.3`) is one candidate at the
       anchor's key, and an alias of it (`pinned: *v`) is not a candidate of
       its own: it has no bytes to rewrite. Rewriting the anchored value
@@ -2590,7 +2629,17 @@ and dependency pin. The items below assume the dependency.
       candidate, the phase-1 check counts them as planned, and a Milestone 40
       `key` that names an alias is an error naming the anchor's key. A merge
       key (`<<: *defaults`) is an alias too and follows the same rule.
-- [ ] Read one document per file. A YAML stream can hold several, and
+      `Located.Aliases` lists them, transitively (an alias of an anchored
+      mapping holding the candidate, or of one holding such an alias), at the
+      alias's own path (`pinned`, `prod."<<"`), with a cost that is the size
+      of the answer however they nest or cycle; `Occurrence.Aliases` carries
+      them and the dry run prints `L1 base: base: &v 1.2.3 (aliased at
+      pinned)`. The check counts them as planned by comparing an alias as the
+      anchor it names. A key naming an alias, or a path the data has only
+      through one or through a merge key, is `key pinned reads base through an
+      alias, and incrmit rewrites a value where it is written; name base
+      instead` (`resolveYAML` follows the path as a reader of the data would).
+- [x] Read one document per file. A YAML stream can hold several, and
       Milestone 40's key path has no way to name one. Recommend: the YAML
       parser accepts exactly one document (a leading `---` or a trailing `...`
       is fine), and a file with more takes Milestone 39's fallback, with the
@@ -2599,11 +2648,20 @@ and dependency pin. The items below assume the dependency.
       versions sit inside image references that the YAML parser would not
       offer anyway, so text with a text `key` is what they need. A document
       selector in the key syntax can come later if someone asks for one.
-- [ ] Treat duplicate keys as Milestone 39 treats them in JSON. YAML forbids
+      As recommended. `ParseError.Docs` holds the count and renders as
+      `2 YAML documents`; the discover summary marks the entries
+      `(2 YAML documents, scanned as text)`, and a bump of an entry without
+      `parser = "text"` fails with exit `3`. A file with no document (empty,
+      or only comments) is accepted and holds nothing, rather than taking the
+      fallback, which would offer its commented-out versions. The selector is
+      under §14.
+- [x] Treat duplicate keys as Milestone 39 treats them in JSON. YAML forbids
       them, but decoding into a `yaml.Node` accepts them, so both values are
       candidates under the same key path, and Milestone 40's error for a key
       that appears twice applies.
-- [ ] Cover hostile input. The prototype confirmed that the decoder refuses
+      Nothing YAML-specific was needed: the key index and `markSkips` count
+      values by path.
+- [x] Cover hostile input. The prototype confirmed that the decoder refuses
       nesting past 10,000 levels with an error rather than exhausting the
       stack (100,000 nested `[` in 13 ms, 20,000 nested block mappings in
       0.3 s), and that decoding into a `yaml.Node` expands no aliases, so a
@@ -2614,19 +2672,38 @@ and dependency pin. The items below assume the dependency.
       holding several tokens can pass the limit in the probe copy only.
       Milestone 39 already refuses a probe copy that does not decode; add a
       fixture for this case.
-- [ ] Add the YAML manifests to Milestone 40's table of known project keys:
+      `TestYAMLNestingIsRefused` and `TestYAMLAliasBombs`
+      (`internal/files/shapes_test.go`), each within `testutil.Within`: the
+      decoder's depth error for 100,000 nested flow sequences and mappings and
+      20,000 block sequences on one line (block mappings that deep are a
+      50 MB file, past discover's cap, and took 8.5 s under `-race`), a
+      version 9,990 levels deep located in milliseconds, and billion laughs
+      placed, listed with its 72 aliases, and rewritten, plus a 20,000-link
+      alias chain. The near-limit case found the probe's check rendering
+      every node's whole path, 1.8 s at that depth; it now compares each
+      node's last step (`yamlShapes`), 17 ms.
+      `testdata/implicit-key.yaml.input` is a 199-byte key of thirty versions
+      that decodes as written and is refused as `YAML whose versions incrmit
+      cannot place (line 2: could not find expected ':')`.
+- [x] Add the YAML manifests to Milestone 40's table of known project keys:
       `pubspec.yaml`, `snapcraft.yaml`, `galaxy.yml`, and `CITATION.cff` use
       `version`. For `Chart.yaml`, write entries for both `version` (the
       chart's) and `appVersion` (the application's): both belong to the
       project, many charts keep them equal, and the user deletes the one they
       version separately. Dependencies are listed as skipped, as for the other
       manifests.
-- [ ] Note pubspec's build number. Flutter reads the part after `+` in
+      `discovery.projectKeys`, with `Chart.yaml`'s two keys explained there.
+      `TestDiscoverKnownYAMLManifests` covers each, a library chart with no
+      `appVersion`, and a pubspec with no version of its own.
+- [x] Note pubspec's build number. Flutter reads the part after `+` in
       `version: 2.3.1+45` as the build number, and §9.2 drops build metadata
       on a bump, so the bump writes `2.3.2`. The text scanner does the same
       today; document it under `pubspec.yaml` in `doc/USAGE.md` and leave
       §9.2 as it is.
-- [ ] Existing configs change meaning, as in Milestone 39: an entry for a
+      Under Discovery in `doc/USAGE.md`, and in the man page's KEYS.
+      `TestPubspecBuildNumberIsDropped` patches `2.3.1+45` to `2.3.2` with
+      `--file --key version`.
+- [x] Existing configs change meaning, as in Milestone 39: an entry for a
       `.yaml`, `.yml`, or `.cff` file that pinned a version found only in a
       comment, a range, or a longer string now finds nothing and fails in
       phase 1. The case most likely to surprise is an image tag in a
@@ -2634,7 +2711,13 @@ and dependency pin. The items below assume the dependency.
       (`key = "ghcr.io/me/app:"`). Say so in the `CHANGELOG.md` `Changed`
       entry, and have `undo` take the parser from the journal, as in
       Milestone 39.
-- [ ] Test with golden fixtures in `internal/files/testdata`: the reproduction
+      The journal already recorded each change's parser, so `undo` needed
+      nothing new; `TestUndoUsesTheJournalsYAMLParser` reverts a value whose
+      comment holds the bumped version, with the config since changed to
+      `parser = "text"`. An entry for a manifest of several documents fails
+      too, as one the YAML parser cannot read. `CHANGELOG.md` has the
+      `Changed` entry under Unreleased.
+- [x] Test with golden fixtures in `internal/files/testdata`: the reproduction
       files; a BOM (the decoder accepts one, and the probe moves no byte
       outside a token, so unlike JSON nothing needs offsetting; assert it);
       CRLF; flow mappings and sequences; all three quoting styles; a comment
@@ -2645,12 +2728,39 @@ and dependency pin. The items below assume the dependency.
       YAML and takes the fallback; and the implicit-key overflow. Test the
       `parser` override in both directions and an old config failing in
       phase 1 with every file unchanged.
-- [ ] Fuzz the YAML probe with Milestone 39's properties (§12.1, Milestone 30),
+      Candidate goldens for the reproduction files, `shapes.yaml.input` (every
+      shape that parses, in one document), and `bom-crlf.yaml.input`, each
+      also rewritten through `Rewrite`; the refused fixtures (`tabs`, `meta`,
+      `implicit-key`, and the two-document `deploy.yaml`) are asserted with
+      their messages. Table tests in `internal/files/yaml_test.go` cover each
+      shape again with the key it is placed at, every `*KeyError` YAML adds,
+      placeholder collisions, and 5,000 tokens within the deadline. The
+      override, the old config, the image-tag recipe, and the alias errors are
+      in `internal/cli/yaml_test.go`, and discovery's side in
+      `internal/discovery/yaml_test.go`. The decoder refuses a `%YAML 1.2`
+      directive (it reads 1.1), which the rejects table pins.
+- [x] Fuzz the YAML probe with Milestone 39's properties (§12.1, Milestone 30),
       seeding the corpus with the fixtures.
-- [ ] Document YAML wherever Milestone 39 documents its parsers (`README.md`,
+      `files.FuzzLocateYAML`, against a reference that walks the decoder's
+      tree on its own. A stream of several documents must be refused with
+      its count, and one document the decoder accepts may be refused only by
+      the probe. 90 s and then 5 minutes ran 12.3 million inputs and found
+      nothing.
+- [x] Document YAML wherever Milestone 39 documents its parsers (`README.md`,
       `doc/USAGE.md`, `incrmit help discover`, the man page, and
       `doc/DEVELOPMENT.md` §5, §6.1, §9, and §12.1), including the image-tag
       recipe above, and add an `Added` entry to `CHANGELOG.md`.
+      README (Features, Configuration), USAGE ("How a file is read" with a
+      YAML section and the recipe, keys, `--key`, Discovery with the manifest
+      table, `Chart.yaml`, and `pubspec.yaml`, the dry run), `incrmit help`
+      (the overview, `keyNote`), `incrmit help discover` (`parsersNote`), and
+      the man page (DESCRIPTION, PARSERS with the recipe, KEYS, `discover`,
+      `--key`). DEVELOPMENT.md: §1, §2, §5, §6.1, §6.2, §8.1, §8.2, §9, §9.3,
+      §9.6, a new §9.7 for the design, §10, §11, §12, §12.1, §13, and §14.
+      `CHANGELOG.md` has `Added`, `Changed`, and `Fixed` under Unreleased.
+      `make check` passes, `go test -race ./...` too, and coverage is 97.5%
+      (97.4% before); the one YAML branch not covered is the probe disagreeing
+      with the file, which no input is known to cause.
 
 ## Milestone 42 — Remove the Lock File Between Runs
 

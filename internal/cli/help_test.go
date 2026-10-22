@@ -213,7 +213,8 @@ func TestDiscoverHelpDocumentsParsers(t *testing.T) {
 		t.Errorf("discoverHelp does not embed parsersNote:\n%s", discoverHelp)
 	}
 	code, stdout, _ := runMain(t, "", "help", "discover")
-	for _, want := range []string{"whole string value", `parser = "text"`, "A bump never falls back"} {
+	for _, want := range []string{"whole string value", `parser = "text"`, "A bump never falls back",
+		".yaml, .yml, or .cff", "more than one document", `key = "ghcr.io/me/app:"`, "aliases"} {
 		if code != ExitOK || !strings.Contains(stdout, want) {
 			t.Errorf("incrmit help discover: exit = %d, stdout lacks %q", code, want)
 		}
@@ -227,8 +228,9 @@ func TestHelpDocumentsKeys(t *testing.T) {
 		topic string
 		want  []string
 	}{
-		{"bump", []string{`key = "version"`, `key = "package.version"`, `key = "VERSION ?= "`, "--key version", "exit 3"}},
-		{"discover", []string{"composer.json, deno.json, jsr.json", "workspace.package.version", "tool.poetry.version", "private monorepo", "Running discover again"}},
+		{"bump", []string{`key = "version"`, `key = "package.version"`, `key = "appVersion"`, `key = "VERSION ?= "`, "--key version", "exit 3", "names an alias"}},
+		{"discover", []string{"composer.json, deno.json, jsr.json", "workspace.package.version", "tool.poetry.version", "private monorepo", "Running discover again",
+			"pubspec.yaml, snapcraft.yaml, galaxy.yml, CITATION.cff", "version and appVersion"}},
 		{"preview", []string{"KEY column"}},
 	} {
 		code, stdout, _ := runMain(t, "", "help", tt.topic)

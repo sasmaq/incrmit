@@ -5,6 +5,55 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `.yaml`, `.yml`, and `.cff` files are read as YAML, so a version counts
+  there only as a whole string value (`version: 1.2.3`, `appVersion: "1.4.2"`),
+  written plain or in quotes, and never inside an image reference, a range, a
+  description, a `|` or `>` block, a comment, or a key. An anchored version
+  counts once, at its anchor, and `discover --dry-run` lists the aliases a bump
+  changes with it (`L1 base: base: &v 1.2.3 (aliased at pinned)`); a `key`
+  that names an alias fails, naming the anchored value instead.
+  `parser = "yaml"` reads YAML under any other name. `discover` knows
+  `Chart.yaml` (`version` and `appVersion`, an entry for each), `pubspec.yaml`,
+  `snapcraft.yaml`, `galaxy.yml`, and `CITATION.cff` (`version`), and lists
+  their dependencies in `--dry-run` as skipped. A YAML file that does not
+  parse, such as a Jinja-templated conda `meta.yaml`, or that holds more than
+  one document, such as a Kubernetes manifest, is scanned as text, with the
+  reason in `--dry-run` (`deploy.yaml: 2 YAML documents, scanned as text`). A
+  bump drops a `pubspec.yaml` build number as it drops any build metadata:
+  `2.3.1+45` patches to `2.3.2`.
+
+### Changed
+
+- **A config written by an earlier `discover` for a YAML file may need
+  regenerating.** An entry for a `.yaml`, `.yml`, or `.cff` file now matches
+  only whole string values, so an entry that pinned a version found only in a
+  comment, a range, or a longer string finds nothing, and an entry for a file
+  of several documents names a file the YAML parser does not read. Either way
+  the bump fails with exit `3` before it writes anything. Run
+  `incrmit discover` again, or set `parser = "text"` on an entry to keep the
+  old behavior for that file. The case most likely to surprise is an image tag
+  in a Kubernetes manifest: track it with `parser = "text"` and the text before
+  the tag as its key (`key = "ghcr.io/me/app:"`). `undo` reads each file the
+  way the bump that wrote it did, so a bump made by an earlier version is
+  undone as text.
+- `incrmit` now depends on `go.yaml.in/yaml/v3`, which has no dependencies of
+  its own. The binary grows by about 0.3 to 0.4 MB.
+
+### Fixed
+
+- A version in a YAML file's range, description, image reference, or comment
+  is no longer taken for the project's. With a `Chart.yaml` at `version: 0.7.3`
+  and `appVersion: "1.4.2"`, holding `kubeVersion: ">=1.22.0-0"`, dependencies
+  at `12.5.6` and `"~17.11.3"`, the version in its description, and an image
+  reference in an annotation, `discover` wrote an entry for each and `--minor`
+  moved all seven with exit `0`, the range becoming `">=1.23.0"`. A
+  `pubspec.yaml` lost its SDK range and dependency pins the same way. Now the
+  chart's `version` and `appVersion` and the pubspec's `version` move alone.
+
 ## [0.3.12] - 2026-10-22
 
 ### Added

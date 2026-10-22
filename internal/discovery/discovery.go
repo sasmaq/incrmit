@@ -26,13 +26,16 @@ import (
 // for human-readable dry-run output), and the key it sits under when the
 // file's parser reads its format (nil for text). A long line is clipped to the
 // stretch around the token, with "..." marking each cut (see contextText).
-// Skip says why Generate gives it no entry, if it gives none.
+// Skip says why Generate gives it no entry, if it gives none. Aliases are the
+// paths of the YAML aliases that read the candidate's value, which a bump of
+// it changes too (files.Located.Aliases).
 type Occurrence struct {
 	Version version.Version
 	Line    int
 	Text    string
 	Key     files.KeyPath
 	Skip    Skip
+	Aliases []files.KeyPath
 }
 
 // Skip says why Generate writes no config entry for an occurrence.
@@ -40,13 +43,14 @@ type Skip int
 
 const (
 	// Listed is an occurrence Generate writes an entry for (one per
-	// candidate in a JSON or TOML file, one per version in a text file).
+	// candidate in a JSON, TOML, or YAML file, one per version in a text
+	// file).
 	Listed Skip = iota
 	// NotProject is a candidate in a known manifest that sits at none of its
 	// project keys (projectKeys): the version of a dependency, say.
 	NotProject
 	// RepeatedKey is a candidate whose key names more than one value, as a
-	// JSON key written twice does, so no key can name it alone.
+	// JSON or YAML key written twice does, so no key can name it alone.
 	RepeatedKey
 )
 
@@ -57,6 +61,10 @@ const (
 // versions of dependencies: a bump of the generated config then moves the
 // project's version and nothing else. A manifest with no version at any of
 // its project keys, such as a private monorepo root, gets no entry.
+//
+// A Helm chart has two: version is the chart's, appVersion the application's.
+// Both belong to the project and many charts keep them equal, so each gets an
+// entry, and a user who versions them separately deletes one.
 var projectKeys = map[string][]string{
 	"package.json":   {"version"},
 	"composer.json":  {"version"},
@@ -64,6 +72,11 @@ var projectKeys = map[string][]string{
 	"jsr.json":       {"version"},
 	"Cargo.toml":     {"package.version", "workspace.package.version"},
 	"pyproject.toml": {"project.version", "tool.poetry.version"},
+	"Chart.yaml":     {"version", "appVersion"},
+	"pubspec.yaml":   {"version"},
+	"snapcraft.yaml": {"version"},
+	"galaxy.yml":     {"version"},
+	"CITATION.cff":   {"version"},
 }
 
 // Result is a single discovered target: its path as a config names it, relative
@@ -73,7 +86,8 @@ var projectKeys = map[string][]string{
 // occurrences; distinct versions in one file are all captured here (see
 // Generate for how they map to config entries).
 //
-// A .json or .toml file its parser cannot read is scanned as text instead:
+// A .json, .toml, .yaml, .yml, or .cff file its parser cannot read, or a YAML
+// stream of more than one document, is scanned as text instead:
 // Parser is then files.ParserText and Fallback says why. Skipped lists the
 // values the parser passed over although they decode to a version (an escape
 // such as \u002e), so the dry run can say so. ProjectKeys are a known
@@ -112,17 +126,17 @@ const DefaultMaxScanBytes = 32 << 20 // 32 MiB
 // file with, so what discovery records is exactly what a bump later replaces.
 // The text parser takes every token version.FindTokens finds and version.Parse
 // accepts, so an IPv4 address such as 192.168.1.1 (matched whole, never
-// sliced) and two-component numbers are skipped; the JSON and TOML parsers
-// take only those that are a whole string value. See version.FindTokens for
+// sliced) and two-component numbers are skipped; the JSON, TOML, and YAML
+// parsers take only those that are a whole string value. See version.FindTokens for
 // the pattern and the filename guard.
 
 // Discover walks the tree rooted at root and returns every file that contains a
 // semantic version token, sorted by path for deterministic output. It scans the
 // contents of any text file rather than relying on file names: every version
 // candidate found in a file is recorded as an occurrence of that file's
-// version. A file's name decides only how it is read: a .json or .toml file by
-// its format, falling back to text when it is not that format, and anything
-// else as text.
+// version. A file's name decides only how it is read: a .json, .toml, .yaml,
+// .yml, or .cff file by its format, falling back to text when it is not that
+// format, and anything else as text.
 //
 // The optional ignore patterns come from the config's `ignore` list and are
 // applied in addition to the built-in ignoredDirs: any file or directory whose
@@ -321,16 +335,16 @@ func Generate(results []Result, ignore ...string) ([]byte, error) {
 // Entries returns the config entries r gives, in the order its occurrences
 // appear. A file read as text gives one entry per distinct version, with no
 // key: identical repeats collapse to a single entry, while a file with several
-// differing versions yields several entries that share the path. A JSON or
-// TOML file gives one entry per candidate, each with the candidate's key, so
-// each rewrites exactly one value, can be deleted on its own, and says in the
-// config what it is; that leaves out the candidates Skip marks (a known
+// differing versions yields several entries that share the path. A JSON,
+// TOML, or YAML file gives one entry per candidate, each with the candidate's
+// key, so each rewrites exactly one value, can be deleted on its own, and says
+// in the config what it is; that leaves out the candidates Skip marks (a known
 // manifest's dependencies, a key written twice). A candidate with no key,
 // which only a document that is one string has, gets an entry without one.
 //
 // An entry records its `parser` only when the file was read with another
-// parser than its name selects, which is a .json or .toml file scanned as
-// text, so a bump reads it the way discover did.
+// parser than its name selects, which is a .json, .toml, .yaml, .yml, or .cff
+// file scanned as text, so a bump reads it the way discover did.
 func (r Result) Entries() []config.FileEntry {
 	var entries []config.FileEntry
 	seen := make(map[string]bool, len(r.Occurrences))
@@ -362,9 +376,8 @@ func (r Result) Entries() []config.FileEntry {
 // the text of that line, and its key. Files larger than maxBytes are skipped
 // (maxBytes <= 0 means no cap). It is best-effort: unreadable, oversized,
 // non-regular, and binary files yield ok == false, and so does a file with no
-// candidate and nothing skipped. A .json or .toml file its parser cannot read
-// is scanned as text, with the parser's error recorded as the Result's
-// Fallback.
+// candidate and nothing skipped. A file its format's parser cannot read is
+// scanned as text, with the parser's error recorded as the Result's Fallback.
 func detect(path string, maxBytes int64) (Result, bool) {
 	capped := maxBytes > 0
 
@@ -406,6 +419,9 @@ func detect(path string, maxBytes int64) (Result, bool) {
 		}
 	}
 	r.Occurrences = scan(data, loc.Candidates)
+	for i, c := range loc.Candidates {
+		r.Occurrences[i].Aliases = loc.Aliases(c)
+	}
 	r.Skipped = loc.Skipped
 	if r.Parser != files.ParserText {
 		r.ProjectKeys = projectKeys[filepath.Base(path)]
@@ -414,10 +430,10 @@ func detect(path string, maxBytes int64) (Result, bool) {
 	return r, len(r.Occurrences) > 0 || len(r.Skipped) > 0
 }
 
-// markSkips marks the occurrences of a JSON or TOML file that Generate gives
-// no entry: in a known manifest, every candidate at none of its project keys,
-// and anywhere, a candidate whose key names more than one value, which no key
-// can name alone. loc is what the file's parser found.
+// markSkips marks the occurrences of a JSON, TOML, or YAML file that Generate
+// gives no entry: in a known manifest, every candidate at none of its project
+// keys, and anywhere, a candidate whose key names more than one value, which
+// no key can name alone. loc is what the file's parser found.
 func markSkips(r *Result, loc *files.Located) {
 	for i := range r.Occurrences {
 		o := &r.Occurrences[i]

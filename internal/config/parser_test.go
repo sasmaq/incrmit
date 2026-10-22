@@ -31,8 +31,20 @@ parser = "toml"
 
 [[files]]
 path = "VERSION"
+
+[[files]]
+path = "Chart.yaml"
+
+[[files]]
+path = "deploy.yaml"
+parser = "text"
+
+[[files]]
+path = "environment"
+parser = "yaml"
+key = "dependencies[0]"
 `
-	cfgPath := writeConfig(t, body, "package.json", "tsconfig.json", "Pipfile", "Cargo.toml", "VERSION")
+	cfgPath := writeConfig(t, body, "package.json", "tsconfig.json", "Pipfile", "Cargo.toml", "VERSION", "Chart.yaml", "deploy.yaml", "environment")
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -43,6 +55,9 @@ path = "VERSION"
 		"Pipfile":       files.ParserTOML,
 		"Cargo.toml":    files.ParserTOML,
 		"VERSION":       files.ParserText,
+		"Chart.yaml":    files.ParserYAML,
+		"deploy.yaml":   files.ParserText,
+		"environment":   files.ParserYAML,
 	}
 	for _, f := range cfg.Files {
 		p, err := f.FileParser()
@@ -59,7 +74,11 @@ func TestLoadRejectsBadParser(t *testing.T) {
 		want       []string
 	}{
 		{"unknown value", "[[files]]\npath = \"VERSION\"\n[[files]]\npath = \"tsconfig.json\"\nparser = \"jsonc\"\n",
-			[]string{"VERSION", "tsconfig.json"}, []string{"files[1] (tsconfig.json)", `"jsonc"`, `"json"`, `"toml"`, `"text"`}},
+			[]string{"VERSION", "tsconfig.json"}, []string{"files[1] (tsconfig.json)", `"jsonc"`, `"json"`, `"toml"`, `"yaml"`, `"text"`}},
+		{"yml is not a parser's name", "[[files]]\npath = \"ci.yml\"\nparser = \"yml\"\n",
+			[]string{"ci.yml"}, []string{"files[0] (ci.yml)", `unknown parser "yml"`}},
+		{"a YAML key is a path", "[[files]]\npath = \"Chart.yaml\"\nkey = \"appVersion: \"\n",
+			[]string{"Chart.yaml"}, []string{"files[0] (Chart.yaml)", "is not a key path", "for a YAML file, a key is a path"}},
 		{"case matters", "[[files]]\npath = \"package.json\"\nparser = \"JSON\"\n",
 			[]string{"package.json"}, []string{"files[0] (package.json)", `"JSON"`}},
 		{"one path read two ways", "[[files]]\npath = \"package.json\"\nversion = \"1.2.3\"\n" +

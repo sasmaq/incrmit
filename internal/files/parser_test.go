@@ -15,18 +15,25 @@ import (
 
 func TestParserFor(t *testing.T) {
 	tests := map[string]Parser{
-		"package.json":          ParserJSON,
-		"sub/dir/settings.json": ParserJSON,
-		"PACKAGE.JSON":          ParserJSON,
-		"tsconfig.Json":         ParserJSON,
-		"Cargo.toml":            ParserTOML,
-		"pyproject.TOML":        ParserTOML,
-		"Pipfile":               ParserText,
-		"VERSION":               ParserText,
-		"package.json5":         ParserText,
-		"notes.json.bak":        ParserText,
-		"config.tom":            ParserText,
-		".json":                 ParserJSON,
+		"package.json":             ParserJSON,
+		"sub/dir/settings.json":    ParserJSON,
+		"PACKAGE.JSON":             ParserJSON,
+		"tsconfig.Json":            ParserJSON,
+		"Cargo.toml":               ParserTOML,
+		"pyproject.TOML":           ParserTOML,
+		"Pipfile":                  ParserText,
+		"VERSION":                  ParserText,
+		"package.json5":            ParserText,
+		"notes.json.bak":           ParserText,
+		"config.tom":               ParserText,
+		".json":                    ParserJSON,
+		"Chart.yaml":               ParserYAML,
+		".github/workflows/ci.yml": ParserYAML,
+		"CITATION.cff":             ParserYAML,
+		"VALUES.YAML":              ParserYAML,
+		"galaxy.Yml":               ParserYAML,
+		"values.yaml.bak":          ParserText,
+		"meta.yaml.j2":             ParserText,
 	}
 	for path, want := range tests {
 		if got := ParserFor(path); got != want {
@@ -36,12 +43,12 @@ func TestParserFor(t *testing.T) {
 }
 
 func TestParseParser(t *testing.T) {
-	for _, name := range []string{"json", "toml", "text"} {
+	for _, name := range []string{"json", "toml", "yaml", "text"} {
 		if p, err := ParseParser(name); err != nil || string(p) != name {
 			t.Errorf("ParseParser(%q) = %q, %v", name, p, err)
 		}
 	}
-	for _, name := range []string{"", "JSON", "yaml", "jsonc", " json"} {
+	for _, name := range []string{"", "JSON", "YAML", "yml", "ini", "jsonc", " json"} {
 		_, err := ParseParser(name)
 		if err == nil {
 			t.Errorf("ParseParser(%q) accepted it", name)
@@ -82,11 +89,13 @@ func TestKeyPathString(t *testing.T) {
 }
 
 // parserFixtures are the golden fixtures each parser is tested against: the
-// manifests the format fixtures already hold, a Cargo.toml, and the files
-// Milestone 39 was reproduced with (testdata/repro, kept as a project tree so
-// the cli tests can copy it). Each golden lists every token the text parser
-// finds, with the key the file's parser places it at or a note that it is not
-// a candidate there, so the golden shows what reading the format excludes.
+// manifests the format fixtures already hold, a Cargo.toml, the files
+// Milestones 39 and 41 were reproduced with (testdata/repro, kept as a project
+// tree so the cli tests can copy it), and the YAML shapes. Each golden lists
+// every token the text parser finds, with the key the file's parser places it
+// at or a note that it is not a candidate there, so the golden shows what
+// reading the format excludes; a YAML candidate also lists the aliases that
+// read it.
 var parserFixtures = []struct{ golden, input string }{
 	{"package.json", "package.json.input"},
 	{"package.min.json", "package.min.json.input"},
@@ -96,6 +105,10 @@ var parserFixtures = []struct{ golden, input string }{
 	{"repro-package.json", "repro/package.json"},
 	{"repro-Cargo.toml", "repro/Cargo.toml"},
 	{"repro-pyproject.toml", "repro/pyproject.toml"},
+	{"repro-Chart.yaml", "repro/Chart.yaml"},
+	{"repro-pubspec.yaml", "repro/pubspec.yaml"},
+	{"shapes.yaml", "shapes.yaml.input"},
+	{"bom-crlf.yaml", "bom-crlf.yaml.input"},
 }
 
 func TestLocateGolden(t *testing.T) {
@@ -152,6 +165,13 @@ func describeCandidates(t *testing.T, p Parser, data []byte) string {
 			where = pc.Key.String()
 			if p == ParserText {
 				where = "(text)"
+			}
+			for i, a := range loc.Aliases(pc) {
+				sep := ", "
+				if i == 0 {
+					sep = "\taliased at "
+				}
+				where += sep + a.String()
 			}
 		}
 		fmt.Fprintf(&b, "L%d\t%s\t%s\n", lineAt(data, c.Start), c.Version, where)
@@ -565,7 +585,7 @@ func TestAbsentDigits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := absentDigits(data, doc)
+	got := absentDigits(data, tomlTexts(doc))
 	if len(got) != 9 || strings.Contains(string(data), got) {
 		t.Fatalf("absentDigits = %q, which the file holds or is not nine digits", got)
 	}
@@ -664,7 +684,7 @@ func TestRewriteRefusesUnplannedChanges(t *testing.T) {
 			t.Errorf("%s: Rewrite of input that does not parse succeeded", p)
 		}
 	}
-	if _, _, err := Rewrite(Parser("yaml"), []byte("1.2.3"), []Candidate{{Start: 0, End: 5, Version: v123}}, bump); err == nil {
+	if _, _, err := Rewrite(Parser("ini"), []byte("1.2.3"), []Candidate{{Start: 0, End: 5, Version: v123}}, bump); err == nil {
 		t.Error("Rewrite with an unknown parser succeeded")
 	}
 
@@ -724,7 +744,7 @@ func TestTextCandidatesAreTheScannersTokens(t *testing.T) {
 	}) {
 		t.Errorf("text candidates = %+v, want %+v", loc.Candidates, want)
 	}
-	if _, err := Parser("yaml").Locate(data); err == nil {
+	if _, err := Parser("ini").Locate(data); err == nil {
 		t.Error("an unknown parser located candidates")
 	}
 }

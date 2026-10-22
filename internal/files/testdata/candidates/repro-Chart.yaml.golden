@@ -1,0 +1,8 @@
+parser: yaml
+L3	1.4.2	(not a candidate)
+L5	0.7.3	version
+L6	1.4.2	appVersion
+L7	1.22.0-0	(not a candidate)
+L10	12.5.6	dependencies[0].version
+L13	17.11.3	(not a candidate)
+L18	1.4.2	(not a candidate)

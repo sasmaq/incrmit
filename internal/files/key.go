@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"go.yaml.in/yaml/v3"
+
 	"github.com/sasmaq/incrmit/internal/version"
 )
 
@@ -18,8 +20,8 @@ import (
 // manifest too, or a tool's version in a Makefile. It is one optional field of
 // a [[files]] entry (and the bump's --key), and the entry's parser reads it:
 //
-//   - For JSON and TOML it is a path from the document's root, written the way
-//     KeyPath.String writes one (package.version, bin[0].version,
+//   - For JSON, TOML, and YAML it is a path from the document's root, written
+//     the way KeyPath.String writes one (package.version, bin[0].version,
 //     dependencies."@types/node", "a.b" for one key holding a dot). It names
 //     the whole path, never a suffix, and the value there must be a candidate.
 //   - For text, which has no structure, it is the literal bytes right before
@@ -40,11 +42,11 @@ import (
 type Key struct {
 	parser Parser
 	raw    string  // the key as written
-	path   KeyPath // for JSON and TOML, raw read as a path
+	path   KeyPath // for JSON, TOML, and YAML, raw read as a path
 }
 
 // ParseKey reads s as a key for a file p reads. A key for the text parser is
-// any text without a line break; one for JSON or TOML must be a path
+// any text without a line break; one for JSON, TOML, or YAML must be a path
 // (ParsePath). An empty key is an error for every parser.
 func ParseKey(p Parser, s string) (Key, error) {
 	if s == "" {
@@ -56,7 +58,7 @@ func ParseKey(p Parser, s string) (Key, error) {
 			return Key{}, fmt.Errorf("key %q holds a line break; %s", s, keyHint(p))
 		}
 		return Key{parser: p, raw: s}, nil
-	case ParserJSON, ParserTOML:
+	case ParserJSON, ParserTOML, ParserYAML:
 		path, err := ParsePath(s)
 		if err != nil {
 			return Key{}, fmt.Errorf("key %q is not a key path (%w); %s", s, err, keyHint(p))
@@ -256,21 +258,26 @@ func (e *KeyError) Error() string {
 	return "key " + e.Key.String() + " " + e.Msg
 }
 
-// keyIndex is what Named looks a path up in: every value of a JSON or TOML
-// document by its path, in document order, and the candidates by theirs.
+// keyIndex is what Named looks a path up in: every value of a JSON, TOML, or
+// YAML document by its path, in document order, and the candidates by
+// theirs. A YAML document keeps its root too, to follow a path through an
+// alias.
 type keyIndex struct {
 	values map[string][]any
 	cands  map[string][]int // indexes into Located.Candidates
+	yaml   *yaml.Node
 }
 
 // Named returns the candidates k names in the file the candidates were
 // located in, which must be read with the parser k was made for.
 //
-// For JSON and TOML that is exactly one candidate, the value at k's path. A
-// path the file does not have, names more than one value (a JSON key written
-// twice), or holds anything but a candidate is a *KeyError. For text it is
-// every candidate whose bytes come right after k's, in byte order, and none
-// is a *KeyError.
+// For JSON, TOML, and YAML that is exactly one candidate, the value at k's
+// path. A path the file does not have, names more than one value (a JSON or
+// YAML key written twice), or holds anything but a candidate is a *KeyError,
+// and so in YAML is a path naming an alias, or one the file has only through
+// an alias or a merge key, which the error says where the value is written.
+// For text it is every candidate whose bytes come right after k's, in byte
+// order, and none is a *KeyError.
 func (l *Located) Named(k Key) ([]Candidate, error) {
 	if k.parser != l.parser {
 		return nil, fmt.Errorf("files: a key for a %s file cannot name a value in a %s file", k.parser.label(), l.parser.label())
@@ -294,6 +301,11 @@ func (l *Located) Named(k Key) ([]Candidate, error) {
 	}
 	p := k.path.String()
 	values := idx.values[p]
+	if l.parser == ParserYAML {
+		if err := yamlKeyError(idx.yaml, k, values); err != nil {
+			return nil, err
+		}
+	}
 	switch len(values) {
 	case 0:
 		return nil, &KeyError{Key: k, Msg: "is not in the file"}
@@ -342,8 +354,8 @@ func (l *Located) Claim(k Key, pin version.Version) ([]int, error) {
 	return at, nil
 }
 
-// index builds the keyIndex of a JSON or TOML file on first use. It decodes
-// the file again, which only an entry with a key costs.
+// index builds the keyIndex of a JSON, TOML, or YAML file on first use. It
+// decodes the file again, which only an entry with a key costs.
 func (l *Located) index() (*keyIndex, error) {
 	if l.keys != nil {
 		return l.keys, nil
@@ -372,6 +384,17 @@ func (l *Located) index() (*keyIndex, error) {
 			return nil, tomlParseError(err, false)
 		}
 		walkTOML(doc, nil, add)
+	case ParserYAML:
+		root, err := decodeYAML(l.data, false)
+		if err != nil {
+			return nil, err
+		}
+		idx.yaml = root
+		walkYAML(root, func(path KeyPath, n *yaml.Node, role yamlRole, _ *yaml.Node) {
+			if role == yamlValue {
+				add(path, n)
+			}
+		})
 	}
 	for i, c := range l.Candidates {
 		p := c.Key.String()
@@ -402,6 +425,8 @@ func describeValue(v any) string {
 		return "holds null, not a version"
 	case json.Number, int64, float64:
 		return "holds a number; a version is a string"
+	case *yaml.Node:
+		return describeYAML(t)
 	default:
 		// TOML's dates and times are the only values left.
 		return "holds a date or time, not a version"

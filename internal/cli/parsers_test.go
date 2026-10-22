@@ -262,7 +262,7 @@ func TestUnknownParserIsAConfigError(t *testing.T) {
 	snap := snapshotProject(t, dir)
 	for _, args := range [][]string{nil, {"--dry-run"}, {"preview"}} {
 		code, _, stderr := runMain(t, dir, args...)
-		if code != ExitError || !strings.Contains(stderr, `files[1] (tsconfig.json): unknown parser "jsonc"; use "json", "toml", or "text"`) {
+		if code != ExitError || !strings.Contains(stderr, `files[1] (tsconfig.json): unknown parser "jsonc"; use "json", "toml", "yaml", or "text"`) {
 			t.Errorf("%v: exit %d, stderr %q", args, code, stderr)
 		}
 	}
@@ -340,10 +340,10 @@ func TestUndoUsesTheJournalsParser(t *testing.T) {
 
 	t.Run("unknown parser", func(t *testing.T) {
 		dir := project(t, "[[files]]\npath = \"package.json\"\nversion = \"1.2.4\"\n", map[string]string{"package.json": bumped})
-		saveEntry(t, dir, history.Change{Path: "package.json", Old: "1.2.3", New: "1.2.4", Parser: "yaml"})
+		saveEntry(t, dir, history.Change{Path: "package.json", Old: "1.2.3", New: "1.2.4", Parser: "ini"})
 		snap := snapshotProject(t, dir)
 		code, _, stderr := runMain(t, dir, "undo")
-		if code != ExitError || !strings.Contains(stderr, `package.json: the journal records parser "yaml", which this version of incrmit does not know (refusing to undo)`) {
+		if code != ExitError || !strings.Contains(stderr, `package.json: the journal records parser "ini", which this version of incrmit does not know (refusing to undo)`) {
 			t.Errorf("exit %d, stderr %q", code, stderr)
 		}
 		assertSnapshot(t, dir, snap, "after the refused undo")

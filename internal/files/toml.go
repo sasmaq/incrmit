@@ -74,7 +74,7 @@ func locateTOML(data []byte) (*Located, error) {
 		return loc, nil
 	}
 
-	pr := newProbe(data, doc, toks)
+	pr := newProbe(data, tomlTexts(doc), toks)
 	pdoc, err := decodeTOML(pr.data)
 	if err != nil {
 		return nil, tomlParseError(err, true)
@@ -126,8 +126,8 @@ func tomlParseError(err error, probe bool) *ParseError {
 	return pe
 }
 
-// probe is the copy of a TOML file locateTOML decodes, with what is needed to
-// read its answer back.
+// probe is the copy of a file locateTOML or locateYAML decodes, with what is
+// needed to read its answer back.
 type probe struct {
 	data   []byte
 	prefix string         // the digits every placeholder segment starts with
@@ -135,12 +135,15 @@ type probe struct {
 	back   *strings.Replacer
 }
 
-func newProbe(data []byte, doc map[string]any, toks []Candidate) *probe {
+// newProbe builds the probe copy of data, which holds toks. decoded is every
+// key and string the file decodes to, which the placeholders' prefix must not
+// occur in (absentDigits).
+func newProbe(data []byte, decoded []string, toks []Candidate) *probe {
 	segs := 0
 	for _, c := range toks {
 		segs += bytes.Count(data[c.Start:c.End], []byte(".")) + 1
 	}
-	pr := &probe{prefix: absentDigits(data, doc), whole: make(map[string]int, len(toks))}
+	pr := &probe{prefix: absentDigits(data, decoded), whole: make(map[string]int, len(toks))}
 	width := max(9, len(strconv.Itoa(segs)))
 
 	var b bytes.Buffer
@@ -218,17 +221,10 @@ func isScalar(v any) bool {
 	}
 }
 
-// absentDigits returns a run of digits that occurs neither in data nor in any
-// key or string doc decodes to, so every occurrence in a probe copy is a
-// placeholder's. The run is 987654321 when that is free, as it nearly always
-// is. Otherwise it is built a digit at a time, each time choosing the digit
-// that fewest runs of that width in the file continue the prefix with: the
-// count shrinks at least tenfold per digit, so after nine digits it is zero
-// for any file with fewer than a billion digits in it, and the width grows
-// for one with more. Each step is one pass over the text, so a file planted
-// with likely candidates costs nine passes rather than one per candidate.
-func absentDigits(data []byte, doc map[string]any) string {
-	texts := []string{string(data)}
+// tomlTexts returns every key and string of a decoded TOML document, for
+// absentDigits.
+func tomlTexts(doc map[string]any) []string {
+	var texts []string
 	walkTOML(doc, nil, func(path KeyPath, v any) {
 		if n := len(path); n > 0 && path[n-1].Index < 0 {
 			texts = append(texts, path[n-1].Name)
@@ -237,6 +233,20 @@ func absentDigits(data []byte, doc map[string]any) string {
 			texts = append(texts, s)
 		}
 	})
+	return texts
+}
+
+// absentDigits returns a run of digits that occurs neither in data nor in any
+// of decoded, the keys and strings the file decodes to, so every occurrence in
+// a probe copy is a placeholder's. The run is 987654321 when that is free, as it nearly always
+// is. Otherwise it is built a digit at a time, each time choosing the digit
+// that fewest runs of that width in the file continue the prefix with: the
+// count shrinks at least tenfold per digit, so after nine digits it is zero
+// for any file with fewer than a billion digits in it, and the width grows
+// for one with more. Each step is one pass over the text, so a file planted
+// with likely candidates costs nine passes rather than one per candidate.
+func absentDigits(data []byte, decoded []string) string {
+	texts := append([]string{string(data)}, decoded...)
 
 	const preferred = "987654321"
 	free := true

@@ -50,9 +50,12 @@ semantic version
 locates the version token in each file, increments the major, minor, or patch
 component, and writes the new value back atomically.
 A
-.Pa .json
+.Pa .json ,
+.Pa .toml ,
+.Pa .yaml ,
+.Pa .yml ,
 or
-.Pa .toml
+.Pa .cff
 file is read by its format, so only a whole string value counts as its version
 .Pq see Sx PARSERS .
 Only the version token is changed; surrounding file contents and permissions
@@ -158,16 +161,22 @@ Each file is read with a parser chosen by its extension, ignoring case:
 .Pa .json
 files with the JSON parser,
 .Pa .toml
-files with the TOML parser, and every other file as text.
+files with the TOML parser,
+.Pa .yaml ,
+.Pa .yml ,
+and
+.Pa .cff
+files with the YAML parser, and every other file as text.
 .Pp
 As text, every version token in the file counts.
-Read as JSON or TOML, a token counts only when it is a whole string value,
-such as
-.Sy \(dqversion\(dq: \(dq1.2.3\(dq
+Read as JSON, TOML, or YAML, a token counts only when it is a whole string
+value, such as
+.Sy \(dqversion\(dq: \(dq1.2.3\(dq ,
+.Sy version = \(dq1.2.3\(dq ,
 or
-.Sy version = \(dq1.2.3\(dq ;
+.Sy version: 1.2.3 ;
 a version inside a longer string
-.Pq a URL, a range such as Sy ^18.3.1 , a description ,
+.Pq a URL, a range such as Sy ^18.3.1 , an image reference, a description ,
 in a comment, or in a key does not.
 Each one that counts knows the key it sits under, written the way TOML writes a
 dotted key
@@ -186,12 +195,31 @@ does not count, since
 .Nm
 rewrites bytes and never re-encodes a string.
 .Pp
+In YAML a version counts written plain, single-quoted, double-quoted, or
+tagged
+.Sy !!str ,
+and not in a
+.Sq |
+or
+.Sq >
+block or with a tag of its own
+.Pq Sy !semver 1.2.3 .
+An alias is not a version of its own: the version counts once, at its anchor
+.Pq Sy base: &v 1.2.3 ,
+and
+.Cm discover Fl -dry-run
+lists the aliases
+.Pq Sy pinned: *v ,
+merge keys included, that a bump changes with it.
+A YAML file holds one document; a stream of several, such as a Kubernetes
+manifest, is not read as YAML.
+.Pp
 The
 .Sy parser
 key of a
 .Sy [[files]]
 entry
-.Pq \(dqjson\(dq , \(dqtoml\(dq , or \(dqtext\(dq
+.Pq \(dqjson\(dq , \(dqtoml\(dq , \(dqyaml\(dq , or \(dqtext\(dq
 overrides the extension, for a JSON file with comments such as
 .Pa tsconfig.json
 or TOML under another name such as
@@ -199,11 +227,10 @@ or TOML under another name such as
 Entries for one file must agree on it.
 .Pp
 .Cm discover
-reads a
-.Pa .json
-or
-.Pa .toml
-file that does not parse as text instead, says why in the dry run, and writes
+reads a file its format's parser cannot read, such as a conda
+.Pa meta.yaml
+with Jinja templates, as text instead, and so a YAML file of more than one
+document; it says why in the dry run, and writes
 .Sy parser = \(dqtext\(dq
 into its entries.
 A bump never falls back: an entry whose parser cannot read its file fails with
@@ -215,10 +242,24 @@ target has no entry, so it is read as
 would read it, falling back to text with a note.
 A TOML file that the reader accepts although the TOML specification forbids it,
 such as one defining a key twice, can also be refused, because the versions in
-it cannot be placed with certainty.
+it cannot be placed with certainty, and so can a YAML file with a key that holds
+a few dozen versions, past the reader's limit of 1,024 characters once each is
+widened to be placed.
+.Pp
+To track an image tag in a Kubernetes manifest, give its entry
+.Sy parser = \(dqtext\(dq
+and the text before the tag as its key:
+.Bd -literal -offset indent
+[[files]]
+  path = "deploy.yaml"
+  version = "1.4.2"
+  parser = "text"
+  key = "ghcr.io/me/app:"
+.Ed
 .Pp
 A config written before the parsers may list a version found only in a URL, a
-range, or a comment of a JSON or TOML file; its bump now fails with
+range, or a comment of a JSON, TOML, or YAML file, or a YAML file of several
+documents; its bump now fails with
 .Sq expected version not found
 .Pq exit 3
 before writing anything.
@@ -245,7 +286,7 @@ entry says which occurrence is the project's version, and an entry with one
 rewrites exactly the occurrences it names.
 It is read by the entry's parser:
 .Bl -tag -width Ds
-.It JSON and TOML
+.It JSON, TOML, and YAML
 A path from the top of the document, written the way TOML writes a dotted key:
 bare parts of letters, digits,
 .Sq _ ,
@@ -255,6 +296,9 @@ any other part double-quoted, with TOML's escapes; and an array index as
 .Sy [N] .
 The path is matched whole, never as a suffix, and the value there must be a
 string holding the entry's version.
+In YAML it must be where the version is written: a key naming an alias, or a
+path the data has only through an alias or a merge key, fails, naming the
+anchored value to use instead.
 .It text
 The text right before the version on its line, matched byte for byte, case and
 whitespace included, with no pattern language.
@@ -274,6 +318,11 @@ For example:
   key = "package.version"   # not anyhow = { version = "0.4.0" }
 
 [[files]]
+  path = "Chart.yaml"
+  version = "1.4.2"
+  key = "appVersion"        # not dependencies[0].version
+
+[[files]]
   path = "Makefile"
   version = "1.2.3"
   key = "VERSION ?= "       # not .../tool-1.2.3.tar.gz
@@ -284,7 +333,7 @@ names a path the file holds twice fails with exit 3, naming the file and the
 key, before anything is written; so does a text key no occurrence of the
 version follows.
 A key its parser cannot read
-.Pq empty, holding a line break, or not a path in a JSON or TOML file
+.Pq empty, holding a line break, or not a path in a JSON, TOML, or YAML file
 is a config error, as are two entries that would rewrite one occurrence
 (exit 1).
 An entry with a key and no
@@ -296,7 +345,8 @@ state file, so
 reverts the same occurrences.
 .Pp
 .Cm discover
-writes a key for each version in a JSON or TOML file, one entry per value.
+writes a key for each version in a JSON, TOML, or YAML file, one entry per
+value.
 In
 .Pa package.json ,
 .Pa composer.json ,
@@ -311,16 +361,37 @@ at
 .Sy package.version
 or
 .Sy workspace.package.version ,
-and in
+in
 .Pa pyproject.toml
 at
 .Sy project.version
 or
-.Sy tool.poetry.version ;
+.Sy tool.poetry.version ,
+in
+.Pa pubspec.yaml ,
+.Pa snapcraft.yaml ,
+.Pa galaxy.yml ,
+and
+.Pa CITATION.cff
+at
+.Sy version ,
+and in a Helm
+.Pa Chart.yaml
+at both
+.Sy version ,
+the chart's, and
+.Sy appVersion ,
+the application's, each of which gets an entry;
 in those, it writes only the project's version and lists every other version
 in the dry run as skipped, with the key that would track it.
 Such a manifest with no version at those keys, such as a private monorepo root,
 gets no entry.
+A bump drops build metadata, and so the build number of a
+.Pa pubspec.yaml
+version: a patch bump of
+.Sy 2.3.1+45
+writes
+.Sy 2.3.2 .
 It writes no key for a text file; add one by hand.
 .Sh COMMANDS
 .Bl -tag -width Ds
@@ -346,8 +417,10 @@ is listed with a leading
 The config's ignore patterns are matched against the same paths.
 Each file is read with its parser
 .Pq see Sx PARSERS ,
-and the dry run prints a JSON or TOML occurrence's key next to its line number.
-Each JSON or TOML value gets an entry with its key, and a known manifest only
+and the dry run prints a JSON, TOML, or YAML occurrence's key next to its line
+number, and a YAML occurrence's aliases after it.
+Each JSON, TOML, or YAML value gets an entry with its key, and a known manifest
+only
 its own version
 .Pq see Sx KEYS .
 .It Cm preview
@@ -451,7 +524,8 @@ Accepted by
 too.
 Without
 .Fl f ,
-empty, or not a path for a JSON or TOML file, it is a usage error (exit 2).
+empty, or not a path for a JSON, TOML, or YAML file, it is a usage error
+(exit 2).
 .It Fl M , Fl -major
 Bump the major version (resets minor and patch).
 .It Fl m , Fl -minor

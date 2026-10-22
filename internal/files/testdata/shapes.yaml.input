@@ -1,0 +1,35 @@
+# The shapes the YAML parser reads, one or two per key. Comments hold 9.9.9.
+plain: 1.0.1
+single: '1.0.2'
+double: "1.0.3"
+commented: 1.0.4 # was 1.0.0
+tagged: !!str 1.0.5
+custom: !semver 1.0.6
+flow-map: {version: 1.0.7, range: "^1.0.7", image: "ghcr.io/me/app:1.0.7"}
+flow-seq: [1.0.8, '1.0.9', [v1.0.10]]
+literal: |
+  version: 1.1.0
+folded: >
+  version: 1.1.1
+stripped: |-
+  1.1.2
+spread: this line folds
+  onto 1.1.3
+2.0.0: a key that is a version
+"2.0.1": {version: 2.0.2}
+? [2.0.3, complex]
+: 2.0.4
+base: &v 3.0.0
+pinned: *v
+defaults: &defaults
+  version: 3.1.0
+  channel: stable
+prod:
+  <<: *defaults
+  channel: fast
+dup: 4.0.0
+dup: 4.0.1
+escaped: "4.1\x2e0"
+url: https://example.com/releases/4.2.0/notes
+number: 4.3
+date: 2024-05-01

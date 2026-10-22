@@ -1,0 +1,4 @@
+parser: yaml
+L2	1.2.3	version
+L5	2.0.0	deps[0].version
+L5	1.9.9	(not a candidate)

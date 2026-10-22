@@ -42,7 +42,7 @@ func FuzzLoad(f *testing.F) {
 	f.Add([]byte("[[files]]\n  path = \"missing.txt\"\n"))
 	f.Add([]byte("[[files]]\n  path = \"\"\n"))
 	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  parser = \"toml\"\n"))
-	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  parser = \"yaml\"\n"))
+	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  parser = \"ini\"\n"))
 	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  key = \"VERSION ?= \"\n"))
 	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  parser = \"json\"\n  key = 'a.\"b.c\"[0]'\n"))
 	f.Add([]byte("[[files]]\n  path = \"app.txt\"\n  key = \"\"\n"))

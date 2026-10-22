@@ -1,0 +1,13 @@
+Discovered 3 file(s) under . (no config written):
+  Chart.yaml:
+    L5 version: version: 0.7.3
+    L6 appVersion: appVersion: "1.4.2"
+    L10 dependencies[0].version: skipped, not the project's own version; to track it, add an entry with key = "dependencies[0].version"
+  deploy.yaml: 2 YAML documents, scanned as text
+    L7: app.kubernetes.io/version: "1.4.2"
+    L20: image: ghcr.io/example/webapp:1.4.2
+    L30: app.kubernetes.io/version: "1.4.2"
+  pubspec.yaml:
+    L4 version: version: 2.3.1+45
+    L12 dependencies.http: skipped, not the project's own version; to track it, add an entry with key = "dependencies.http"
+    L18 dev_dependencies.flutter_lints: skipped, not the project's own version; to track it, add an entry with key = "dev_dependencies.flutter_lints"

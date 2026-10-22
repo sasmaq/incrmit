@@ -14,8 +14,8 @@ must share the same version number and be incremented together.
 In scope:
 
 - Parsing semantic versions (`[v]MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`) from
-  text files, and reading JSON and TOML files by their format so that only a
-  whole string value counts as a version there.
+  text files, and reading JSON, TOML, and YAML files by their format so that
+  only a whole string value counts as a version there.
 - Incrementing the major, minor, or patch component.
 - Promoting a prerelease to its release (`--release`) and starting or advancing
   one (`--pre`).
@@ -38,7 +38,13 @@ Out of scope (for the initial version):
 ### Goals
 
 - Keep versions across multiple files in sync with a single command.
-- Be dependency-light and produce a single static binary.
+- Be dependency-light and produce a single static binary. The module requires
+  three others, `github.com/BurntSushi/toml` (the config, the journal, and
+  TOML targets), `golang.org/x/sys` (the Windows lock, §8.6), and
+  `go.yaml.in/yaml/v3` (YAML targets, §9.7), and none of them requires
+  anything, so there are no transitive dependencies. A fourth needs a format or
+  platform the standard library cannot serve and a record of what was weighed,
+  as §9.6 and §9.7 keep for the two decoders.
 - Provide safe defaults (patch bump, dry-run preview) and clear output.
 - Be scriptable and CI-friendly with predictable exit codes.
 
@@ -113,8 +119,9 @@ packages:
 - `discovery` — walks the filesystem, detects version strings, and emits config.
 - `files` — reads and writes target files, replacing only the version token,
   and locates the versions in a file with a parser chosen for its format (text,
-  JSON, or TOML). The parser is the seam every command takes its ranges from
-  (see [section 9.6](#96-parsers-reading-json-and-toml-by-format)), and an
+  JSON, TOML, or YAML). The parser is the seam every command takes its ranges
+  from (see [section 9.6](#96-parsers-reading-json-and-toml-by-format) and
+  [section 9.7](#97-parsers-reading-yaml-by-format)), and an
   entry's key is looked up in what it found (`Located.Claim`, see
   [section 9.3](#93-what-the-config-knows-that-the-grammar-cannot)).
 - `lock` — takes one exclusive advisory lock per project so only one `incrmit`
@@ -134,7 +141,7 @@ path = "VERSION"
 version = "1.2.3"     # optional; populated by `discover`
 prerelease = "rc.1"   # optional; the section after "-" in the file's token
 build = "exp.sha.5"   # optional; the section after "+"
-parser = "text"       # optional; "json", "toml", or "text" (default: by extension)
+parser = "text"       # optional; "json", "toml", "yaml", or "text" (default: by extension)
 key = "VERSION ?= "   # optional; which occurrence is the project's version
 ```
 
@@ -196,22 +203,25 @@ type FileEntry struct {
 ```
 
 `parser` (Milestone 39) chooses how the entry's file is read
-(`FileEntry.FileParser`): `"json"`, `"toml"`, or `"text"`, spelled exactly.
-Omitted, the extension decides (`files.ParserFor`), which is what every config
-written before the key existed means, so they all still load. It is there for
-a `.json` file with comments (`tsconfig.json`, VS Code's `settings.json`) to be
-read as text, and for TOML under another name (`Pipfile`) to be read as TOML.
+(`FileEntry.FileParser`): `"json"`, `"toml"`, `"yaml"` (Milestone 41), or
+`"text"`, spelled exactly. Omitted, the extension decides (`files.ParserFor`),
+which is what every config written before the key existed means, so they all
+still load. It is there for a `.json` file with comments (`tsconfig.json`, VS
+Code's `settings.json`) to be read as text, for TOML or YAML under another name
+(`Pipfile`) to be read by its format, and for a Kubernetes manifest's image tag
+to be tracked as text (§9.7).
 An unknown value is a config error naming the entry, and entries that list one
 path must agree on its parser, however each spells it, since the file is read
 once and rewritten in one pass. `discover` writes the key only when it differs
-from the extension's choice, which is a `.json` or `.toml` file it scanned as
-text, and a bump's config rewrite carries each entry's value through
+from the extension's choice, which is a `.json`, `.toml`, `.yaml`, `.yml`, or
+`.cff` file it scanned as text, and a bump's config rewrite carries each
+entry's value through
 (`config.EntryFor` builds an entry without it, so `bumpedConfig` sets it).
 Declaring the field is all `LoadIgnore`'s known-key check needed.
 
 `key` (Milestone 40) says which occurrence in the file is the project's
 version, read by the entry's parser (`FileEntry.FileKey`, `files.ParseKey`):
-for JSON and TOML a path from the document root, written the way
+for JSON, TOML, and YAML a path from the document root, written the way
 `files.KeyPath.String` writes one (`version`, `package.version`,
 `bin[0].version`, `'"."'`); for text the literal bytes right before the
 version (`"VERSION ?= "`). An entry with a key rewrites exactly the occurrences
@@ -219,9 +229,10 @@ it names; one without rewrites every candidate holding its version, which is
 what every config written before the key means. It is a `*string`, so
 `key = ""` is told apart from no key and refused, since it names nothing.
 `Validate` refuses a key the entry's parser cannot read with exit `1`: an empty
-one, a text key holding a line break, and one that is not a path for JSON or
-TOML. An entry with a key and no `version` starts from the version the key
-names. `discover` writes the key for JSON and TOML (§8.2), the bump's config
+one, a text key holding a line break, and one that is not a path for JSON,
+TOML, or YAML. An entry with a key and no `version` starts from the version
+the key names. `discover` writes the key for JSON, TOML, and YAML (§8.2), the
+bump's config
 rewrite carries it through as written (`bumpedConfig`, the same
 `config.EntryFor` problem as `parser`), and `undo`'s rewrite edits the entries
 in place, so it keeps them. See [section 9.3](#93-what-the-config-knows-that-the-grammar-cannot)
@@ -311,7 +322,7 @@ type Change struct {
     Path string `toml:"path"` // the path exactly as the config lists it
     Old  string `toml:"old"`  // version token before the bump
     New  string `toml:"new"`  // version token after the bump
-    Parser string `toml:"parser,omitempty"` // "json", "toml", or "text"; "" is text
+    Parser string `toml:"parser,omitempty"` // "json", "toml", "yaml", or "text"; "" is text
     Key  string `toml:"key,omitempty"`  // the entry's key as written; "" for none
 }
 
@@ -604,8 +615,8 @@ list every flag without duplicating the flag text.
 6. Compute the bytes each file will hold, replacing every candidate holding one
    of its pinned versions, and for an entry with a key only the candidates it
    claimed (a `files.Replacement` carries them, `Keyed` and `At`), in a single
-   pass (`files.Rewrite`, which applies `files.SetKnownVersions` and, for JSON
-   and TOML, decodes the result to check that exactly the planned values
+   pass (`files.Rewrite`, which applies `files.SetKnownVersions` and, for JSON,
+   TOML, and YAML, decodes the result to check that exactly the planned values
    changed, to the planned versions). A single pass over the original bytes
    keeps overlapping bumps from cascading (e.g. `1.2.3 -> 1.2.4`
    alongside `1.2.4 -> 1.2.5`) and avoids one entry's write clobbering
@@ -682,10 +693,12 @@ list every flag without duplicating the flag text.
    parser finds (the one its name selects, see
    [section 9.6](#96-parsers-reading-json-and-toml-by-format)), recording each
    one's line number, the trimmed text of its line, and its key path
-   (`discovery.Occurrence`). A `.json` or `.toml` file its parser cannot read
-   is scanned as text, and the `Result` keeps the parser's error as
-   `Fallback`; values skipped because they hold a version only once decoded
-   are kept as `Skipped`, for the dry run. A file with at least one
+   (`discovery.Occurrence`), and for YAML the aliases that read it
+   (`Occurrence.Aliases`). A `.json`, `.toml`, `.yaml`, `.yml`, or `.cff` file
+   its parser cannot read, or a YAML file of more than one document, is
+   scanned as text, and the `Result` keeps the parser's error as `Fallback`;
+   values skipped because they hold a version only once decoded are kept as
+   `Skipped`, for the dry run. A file with at least one
    occurrence becomes a `Result`. Only regular files no larger than the scan
    cap (`--max-file-size`, default `discovery.DefaultMaxScanBytes` = 32 MiB)
    are read; see [section 9.1](#91-scan-boundaries).
@@ -693,20 +706,26 @@ list every flag without duplicating the flag text.
    as text gets one `[[files]]` entry per distinct version (first-seen order),
    so identical repeats collapse and differing versions each get an entry
    sharing the path, with no key: the text in front of a version is often
-   prose, and rewording the sentence would break the entry. A JSON or TOML file
-   gets one entry per candidate, each with its key (Milestone 40), so each
+   prose, and rewording the sentence would break the entry. A JSON, TOML, or
+   YAML file gets one entry per candidate, each with its key (Milestone 40), so
+   each
    rewrites exactly one value, can be deleted on its own, and says in the
    config what it is. Two kinds of candidate get none, marked on the
    `Occurrence` as `Skip`. In a manifest discover knows (`projectKeys`, by
    exact file name), every candidate at none of its project keys is
    `NotProject`: `package.json`, `composer.json`, `deno.json`, and `jsr.json`
    hold the project's version at `version`, `Cargo.toml` at `package.version`
-   or `workspace.package.version`, and `pyproject.toml` at `project.version`
-   or `tool.poetry.version`, so a dependency pin gets no entry. A known
-   manifest with no version at those keys, such as a private monorepo root,
-   gets no entry at all rather than one per dependency. And anywhere, a
-   candidate whose key names more than one value (a JSON key written twice) is
-   `RepeatedKey`, since a key naming it would fail the bump. An entry records
+   or `workspace.package.version`, `pyproject.toml` at `project.version` or
+   `tool.poetry.version`, `pubspec.yaml`, `snapcraft.yaml`, `galaxy.yml`, and
+   `CITATION.cff` at `version`, and a Helm `Chart.yaml` at both `version` (the
+   chart's) and `appVersion` (the application's), so a dependency pin gets no
+   entry. A chart gets an entry for each, since both belong to the project and
+   many charts keep them equal; a user who versions them separately deletes
+   one. A known manifest with no version at those keys, such as a private
+   monorepo root, gets no entry at all rather than one per dependency. And
+   anywhere, a candidate whose key names more than one value (a JSON or YAML
+   key written twice) is `RepeatedKey`, since a key naming it would fail the
+   bump. An entry records
    `parser` only when the file was read with a parser other than its
    extension's, which is a fallback to text, so a bump reads the file the way
    discover did. The `ignore` list is written back verbatim so regeneration
@@ -718,9 +737,12 @@ list every flag without duplicating the flag text.
    both the discover generation and the bump-time rewrite (`config.Marshal`)
    so both files carry identical guidance.
 6. If `--dry-run`, print each occurrence with its line number, its key (for
-   JSON and TOML, `L3 package.version: ...`), and context, then exit. A file
-   that fell back is headed by the reason (`tsconfig.json: not JSON (line 2:
-   ...), scanned as text`), and a skipped value gets a line saying why: an
+   JSON, TOML, and YAML, `L3 package.version: ...`), and context, then exit. A
+   YAML occurrence that aliases read ends with them
+   (`L1 base: base: &v 1.2.3 (aliased at pinned)`), since a bump changes them
+   too. A file that fell back is headed by the reason (`tsconfig.json: not
+   JSON (line 2: ...), scanned as text`, `deploy.yaml: 2 YAML documents,
+   scanned as text`), and a skipped value gets a line saying why: an
    escape, a dependency in a known manifest (`skipped, not the project's own
    version; to track it, add an entry with key = "dependencies.left-pad"`), or
    a key written twice. A known manifest that gets no entry is headed by why
@@ -1043,7 +1065,8 @@ the next `undo` writes nothing and only pops the entry.
 - `version.FindTokens` is the single definition of where a version begins and
   ends. Both `discovery` (scanning) and `files` (rewriting) take their tokens
   from it, through the parsers of
-  [section 9.6](#96-parsers-reading-json-and-toml-by-format), so the two cannot
+  [section 9.6](#96-parsers-reading-json-and-toml-by-format) and
+  [section 9.7](#97-parsers-reading-yaml-by-format), so the two cannot
   disagree about what counts as a token — they used to hold identical copies
   of the pattern, which is exactly the kind of duplication that drifts.
   It matches candidates with:
@@ -1306,17 +1329,19 @@ with one rewrites exactly the occurrences it names. It is one field, read by
 the entry's parser (`files.Key`, `files.ParseKey`), so there is one thing to
 learn whatever the file:
 
-- **JSON and TOML: a path.** `files.ParsePath` reads what `KeyPath.String`
-  writes: bare parts (ASCII letters, digits, `_`, `-`), double-quoted parts
-  with TOML's basic-string escapes, and `[N]` for an array index, with no
-  whitespace, so a path has one spelling apart from quoting a part that need
-  not be. Every path a parser reports reads back to itself (§12.1). It matches
-  the whole path, never a suffix, so `version` is the top-level key alone.
-  `Located.Named` looks the path up among every value of the document (an
-  index built on first use, one more decode, paid only by a file with a keyed
-  entry): absent, held twice (a duplicate JSON key; TOML has none), or holding
-  anything but a candidate (a number, an object, a range, an escaped version)
-  is a `*files.KeyError` that says what the path holds.
+- **JSON, TOML, and YAML: a path.** `files.ParsePath` reads what
+  `KeyPath.String` writes: bare parts (ASCII letters, digits, `_`, `-`),
+  double-quoted parts with TOML's basic-string escapes, and `[N]` for an array
+  index, with no whitespace, so a path has one spelling apart from quoting a
+  part that need not be. Every path a parser reports reads back to itself
+  (§12.1). It matches the whole path, never a suffix, so `version` is the
+  top-level key alone. `Located.Named` looks the path up among every value of
+  the document (an index built on first use, one more decode, paid only by a
+  file with a keyed entry): absent, held twice (a duplicate JSON or YAML key;
+  TOML has none), or holding anything but a candidate (a number, an object, a
+  range, an escaped version) is a `*files.KeyError` that says what the path
+  holds. In YAML, so is a path naming an alias, or reaching a value only through
+  one or through a merge key, which says where the value is written (§9.7).
 - **Text: the bytes in front.** Literal bytes that must come right before the
   token, compared with `bytes.HasSuffix`, byte for byte, case and whitespace
   included. A key cannot hold a line break, so it is on the token's line. It
@@ -1355,11 +1380,11 @@ written). One of them is wrong, and which cannot be told, so it is a config
 error naming both, raised in phase 1. Two entries without keys are left to the
 most specific pin, as before.
 
-**Discover writes the keys it can be sure of.** Every JSON and TOML candidate
-has a key path, so `discover` writes one entry per candidate with its key
-(§8.2), and for the manifests whose project version is known only that entry.
-It infers none for text: the bytes in front of a version are as often prose
-(`Released version 1.2.3`) as an assignment, and an entry that broke when
+**Discover writes the keys it can be sure of.** Every JSON, TOML, and YAML
+candidate has a key path, so `discover` writes one entry per candidate with its
+key (§8.2), and for the manifests whose project version is known only that
+entry. It infers none for text: the bytes in front of a version are as often
+prose (`Released version 1.2.3`) as an assignment, and an entry that broke when
 someone reworded a sentence would be worse than one that rewrites every copy.
 Running `discover` again over an older config writes the keys in.
 
@@ -1396,17 +1421,18 @@ Two consequences worth knowing:
   ambiguous), and a bump rewrites only the exact written token.
 - Discovery is content-based: it scans every text file, whatever its name, and
   records every candidate the file's parser finds in it (with its line number,
-  context, and key). The name decides only the parser. A `.json` or `.toml`
-  file is read by its format, so there only a whole string value is a
-  candidate, and every other file is scanned as text, where every
-  `[v]MAJOR.MINOR.PATCH` token is one (see
-  [section 9.6](#96-parsers-reading-json-and-toml-by-format)). Before Milestone
-  39 it read every file as text, and a version in a manifest's URL, range, or
+  context, and key). The name decides only the parser. A `.json`, `.toml`,
+  `.yaml`, `.yml`, or `.cff` file is read by its format, so there only a whole
+  string value is a candidate, and every other file is scanned as text, where
+  every `[v]MAJOR.MINOR.PATCH` token is one (see
+  [section 9.6](#96-parsers-reading-json-and-toml-by-format) and
+  [section 9.7](#97-parsers-reading-yaml-by-format)). Before Milestone 39 it
+  read every file as text, and a version in a manifest's URL, range, or
   comment counted the same as its `version` key. In a text file, distinct
   versions become one config entry each; identical repeats collapse to a
-  single entry and are all rewritten together on bump. In a JSON or TOML file,
-  each candidate becomes an entry with its key, and a known manifest's
-  dependencies none (see §8.2 and the key design above).
+  single entry and are all rewritten together on bump. In a JSON, TOML, or
+  YAML file, each candidate becomes an entry with its key, and a known
+  manifest's dependencies none (see §8.2 and the key design above).
 - Binary files (those containing a NUL byte) are skipped so version-like byte
   sequences in compiled artifacts are not matched.
 - Two-component numbers (e.g. `3.9`) and other non-`X.Y.Z` strings do not match.
@@ -1526,26 +1552,27 @@ moved all eight, the schema URL and the comment included, with exit `0`. Those
 files, and a `pyproject.toml` with the version in its description, a URL, a
 comment, and dependency specifiers, are kept in `internal/files/testdata/repro`.
 
-**The seam.** `files.Parser` (`text`, `json`, `toml`) is the one place a file's
-bytes become candidates. `Parser.Locate` returns each candidate as a byte
-range, its parsed version, and its key path (`files.KeyPath`, nil from the text
-parser), along with the values it skipped. `discovery.scan`,
-`files.FindVersion`, `files.SetKnownVersions`, the bump's planning
-(`readGroups` and `planGroups`, which `preview` shares), and `undo`'s
+**The seam.** `files.Parser` (`text`, `json`, `toml`, and since Milestone 41
+`yaml`, §9.7) is the one place a file's bytes become candidates. `Parser.Locate`
+returns each candidate as a byte range, its parsed version, and its key path
+(`files.KeyPath`, nil from the text parser), along with the values it skipped.
+`discovery.scan`, `files.FindVersion`, `files.SetKnownVersions`, the bump's
+planning (`readGroups` and `planGroups`, which `preview` shares), and `undo`'s
 `planReverts` all take their ranges from it, and nothing outside `files` calls
-`version.FindTokens` to find a version in a file. So the rule at the top of
-§9 still holds: what discovery records is exactly what a bump rewrites, and
-every command reads a file the same way. The text parser is `FindTokens` plus
-`version.Parse`, unchanged, so every file that is not `.json` or `.toml`
-behaves exactly as before. The JSON and TOML parsers return a subset of the
-text parser's candidates with the same boundaries, so §9's single definition of
-a token holds in those files too; the golden test checks it on every fixture.
-Before this milestone the comment at the top of `files.go` said structured
-detection lived in `discovery`, but nothing there read a format.
+`version.FindTokens` to find a version in a file. So the rule at the top of §9
+still holds: what discovery records is exactly what a bump rewrites, and every
+command reads a file the same way. The text parser is `FindTokens` plus
+`version.Parse`, unchanged, so every file no format parser reads behaves exactly
+as before. The JSON, TOML, and YAML parsers return a subset of the text parser's
+candidates with the same boundaries, so §9's single definition of a token holds
+in those files too; the golden test checks it on every fixture. Before this
+milestone the comment at the top of `files.go` said structured detection lived
+in `discovery`, but nothing there read a format.
 
 **Choosing a parser.** By extension, ignoring case (`files.ParserFor`): `.json`
-gets the JSON parser, `.toml` the TOML parser, and everything else text. An
-entry's `parser` key overrides it (§6.1).
+gets the JSON parser, `.toml` the TOML parser, `.yaml`, `.yml`, and `.cff` the
+YAML parser (§9.7), and everything else text. An entry's `parser` key
+overrides it (§6.1).
 
 **What counts.** A candidate is a string value, never an object key, whose
 whole content is one token `version.Parse` accepts: `"1.2.3"` and `"v1.2.3"`
@@ -1678,6 +1705,169 @@ wrote it.
 - A dependency pinned at the project's version still moves with it under an
   entry without a key. `discover` writes keys since Milestone 40 (§9.3).
 
+### 9.7 Parsers: reading YAML by format
+
+Milestone 39 read `.json` and `.toml` files by their format and left YAML to
+the text scanner, yet YAML holds the project version in Helm charts
+(`Chart.yaml`), Dart and Flutter packages (`pubspec.yaml`), snaps
+(`snapcraft.yaml`), Ansible collections (`galaxy.yml`), and `CITATION.cff`,
+and those files had §9.6's problem. The reproduction is a `Chart.yaml` holding
+`version: 0.7.3`, `appVersion: "1.4.2"`, a `kubeVersion` range, two
+dependencies (`12.5.6` and `"~17.11.3"`), the version in its description, and
+an image reference in a block-scalar annotation; a `pubspec.yaml` with
+`version: 2.3.1+45`, an SDK range, and three dependencies; and a Kubernetes
+manifest of two documents (`internal/files/testdata/repro`). As text,
+`discover` wrote eleven entries for the first two, and `--minor` moved every
+token with exit `0`: the description, the image tag, both dependencies, and the
+range, which came out as `>=1.23.0`, its `-0` dropped. Read as YAML, the chart
+holds three candidates of seven and the pubspec three of six, and since both
+are manifests discover knows (§8.2), one entry each for the project's version,
+two for the chart. This repository's own `ci.yml` and `release.yml` go from
+eighteen and twelve candidates to one each; the rest sat in comments
+(`# v7.0.1`) or inside `go install ...@v1.6.0` commands, which is why its
+config ignores `.github/`.
+
+**The YAML decision.** The standard library has no YAML reader, so this is a
+dependency, the module's third (§2, §13). `go.yaml.in/yaml/v3` (v3.0.5) is the
+YAML organization's continuation of `gopkg.in/yaml.v3`, and it requires no
+other module, so there are still no transitive dependencies. Rejected:
+`gopkg.in/yaml.v3`, whose repository is archived; `go.yaml.in/yaml/v4`, still
+a release candidate (`v4.0.0-rc.6`), to revisit at its first stable release;
+`github.com/goccy/go-yaml`, whose selling point is token positions, which the
+probe does not need, and which would be a second, larger dependency for it; and
+a hand-written reader, out of proportion to the job, since YAML's grammar is
+far larger than JSON's or TOML's. In a minimal program the decoder added about
+0.9 MB (2.4 MB to 3.3 MB); on incrmit itself, which already links most of what
+the decoder uses, it adds 0.31 to 0.38 MB, about 6 to 7 percent, measured with
+the release build's flags: 5.17 to 5.49 MB on `darwin/arm64`, 5.41 to
+5.79 MB on `linux/amd64`, and 5.95 to 6.34 MB on `windows/amd64`. Without it, a
+Milestone 40 text `key` (`key = "appVersion: "`) still picks out the version in
+a YAML file, but `discover` would go on offering every range, comment, and
+dependency pin.
+
+**Choosing it.** By extension, ignoring case: `.yaml` and `.yml`, and `.cff`,
+since the Citation File Format is YAML by definition. `parser = "yaml"` reads
+YAML under any other name, and §9.6's fallback carries over unchanged:
+`discover` scans a YAML file that does not parse as text and writes
+`parser = "text"`, and a bump never falls back.
+
+**What counts.** `locateYAML` reuses §9.6's TOML probe, with the same
+placeholders, `absentDigits` given every scalar and tag the document decodes
+to, and decodes with `go.yaml.in/yaml/v3` into a `yaml.Node` tree, never into
+Go values. A candidate is a scalar that is a value, not a mapping key, written
+plain, single-quoted, or double-quoted, whose tag is `!!str`, implicit or
+written (`!!str 1.2.3` counts, `!semver 1.2.3` does not), and whose decoded
+text is exactly one placeholder. A placeholder inside a longer scalar (an
+image reference such as `ghcr.io/me/app:1.4.2`, a range such as `~17.11.3`),
+in a `|` or `>` block scalar however little it holds, in a comment, or in a key
+is not a candidate, and neither is a value under a key that is not a scalar
+(`? [a, b]`), which no key path can name. A scalar holding a placeholder has at
+least two dots, which no YAML number or date has, so a placeholder resolves to
+`!!str` just as the version does, and the probe never changes a value's type.
+Key paths are §9.6's, built from each key's decoded text (`k8s.io/version` is
+`"k8s.io/version"`, a merge key `"<<"`). A double-quoted value that decodes to a
+version only through an escape is `Skipped`, as in JSON. Lines come from the
+decoder's nodes, and the decoder accepts a byte-order mark; since the probe
+moves no byte outside a token, no range needs offsetting, unlike JSON.
+
+**The probe is checked.** As for TOML, the copy must decode, and with every
+placeholder put back, in keys, scalars, and tags, it must hold exactly the
+file's nodes, in order and at the same paths (`probe.agreesYAML`, comparing
+`flattenYAMLTree`s). Neither failure is known to happen except one: the decoder
+limits an implicit key to 1,024 characters, and a placeholder (about 56
+characters for a three-part token) is wider than most tokens, so a key holding
+a few dozen versions passes the limit in the copy alone. That copy does not
+decode, and the file is refused as YAML whose versions incrmit cannot place
+(`testdata/implicit-key.yaml.input`). After planning a bump, `files.Rewrite`
+decodes the rewritten bytes and checks that exactly the planned keys changed,
+as for TOML.
+
+**Anchors and aliases.** A `yaml.Node` keeps an alias as an alias node rather
+than a copy, so an anchored version (`base: &v 1.2.3`) is one candidate at the
+anchor's key, and an alias of it (`pinned: *v`) is not a candidate of its own:
+it has no bytes to rewrite. Rewriting the anchored value changes every alias,
+so:
+
+- the dry run lists the aliasing keys beside the candidate
+  (`L1 base: base: &v 1.2.3 (aliased at pinned)`). `Located.Aliases` gives
+  them: an alias of the candidate's own anchor, of an anchored mapping or
+  sequence holding it, or of an anchored node holding such an alias, and so on,
+  in document order. A merge key (`<<: *defaults`) is an alias too and is
+  listed at its own path (`prod."<<"`). The search climbs from the candidate's
+  innermost anchor outward, and from each alias found climbs again, stopping at
+  the first anchor an earlier climb passed, so each anchor is climbed past once
+  and each alias found once: the cost is the size of the answer, however the
+  aliases nest or cycle (an alias inside its own anchor, `a: &a [*a]`, decodes).
+- the phase-1 check counts them as planned: `flattenYAMLTree` records an alias
+  as the leaf of the node it names, not as that node's value, so an alias is
+  unchanged by a rewrite of its anchor while what it reads changes with it.
+- a Milestone 40 `key` that names an alias is an error naming the anchor's
+  key (`key pinned reads base through an alias, and incrmit rewrites a value
+  where it is written; name base instead`), and so is a path the data has only
+  through an alias or a merge key (`prod.version` for a merged
+  `defaults.version`), which `resolveYAML` follows the way a reader of the
+  data would, a mapping's own keys before merged ones.
+
+**One document per file.** A YAML stream can hold several documents, and a key
+path has no way to name one, so the parser accepts exactly one (a leading
+`---` or a trailing `...` is fine); a file with none, empty or only comments,
+holds nothing. A file with more is a `*files.ParseError` with `Docs` set,
+which takes §9.6's fallback with the reason in the dry run
+(`deploy.yaml: 2 YAML documents, scanned as text`) and fails a bump of an entry
+without `parser = "text"` with exit `3`. Multi-document files are mostly
+Kubernetes manifests, whose versions sit inside image references the YAML
+parser would not offer anyway, so text with a text `key` is what they need:
+`parser = "text"` and `key = "ghcr.io/me/app:"` move the image tag alone. A
+document selector in the key syntax can come later if someone asks for one.
+
+**Duplicate keys** are treated as in JSON. YAML forbids them, but decoding into
+a `yaml.Node` accepts them, so both values are candidates under the same key
+path, and Milestone 40's error for a key that appears twice applies.
+
+**Hostile input.** The decoder refuses nesting past 10,000 levels with an error
+rather than exhausting the stack (100,000 nested `[` in milliseconds, 20,000
+nested block mappings in about 0.3 s), which bounds every recursive walk of the
+tree. Block mappings nested that deep need a line of indentation per level,
+50 MB of it by the limit, past `discover`'s 32 MiB cap, so the tests use flow
+sequences, flow mappings, and block sequences opened on one line. Within the
+limit, the probe's check compares each node's depth and last path step
+(`yamlShapes`): in the walk's order those fix every node's path, and rendering
+the whole path per node, as the first version did, made a 50 KB file nested
+9,990 deep take 1.8 s to locate rather than 17 ms. Decoding into a
+`yaml.Node` expands no aliases, so a billion-laughs document decodes at once
+(decoded into Go values, the decoder refuses it as excessive aliasing), and
+neither the walks, the checks, nor `Aliases` expand one.
+`TestYAMLNestingIsRefused` and `TestYAMLAliasBombs` pin all of it, the latter
+with a 20,000-link alias chain too.
+
+**pubspec's build number.** Flutter reads the part after `+` in
+`version: 2.3.1+45` as the build number, and §9.2 drops build metadata on a
+bump, so a patch bump writes `2.3.2`. The text scanner did the same; §9.2 is
+unchanged, and `doc/USAGE.md` says so under `pubspec.yaml`.
+
+**Existing configs change meaning**, as in §9.6: an entry for a `.yaml`,
+`.yml`, or `.cff` file that pinned a version found only in a comment, a range,
+or a longer string now finds nothing and fails in phase 1, and an entry for a
+manifest of two documents fails as one the YAML parser cannot read. The case
+most likely to surprise is an image tag in a Kubernetes manifest, fixed with
+`parser = "text"` and a text `key`. `undo` takes the parser from the journal.
+
+**Limits.**
+
+- A block scalar is never a candidate, even `|-` holding exactly a version,
+  and neither is a version with a tag of its own.
+- The decoder reads YAML 1.1 and refuses a `%YAML 1.2` directive, although it
+  reads the same document without one; such a file is scanned as text.
+- The decoder's error lines are where the construct around the problem began,
+  at times the line before the problem itself.
+- A key holding a few dozen versions is refused by the probe (above).
+- Values under a key that is not a scalar cannot be named, so they are not
+  candidates.
+- `Rewrite`'s check renders every node's whole path, as it does for JSON, so
+  bumping a file nested thousands of levels deep costs the square of its
+  depth: about 1.5 s for 9,990 levels. It runs only for a file a config
+  lists; `discover` never pays it.
+
 ## 10. Error Handling
 
 - Missing config file: clear message; suggest running `incrmit discover`.
@@ -1692,16 +1882,18 @@ wrote it.
   `--dry-run` fails the same way; `preview` shows the projection as `n/a`.
 - Filesystem/permission errors: surface the underlying error and exit non-zero.
 - A config entry whose parser cannot read its file (see
-  [section 9.6](#96-parsers-reading-json-and-toml-by-format)): report
+  [section 9.6](#96-parsers-reading-json-and-toml-by-format) and
+  [section 9.7](#97-parsers-reading-yaml-by-format)): report
   `<path>: not JSON (line <n>: <reason>); to read it as text, set parser =
-  "text" on its [[files]] entry` (or `not TOML`, or `TOML whose versions
-  incrmit cannot place` when the TOML probe is refused) and exit `3` in
+  "text" on its [[files]] entry` (or `not TOML`, `not YAML`, `TOML whose
+  versions incrmit cannot place` or `YAML whose versions incrmit cannot place`
+  when the probe is refused, or `<n> YAML documents`) and exit `3` in
   planning, before anything is written, `--dry-run` and `preview` included. A
   `--file` target is read as text instead, after a note on stderr
   (`incrmit: note: <path>: not JSON (...), so it is read as text`).
 - A `parser` value incrmit does not know, or two parsers for one path: report
   `config: files[<i>] (<path>): unknown parser "<value>"; use "json", "toml",
-  or "text"` (or that the entries read the file two ways) and exit `1`.
+  "yaml", or "text"` (or that the entries read the file two ways) and exit `1`.
 - A key its entry's parser cannot read (see
   [section 9.3](#93-what-the-config-knows-that-the-grammar-cannot)): report
   `config: files[<i>] (<path>): key "<key>" is not a key path (<why>); ...`
@@ -1710,17 +1902,19 @@ wrote it.
 - A key that names no candidate holding the entry's version: report
   `<path>: key <key> is not in the file` (or `holds an object, not a version`,
   `holds 1.2.3, not 1.2.4`, `appears twice in the file, so it names no one
-  value`, `is not followed by a version anywhere in the file`) and exit `3` in
-  planning, `--dry-run` and `preview` included, with nothing written.
+  value`, `is not followed by a version anywhere in the file`, or for YAML
+  `reads base through an alias, and incrmit rewrites a value where it is
+  written; name base instead`) and exit `3` in planning, `--dry-run` and
+  `preview` included, with nothing written.
 - Two entries that would rewrite one occurrence, one of them keyed: report
   `config: files[<i>] (key <key>) and files[<j>] (no key) both claim the
   <version> on line <n> of <path>; remove one, or give each a key that names
   its own occurrence` and exit `1` in planning, with nothing written.
-- A rewrite that the phase-1 decode does not confirm (a JSON or TOML value
-  changed that was not planned, or a planned one that did not change): report
-  `<path>: files: the rewrite would change <key>, which was not planned` and
-  exit `1` (`3` when the result no longer parses), with nothing written. This
-  would be a parser bug; the check is there so it cannot reach a file.
+- A rewrite that the phase-1 decode does not confirm (a JSON, TOML, or YAML
+  value changed that was not planned, or a planned one that did not change):
+  report `<path>: files: the rewrite would change <key>, which was not planned`
+  and exit `1` (`3` when the result no longer parses), with nothing written.
+  This would be a parser bug; the check is there so it cannot reach a file.
 - Undo of a change whose journal `parser` this version does not know, that
   records two parsers for one file, or whose journal `key` that parser cannot
   read: refuse and exit `1`. A file the recorded
@@ -1802,7 +1996,7 @@ incrmit/
 │   ├── discovery/          # filesystem scan and config generation
 │   ├── history/            # bump journal (state file) for undo
 │   ├── lock/               # per-project advisory lock (one writer at a time)
-│   ├── files/              # parsers (text, JSON, TOML), keys, read/write helpers
+│   ├── files/              # parsers (text, JSON, TOML, YAML), keys, read/write helpers
 │   ├── buildinfo/          # tool version (stamped via -ldflags)
 │   └── testutil/           # helpers shared by tests in several packages
 ├── doc/
@@ -1897,14 +2091,17 @@ incrmit/
   be written, which must now stop the bump before any target changes. Undo of
   hand-written `pending` entries covers files never written, edited files that
   hold both sides or neither, and configs at neither version or split.
-- The parsers (`internal/files/parser_test.go`). Golden fixtures in
-  `internal/files/testdata`: the existing `package.json`, `package.min.json`,
-  `appsettings.json` (a BOM), and `pyproject.toml`, a `Cargo.toml`, and the
-  reproduction files in `testdata/repro`. Each golden
+- The parsers (`internal/files/parser_test.go`, and `yaml_test.go` for YAML).
+  Golden fixtures in `internal/files/testdata`: the existing `package.json`,
+  `package.min.json`, `appsettings.json` (a BOM), and `pyproject.toml`, a
+  `Cargo.toml`, the reproduction files in `testdata/repro`, and for YAML
+  `shapes.yaml.input` (every shape below in one document) and
+  `bom-crlf.yaml.input`. Each golden
   (`testdata/candidates/*.golden`, regenerated with `go test ./internal/files/
   -update`) lists every token the text parser finds, with the key the file's
-  parser places it at or `(not a candidate)`, so it shows what reading the
-  format excludes; the test also checks that each candidate is one of the text
+  parser places it at or `(not a candidate)`, and for YAML the aliases that read
+  it, so it shows what reading the format excludes; the test also checks that
+  each candidate is one of the text
   parser's, and rewrites every candidate through `files.Rewrite` and compares
   the bytes outside them. Table tests cover, for JSON, a BOM, CRLF, minified and
   tab-indented files, nested arrays, a root array and a root string, duplicate
@@ -1918,7 +2115,17 @@ incrmit/
   a comment, a value, a key, or an escape, and a file planted with two thousand
   likely prefixes. Further tests cover the probe's agreement check, `Rewrite`
   refusing an unplanned change, and a TOML file of 5,000 tokens located within
-  a deadline.
+  a deadline. For YAML (Milestone 41): a BOM needing no offset, CRLF and a lone
+  CR, flow mappings and sequences, all three quoting styles, a comment after a
+  value, `|` and `>` block scalars holding `version: 1.2.3` as text, anchors,
+  aliases, and merge keys with the aliases each candidate lists, a duplicate
+  key, an explicit `!!str` tag and a custom one, a key that is a version, a key
+  that is not a scalar, escapes, and placeholder collisions; and the files it
+  refuses: a two-document manifest, tab indentation, a Jinja-templated conda
+  `meta.yaml`, and the implicit-key overflow (`*.yaml.input` fixtures). Every
+  `*files.KeyError` YAML adds, aliases and merges included, is in
+  `TestClaimYAML`, and the hostile shapes (nesting past the decoder's limit,
+  billion laughs, an alias chain) are in `shapes_test.go` with Milestone 31's.
 - The reproduction and the parser's effect on each command
   (`internal/cli/parsers_test.go`): `discover --dry-run`, the config `discover`
   writes, and a `--minor` bump compared byte for byte against goldens
@@ -1929,7 +2136,16 @@ incrmit/
   written before the parsers failing in phase 1 with every file unchanged, undo
   reading each file with the journal's parser (and an older entry's as text),
   `--file` and `preview --file` reading by format, and escaped values in the dry
-  run.
+  run. YAML's (`internal/cli/yaml_test.go`) reproduce Milestone 41 the same way
+  (`yaml_repro_*.golden`), and run the config the earlier `discover` wrote: it
+  fails in phase 1 with every file unchanged, and with `parser = "text"` on its
+  entries moves every token exactly as the previous release did
+  (`yaml_repro_text_minor_*.golden`, checked against that release's output).
+  They also cover a two-document file refused by a bump and read as text by
+  `--file`, the image-tag recipe, the `parser` override in both directions, a
+  key naming an alias or reaching through one, the dry run's alias list, a
+  pubspec build number dropped by a patch bump, and undo reading a YAML file
+  with the journal's parser.
 - Keys (Milestone 40). `internal/files/key_test.go` covers path syntax both
   ways (every rendered path reads back, and the malformed ones each fail with
   their reason), key parsing per parser, path matching (top level only, quoted
@@ -2005,21 +2221,27 @@ What each target proves:
   and its context holds the token, no line terminator, and no more than the
   context window. The scan finds lines with a forward-only cursor to stay linear
   on minified files, and a cursor has state for `\r\n` to be counted twice in.
-- `files.FuzzLocateJSON` / `files.FuzzLocateTOML` — for any input the decoder
-  accepts, every candidate's bytes are exactly the string the decoder reports
-  at the candidate's key path, and rewriting one candidate with a version of a
-  different length, then decoding again, changes that key and no other. The
-  reference reads the document independently of the parser's own walk: a
-  recursive `Decoder` read that keeps duplicate keys for JSON, and a map lookup
-  in a plain `toml.Decode` for TOML. Input the decoder rejects must be refused,
-  never panicked on, and TOML the decoder accepts may be refused only with the
-  probe's own error. Since Milestone 40, every candidate's key path, rendered
-  and read back with `files.ParseKey`, must claim exactly that candidate's
-  range, unless the reference holds more than one value at the path (a JSON
-  key written twice), where `Claim` must refuse it; that is the promise
+- `files.FuzzLocateJSON` / `files.FuzzLocateTOML` / `files.FuzzLocateYAML` — for
+  any input the decoder accepts, every candidate's bytes are exactly the string
+  the decoder reports at the candidate's key path, and rewriting one candidate
+  with a version of a different length, then decoding again, changes that key
+  and no other. The reference reads the document independently of the parser's
+  own walk: a recursive `Decoder` read that keeps duplicate keys for JSON, and a
+  map lookup in a plain `toml.Decode` for TOML. Input the decoder rejects must
+  be refused, never panicked on, and TOML the decoder accepts may be refused
+  only with the probe's own error. Since Milestone 40, every candidate's key
+  path, rendered and read back with `files.ParseKey`, must claim exactly that
+  candidate's range, unless the reference holds more than one value at the path
+  (a JSON key written twice), where `Claim` must refuse it; that is the promise
   `discover` relies on when it writes a key. A 45-second run of each found
-  nothing (5.2 million JSON and 6.9 million TOML inputs). The corpora are
-  seeded with the golden fixtures.
+  nothing (5.2 million JSON and 6.9 million TOML inputs). The YAML target's
+  reference walks the decoder's `yaml.Node` tree on its own (an alias as the
+  anchor it names, a node under a key that is not a scalar out of any key's
+  reach) and requires a candidate to be a plain or quoted `!!str` there. A
+  stream of more than one document must be refused with its count, and one
+  document the decoder accepts may be refused only with the probe's own error.
+  Milestone 41 ran it for 90 s and then 5 minutes, 12.3 million inputs in all,
+  and found nothing. The corpora are seeded with the golden fixtures.
 - `cli.FuzzDisplayName` / `cli.FuzzTerminalText` — a rendered name is
   printable and reads back, with `strconv.Unquote` when quoted, to the one name
   it came from, which is what makes the rendering injective; and escaped text
@@ -2271,10 +2493,10 @@ Supply-chain measures in both workflows:
 
   Recording those tool hashes in this repo's own `go.sum` (via a Go `tool`
   directive) was considered and rejected: it would pull the tools' dependency
-  trees into `go.mod` as requirements, and keeping the module at two
-  dependencies (`BurntSushi/toml` and `golang.org/x/sys`) with no transitive
-  ones is worth more than re-pinning something the checksum database already
-  pins.
+  trees into `go.mod` as requirements, and keeping the module at three
+  dependencies (`BurntSushi/toml`, `golang.org/x/sys`, and, since Milestone
+  41, `go.yaml.in/yaml/v3`, §9.7) with no transitive ones is worth more than
+  re-pinning something the checksum database already pins.
 
 Release checklist:
 
@@ -2299,7 +2521,10 @@ workflow uploads the expected archives and that `go install` resolves the tag.
 - Pre-release and build metadata support (`-rc.1`, `+build.5`).
 - Optional git integration (tag and commit after a successful bump).
 - Per-file custom match patterns in the config. An entry's `key` (Milestone
-  40, §9.3) covers the common cases with a literal: a path for JSON and TOML,
-  the text in front of the version for anything else. A pattern language is
-  left for when a literal is not enough.
+  40, §9.3) covers the common cases with a literal: a path for JSON, TOML, and
+  YAML, the text in front of the version for anything else. A pattern language
+  is left for when a literal is not enough.
+- A document selector in a YAML key, so a manifest of several documents can be
+  read by its format rather than as text (§9.7), if someone asks for one.
+- `go.yaml.in/yaml/v4` once it has a stable release (§9.7).
 - Setting an explicit version instead of incrementing.

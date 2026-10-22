@@ -8,8 +8,9 @@ or more files and increments it, keeping them all in sync (increment + commit).
 ## Features
 
 - Discovers files containing version strings and generates a config for you.
-- Reads `.json` and `.toml` files by their format, so a version inside a URL,
-  a range such as `^18.3.1`, or a comment is never mistaken for the project's.
+- Reads `.json`, `.toml`, and YAML (`.yaml`, `.yml`, `.cff`) files by their
+  format, so a version inside a URL, a range such as `^18.3.1`, an image
+  reference, or a comment is never mistaken for the project's.
 - Bumps the project's own version and not the dependencies pinned beside it:
   each config entry can say where the version is (`key = "version"`).
 - Bumps the major, minor, or patch component in every configured file at once.
@@ -182,40 +183,49 @@ Paths are relative to the config file. `version` pins the exact value to bump,
 which matters when a file holds several version-like strings. After each bump
 `incrmit` rewrites the config with the new versions.
 
-`key` says which occurrence is the project's version, so a bump leaves the
-rest of the file alone: in the `package.json` above, `"left-pad": "1.2.3"` keeps
-its version when `"version": "1.2.3"` moves. For a `.json` or `.toml` file the
-key is a path from the top of the document, written like a TOML dotted key
+`key` says which occurrence is the project's version, so a bump leaves the rest
+of the file alone: in the `package.json` above, `"left-pad": "1.2.3"` keeps its
+version when `"version": "1.2.3"` moves. For a `.json`, `.toml`, or YAML file
+the key is a path from the top of the document, written like a TOML dotted key
 (`package.version`, `bin[0].version`, `'dependencies."@types/node"'`). For any
-other file it is the text right before the version on its line, matched byte
-for byte: `"VERSION ?= "` names `VERSION ?= 1.2.3` and not a download URL
-ending in `tool-1.2.3.tar.gz`. An entry without a key bumps every occurrence of
-its version. A key that names nothing holding the entry's version fails the
-bump before anything is written.
+other file it is the text right before the version on its line, matched byte for
+byte: `"VERSION ?= "` names `VERSION ?= 1.2.3` and not a download URL ending in
+`tool-1.2.3.tar.gz`. An entry without a key bumps every occurrence of its
+version. A key that names nothing holding the entry's version fails the bump
+before anything is written.
 
-A `.json` or `.toml` file is read by its format: a version counts only where it
-is a whole string value, such as `"version": "1.2.3"`, so a `$schema` URL, a
-dependency range, or a TOML comment holding a version is left alone. Every
-other file is scanned as text, where any version token counts. An entry's
-optional `parser` key (`"json"`, `"toml"`, or `"text"`) chooses for that file,
-for a `tsconfig.json` with comments or TOML under another name such as
-`Pipfile`. `discover` scans a `.json` or `.toml` file that does not parse as
-text and writes `parser = "text"` into its entries; a bump never guesses, and
-an entry whose parser cannot read its file fails with nothing written.
+A `.json`, `.toml`, `.yaml`, `.yml`, or `.cff` file is read by its format: a
+version counts only where it is a whole string value, such as
+`"version": "1.2.3"` or `version: 1.2.3`, so a `$schema` URL, a dependency
+range, an image reference such as `ghcr.io/me/app:1.4.2`, or a comment holding
+a version is left alone. In YAML an alias is not a version of its own: the
+version counts once, at its anchor, and a bump changes the aliases with it.
+Every other file is scanned as text, where any version token counts. An
+entry's optional `parser` key (`"json"`, `"toml"`, `"yaml"`, or `"text"`)
+chooses for that file, for a `tsconfig.json` with comments or TOML under
+another name such as `Pipfile`. `discover` scans a file its format's parser
+cannot read as text, as it does a YAML file of more than one document such as
+a Kubernetes manifest, and writes `parser = "text"` into its entries; a bump
+never guesses, and an entry whose parser cannot read its file fails with
+nothing written. To move one image tag in such a manifest, keep
+`parser = "text"` and give the entry the text before the tag as its key:
+`key = "ghcr.io/me/app:"`.
 
-`discover` writes a key for every version in a `.json` or `.toml` file. In
-`package.json`, `composer.json`, `deno.json`, `jsr.json`, `Cargo.toml`, and
-`pyproject.toml` it writes only the project's own version and lists each
-dependency in `--dry-run` as skipped, with the key that would track it; such a
-manifest with no version of its own, like a private monorepo root, gets no
-entry. It writes no key for a text file, so add one by hand where a file holds
-the version more than once. Running `discover` again adds the keys to a config
-written before they existed. An optional `ignore` list
-tells `discover` which folders and files to skip; its patterns are relative to
-the config file too. `discover` writes every path relative to the config it
-writes, so `incrmit discover --path src -o release/incrmit.toml` lists
-`../src/VERSION`. Running `discover` again regenerates the config and keeps the
-`ignore` list, but it never replaces a file that is not a config:
+`discover` writes a key for every version in a `.json`, `.toml`, or YAML file.
+In `package.json`, `composer.json`, `deno.json`, `jsr.json`, `Cargo.toml`,
+`pyproject.toml`, `pubspec.yaml`, `snapcraft.yaml`, `galaxy.yml`,
+`CITATION.cff`, and a Helm `Chart.yaml` (both `version` and `appVersion`) it
+writes only the project's own version and lists each dependency in `--dry-run`
+as skipped, with the key that would track it; such a manifest with no version of
+its own, like a private monorepo root, gets no entry. It writes no key for a
+text file, so add one by hand where a file holds the version more than once.
+Running `discover` again adds the keys to a config written before they existed.
+An optional `ignore` list tells `discover` which folders and files to skip; its
+patterns are relative to the config file too. `discover` writes every path
+relative to the config it writes, so
+`incrmit discover --path src -o release/incrmit.toml` lists `../src/VERSION`.
+Running `discover` again regenerates the config and keeps the `ignore` list,
+but it never replaces a file that is not a config:
 `incrmit discover -o README.md` exits `1` and leaves the README alone.
 
 ## Usage

@@ -62,21 +62,23 @@ rc gives 1.3.0-rc.1. --release and --pre cannot be combined.
 const keyNote = `
 An entry with a key rewrites only the occurrences the key names; without one,
 it rewrites every occurrence of its version. A key is read the way its file
-is. In a .json or .toml file it is a path from the top of the document, and
-in any other file it is the text right before the version on its line,
-matched byte for byte:
+is. In a .json, .toml, .yaml, .yml, or .cff file it is a path from the top of
+the document, and in any other file it is the text right before the version
+on its line, matched byte for byte:
 
   package.json   key = "version"           not dependencies.left-pad
   Cargo.toml     key = "package.version"   not anyhow = { version = ... }
+  Chart.yaml     key = "appVersion"        not dependencies[0].version
   Makefile       key = "VERSION ?= "       not .../tool-1.2.3.tar.gz
 
 A path is written like a TOML dotted key: quote a part that holds anything
 but letters, digits, "_", and "-" ('"."', 'dependencies."@types/node"'), and
 write an array index as [N] (bin[0].version). A key that names no value
 holding the entry's version, or a path the file has twice, fails with exit 3,
-and two entries that claim one occurrence are a config error (exit 1); either
-way nothing is written. With --file, pass the key as --key:
-incrmit --file package.json --key version.
+and so does a YAML key that names an alias, which has no bytes of its own:
+the error names the anchored value to use instead. Two entries that claim one
+occurrence are a config error (exit 1). Either way nothing is written. With
+--file, pass the key as --key: incrmit --file package.json --key version.
 `
 
 // concurrencyNote explains the one-writer-per-project rule once, and is
@@ -145,10 +147,10 @@ to 1.2.4 (both sections are dropped), --release promotes it to 1.2.3, and
 --pre rc starts or advances one (1.2.3 -> 1.2.4-rc.1 -> 1.2.4-rc.2).
 
 An entry's key says which occurrence in its file is the project's version, so
-a bump leaves the rest alone: a path in a .json or .toml file
+a bump leaves the rest alone: a path in a .json, .toml, or YAML file
 (key = "package.version"), and the text right before the version in any other
-(key = "VERSION ?= "). discover writes keys for JSON and TOML; with --file,
-pass one as --key. See "incrmit help bump".
+(key = "VERSION ?= "). discover writes keys for JSON, TOML, and YAML; with
+--file, pass one as --key. See "incrmit help bump".
 
 A --max-file-size value is a plain byte count (1048576) or a value with a unit
 suffix such as 512KB, 32MiB, or 2G. A size of 0 means no limit.
@@ -182,28 +184,44 @@ Flags:
 // it. It is appended to the discover help, since discover is where a file's
 // parser is first chosen and recorded.
 const parsersNote = `
-A .json or .toml file is read by its format (the extension is compared
-ignoring case): a version counts only where it is a whole string value, such
-as "version": "1.2.3", and never inside a URL, a range such as ^18.3.1, or a
-comment. The dry run prints each one's key next to its line number
-(L3 package.version: ...). Every other file is scanned as text, where any
-version token counts.
+A .json, .toml, .yaml, .yml, or .cff file is read by its format (the
+extension is compared ignoring case): a version counts only where it is a
+whole string value, such as "version": "1.2.3" or version: 1.2.3, and never
+inside a URL, a range such as ^18.3.1, an image reference such as
+ghcr.io/me/app:1.2.3, or a comment. The dry run prints each one's key next to
+its line number (L3 package.version: ...). Every other file is scanned as
+text, where any version token counts.
 
-A .json or .toml file that does not parse, such as a tsconfig.json with
-comments, is scanned as text instead: the dry run says why, and its entries
-get parser = "text". An entry's parser key ("json", "toml", or "text")
-chooses for that file whatever its name. A bump never falls back: an entry
-whose parser cannot read its file fails with exit 3, naming the line, and
-nothing is written.
+In YAML, a version written plain or in quotes counts, and one in a | or >
+block, or with a tag of its own (!semver 1.2.3), does not. An alias is not a
+version of its own: the version counts once, where it is anchored, and the
+dry run lists the aliases a bump changes with it.
 
-Each version in a .json or .toml file gets an entry of its own with its key,
-so a bump moves that value and no other. In a manifest discover knows, only
-the project's own version gets one, and every other version, a dependency's,
-is listed by the dry run as skipped, with the key that would track it:
+A file that does not parse, such as a tsconfig.json with comments or a conda
+meta.yaml with Jinja templates, is scanned as text instead, and so is a YAML
+file of more than one document, such as a Kubernetes manifest: the dry run
+says why, and its entries get parser = "text". An entry's parser key
+("json", "toml", "yaml", or "text") chooses for that file whatever its name.
+A bump never falls back: an entry whose parser cannot read its file fails
+with exit 3, naming the line, and nothing is written. To track an image tag
+in a manifest, keep parser = "text" and give the entry the text before the
+tag as its key: key = "ghcr.io/me/app:".
+
+Each version in a .json, .toml, or YAML file gets an entry of its own with
+its key, so a bump moves that value and no other. In a manifest discover
+knows, only the project's own version gets one, and every other version, a
+dependency's, is listed by the dry run as skipped, with the key that would
+track it:
 
   package.json, composer.json, deno.json, jsr.json   version
   Cargo.toml       package.version or workspace.package.version
   pyproject.toml   project.version or tool.poetry.version
+  pubspec.yaml, snapcraft.yaml, galaxy.yml, CITATION.cff   version
+  Chart.yaml       version and appVersion
+
+A Helm chart gets both: version is the chart's and appVersion the
+application's, and many charts keep them equal. Delete the entry for the one
+you version separately.
 
 A known manifest with no version at those keys, such as a private monorepo
 root, gets no entry, and the dry run says so. A text file gets one entry per

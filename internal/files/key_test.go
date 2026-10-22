@@ -88,7 +88,7 @@ func TestParseKey(t *testing.T) {
 		{ParserText, "a\nb", `key "a\nb" holds a line break`},
 		{ParserText, "a\rb", `key "a\rb" holds a line break`},
 		{ParserTOML, "VERSION ?= ", `key "VERSION ?= " is not a key path (' ' cannot follow "VERSION"); for a TOML file, a key is a path such as package.version`},
-		{Parser("yaml"), "version", `unknown parser "yaml"`},
+		{Parser("ini"), "version", `unknown parser "ini"`},
 	} {
 		k, err := ParseKey(tt.p, tt.in)
 		got := k.String()
