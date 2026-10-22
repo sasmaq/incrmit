@@ -5,6 +5,49 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- An optional `key` on a `[[files]]` entry says which occurrence in the file is
+  the project's version, and an entry with one bumps exactly that occurrence.
+  In a `.json` or `.toml` file it is a path from the top of the document
+  (`key = "version"`, `"package.version"`, `"bin[0].version"`); in any other
+  file it is the text right before the version on its line
+  (`key = "VERSION ?= "`). A key that names nothing holding the entry's
+  version fails the bump with exit `3` before anything is written, and two
+  entries that would bump one occurrence are a config error. `--key` does the
+  same for `--file`, so `incrmit --file package.json --key version` bumps a
+  manifest that holds dependencies without a config. `preview` shows each
+  entry's key, and `undo` reverts the occurrences the bump's key named.
+- `discover` writes a key for every version in a `.json` or `.toml` file. In
+  `package.json`, `composer.json`, `deno.json`, `jsr.json`, `Cargo.toml`, and
+  `pyproject.toml` it writes only the project's own version and lists each
+  dependency in `--dry-run` as skipped, with the key that would track it; such
+  a manifest with no version of its own, like a private monorepo root, gets no
+  entry. **Run `incrmit discover` again to write the keys into an existing
+  config**; its `ignore` list is kept.
+
+### Changed
+
+- A bump's, `undo`'s, and `discover`'s summary lines name an entry's key after
+  its path (`package.json version: 1.2.3 -> 1.2.4`). Lines for entries
+  without a key read as before.
+
+### Fixed
+
+- A dependency pinned at the project's version no longer moves with it once
+  the config says where the version is. With a `package.json` at `1.2.3`
+  pinning `"left-pad": "1.2.3"` and `"lodash": "4.17.21"`, and a `Cargo.toml`
+  at `0.4.0` with `anyhow = { version = "0.4.0" }` and `serde = "1.0.200"`,
+  the config `discover` wrote listed each file and version and nothing more,
+  so `--minor` moved `left-pad` to `1.3.0` and `anyhow` to `0.5.0` with the
+  projects, and the entries for `4.17.21` and `1.0.200` bumped `lodash` and
+  `serde` outright, all with exit `0`. `discover` now writes
+  `key = "version"` and `key = "package.version"` and no entry for a
+  dependency, and the bump moves the two projects' versions alone. An entry
+  without a key still bumps every occurrence of its version.
+
 ## [0.3.11] - 2026-10-19
 
 ### Added

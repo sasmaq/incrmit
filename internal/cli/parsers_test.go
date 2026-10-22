@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,12 +20,17 @@ import (
 // dependency specifiers.
 var reproFiles = []string{"package.json", "Cargo.toml", "pyproject.toml"}
 
-// reproProject copies the reproduction files into a new project directory.
-func reproProject(t *testing.T) string {
+// reproDir holds the reproduction files, resolved before any test changes
+// directory (runMain does).
+var reproDir, _ = filepath.Abs(filepath.Join("..", "files", "testdata", "repro"))
+
+// reproProject copies the reproduction files into a new project directory,
+// and any of extra, also from internal/files/testdata/repro.
+func reproProject(t *testing.T, extra ...string) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range reproFiles {
-		b, err := os.ReadFile(filepath.Join("..", "files", "testdata", "repro", name))
+	for _, name := range append(slices.Clone(reproFiles), extra...) {
+		b, err := os.ReadFile(filepath.Join(reproDir, name))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,8 +54,11 @@ func readFile(t *testing.T, path string) string {
 // for package.json and Cargo.toml and a minor bump moved all of them: the
 // schema URL, both ranges, and the TOML comment included, with exit 0. Read by
 // format, those are no longer candidates. The dependency pins still are,
-// since each is a whole string value: telling them from the project's version
-// is Milestone 40's job, by the keys recorded here.
+// since each is a whole string value, but these are manifests discover knows
+// (Milestone 40): it writes an entry for each one's own version, keyed to
+// where it is, and lists the pins as skipped, so the bump moves the project's
+// version alone. TestReproductionPinsMoveWithoutAKey bumps the config the
+// discover of Milestone 39 wrote instead.
 func TestReproductionReadsManifestsByFormat(t *testing.T) {
 	golden := func(name string) string { return goldenPath(t, name) } // before runMain changes directory
 	dryRunGolden, configGolden, bumpGolden := golden("repro_discover_dry_run.golden"), golden("repro_incrmit.toml.golden"), golden("repro_bump_minor.golden")
@@ -92,6 +101,7 @@ func TestReproductionReadsManifestsByFormat(t *testing.T) {
 	if cargo := readFile(t, filepath.Join(dir, "Cargo.toml")); !strings.Contains(cargo, `version = "0.5.0" # was 0.3.9`) {
 		t.Errorf("Cargo.toml's comment moved:\n%s", cargo)
 	}
+	assertPinsKept(t, dir)
 
 	// The journal records the parser each file was read with, and undo puts
 	// back exactly the bytes the bump started from.
@@ -405,14 +415,15 @@ func TestFileModeReadsByFormat(t *testing.T) {
 
 // A value that is a version only once decoded is not a candidate, and the dry
 // run says why rather than leaving the file out silently. A tree whose only
-// versions are such values has nothing to write.
+// versions are such values has nothing to write. package.json is a manifest
+// discover knows, so the dry run also says it gets no entry.
 func TestDiscoverReportsEscapedVersions(t *testing.T) {
 	dir := project(t, "", map[string]string{"package.json": "{\n  \"version\": \"1\\u002e2.3\"\n}\n"})
 	code, stdout, stderr := runMain(t, dir, "discover", "--dry-run")
 	if code != ExitOK || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
-	if want := "  package.json:\n    L2 version: skipped, \"1.2.3\" is a version only once its escapes are decoded; incrmit rewrites a version written out plainly\n"; !strings.Contains(stdout, want) {
+	if want := "  package.json: no entry, since key version holds no version\n    L2 version: skipped, \"1.2.3\" is a version only once its escapes are decoded; incrmit rewrites a version written out plainly\n"; !strings.Contains(stdout, want) {
 		t.Errorf("dry run =\n%s\nwant it to hold\n%s", stdout, want)
 	}
 	code, _, stderr = runMain(t, dir, "discover")

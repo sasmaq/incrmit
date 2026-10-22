@@ -158,7 +158,7 @@ func TestOverviewListsAllCommands(t *testing.T) {
 // users can discover them from the top-level help without drilling in.
 func TestOverviewListsFlags(t *testing.T) {
 	for _, flag := range []string{
-		"-c, --config", "-f, --file", "-M, --major", "-m, --minor",
+		"-c, --config", "-f, --file", "-k, --key", "-M, --major", "-m, --minor",
 		"-p, --patch", "-r, --release", "-e, --pre", "-d, --dry-run",
 		"-P, --path", "-o, --output", "-s, --max-file-size", "--no-banner",
 	} {
@@ -220,6 +220,29 @@ func TestDiscoverHelpDocumentsParsers(t *testing.T) {
 	}
 }
 
+// The bump help documents the key with an example per parser, and the discover
+// help which manifests discover knows and what it writes for each.
+func TestHelpDocumentsKeys(t *testing.T) {
+	for _, tt := range []struct {
+		topic string
+		want  []string
+	}{
+		{"bump", []string{`key = "version"`, `key = "package.version"`, `key = "VERSION ?= "`, "--key version", "exit 3"}},
+		{"discover", []string{"composer.json, deno.json, jsr.json", "workspace.package.version", "tool.poetry.version", "private monorepo", "Running discover again"}},
+		{"preview", []string{"KEY column"}},
+	} {
+		code, stdout, _ := runMain(t, "", "help", tt.topic)
+		for _, want := range tt.want {
+			if code != ExitOK || !strings.Contains(stdout, want) {
+				t.Errorf("incrmit help %s: exit = %d, stdout lacks %q", tt.topic, code, want)
+			}
+		}
+	}
+	if !strings.Contains(overviewHelp, `key = "VERSION ?= "`) {
+		t.Errorf("the overview does not mention keys:\n%s", overviewHelp)
+	}
+}
+
 // The discover help says paths are written relative to --output's directory.
 func TestDiscoverHelpDocumentsPaths(t *testing.T) {
 	if !strings.Contains(discoverHelp, pathsNote) {
@@ -265,7 +288,8 @@ func TestCommandHelpListsFlags(t *testing.T) {
 		text  string
 		flags []string
 	}{
-		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--major", "--minor", "--patch", "--release", "--pre", "--max-file-size", "--wait", "--dry-run"}},
+		{"previewHelp", previewHelp, []string{"--config", "--file", "--key", "--max-file-size"}},
+		{"bumpHelp", bumpHelp, []string{"--config", "--file", "--key", "--major", "--minor", "--patch", "--release", "--pre", "--max-file-size", "--wait", "--dry-run"}},
 		{"discoverHelp", discoverHelp, []string{"--path", "--output", "--max-file-size", "--wait", "--dry-run"}},
 		{"undoHelp", undoHelp, []string{"--config", "--wait", "--dry-run"}},
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/sasmaq/incrmit/internal/version"
@@ -20,15 +21,18 @@ import (
 type previewOptions struct {
 	configPath  string
 	file        string
-	maxFileSize int64 // per-file read cap in bytes; 0 means no limit
+	key         *string // --key, nil when not given
+	maxFileSize int64   // per-file read cap in bytes; 0 means no limit
 }
 
-// previewRow is one line of the preview: a target, the version it holds today,
-// and the three versions the component bumps would produce, each nil when that
-// bump would overflow (see projectBump). inSync is false when the row's version
-// differs from the one most entries hold (see markDrift).
+// previewRow is one line of the preview: a target, the key that names its
+// version ("" for none), the version it holds today, and the three versions
+// the component bumps would produce, each nil when that bump would overflow
+// (see projectBump). inSync is false when the row's version differs from the
+// one most entries hold (see markDrift).
 type previewRow struct {
 	path    string
+	key     string
 	current version.Version
 	patch   *version.Version
 	minor   *version.Version
@@ -52,7 +56,12 @@ func runPreview(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	targets, _, _, err := resolveTargets(opts.configPath, opts.file)
+	if err := checkKeyFlag(opts.file, opts.key); err != nil {
+		fprintln(stderr, "incrmit:", err)
+		fprint(stderr, previewHelp)
+		return ExitUsage
+	}
+	targets, _, _, err := resolveTargets(opts.configPath, opts.file, opts.key)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -72,26 +81,32 @@ func runPreview(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-// previewRows flattens the read file groups into one row per (path, version),
-// computing the three projected versions from the version each entry holds. A
-// file listed once per distinct version it contains (see Milestone 20) yields
-// one row per version; an exact (path, version) repeat is dropped so the same
-// line is never printed twice. File and entry order is preserved.
+// previewRows flattens the read file groups into one row per (path, key,
+// version), computing the three projected versions from the version each
+// entry holds. A file listed once per distinct version it contains (see
+// Milestone 20), or once per key, yields one row per entry; an exact repeat
+// is dropped so the same line is never printed twice. File and entry order is
+// preserved.
 func previewRows(groups []fileGroup) []previewRow {
 	rows := make([]previewRow, 0, len(groups))
 	seen := make(map[string]struct{}, len(groups))
 	for _, g := range groups {
 		for _, e := range g.entries {
-			key := g.display + "\x00" + e.oldVer.String()
-			if _, dup := seen[key]; dup {
+			key := ""
+			if e.key != nil {
+				key = e.key.String()
+			}
+			id := g.display + "\x00" + key + "\x00" + e.oldVer.String()
+			if _, dup := seen[id]; dup {
 				continue
 			}
-			seen[key] = struct{}{}
+			seen[id] = struct{}{}
 			// The bump methods carry the "v"/"V" prefix through and drop any
 			// prerelease and build section, so every projected version is
 			// exactly the token a real bump would write.
 			rows = append(rows, previewRow{
 				path:    g.display,
+				key:     key,
 				current: e.oldVer,
 				patch:   projectBump(version.Version.BumpPatch, e.oldVer),
 				minor:   projectBump(version.Version.BumpMinor, e.oldVer),
@@ -172,12 +187,18 @@ func precedenceKey(v version.Version) string {
 
 // renderPreview formats the rows as a table with columns padded to their widest
 // value, so the output lines up in a plain terminal with no tabs or escapes.
+// When some row has a key, a KEY column after the path shows it, so the value
+// a bump will move is plain; a text key is quoted, since its spaces count.
 // When some row is out of sync, a marker column and a footnote naming the common
 // version are added, and when some projection is unavailable, a footnote says
 // why; otherwise the table stands alone.
 func renderPreview(rows []previewRow, common version.Version, drifted bool) string {
+	keyed := slices.ContainsFunc(rows, func(r previewRow) bool { return r.key != "" })
 	table := make([][]string, 0, len(rows)+1)
 	header := []string{"PATH", "CURRENT", "PATCH", "MINOR", "MAJOR"}
+	if keyed {
+		header = slices.Insert(header, 1, "KEY")
+	}
 	if drifted {
 		header = append(header, "")
 	}
@@ -194,6 +215,9 @@ func renderPreview(rows []previewRow, common version.Version, drifted bool) stri
 		// The path is rendered before the widths are measured, so a name that
 		// needs escaping still lines up with the rest of its column.
 		cells := []string{displayName(r.path), r.current.String(), projection(r.patch), projection(r.minor), projection(r.major)}
+		if keyed {
+			cells = slices.Insert(cells, 1, r.key)
+		}
 		if drifted {
 			mark := ""
 			if !r.inSync {
@@ -256,6 +280,7 @@ func parsePreviewFlags(args []string, stdout, stderr io.Writer) (previewOptions,
 	fs.StringVar(&opts.configPath, "c", "", "path to the TOML config file (shorthand)")
 	fs.StringVar(&opts.file, "file", "", "preview one file (skips config)")
 	fs.StringVar(&opts.file, "f", "", "preview one file (shorthand)")
+	keyVar(fs, &opts.key)
 	maxFileSizeVar(fs, &opts.maxFileSize, 0, "refuse to read a target larger than this size")
 
 	if err := fs.Parse(args); err != nil {

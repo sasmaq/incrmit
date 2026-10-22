@@ -661,13 +661,20 @@ func TestGenerateRoundTrips(t *testing.T) {
 		t.Fatalf("loading generated config: %v", err)
 	}
 
-	// The config lists one entry per distinct version across all files.
+	// The config lists the entries each result gives: one per distinct
+	// version in a text file, and one per candidate in a JSON or TOML file,
+	// less a known manifest's dependencies (package.json's left-pad).
 	wantEntries := 0
 	for _, r := range results {
-		wantEntries += len(distinct(r))
+		wantEntries += len(r.Entries())
 	}
-	if len(cfg.Files) != wantEntries {
-		t.Fatalf("config has %d files, want %d", len(cfg.Files), wantEntries)
+	if len(cfg.Files) != wantEntries || wantEntries != 8 {
+		t.Fatalf("config has %d files, want %d, and 8", len(cfg.Files), wantEntries)
+	}
+	for _, f := range cfg.Files {
+		if f.Version == "1.0.0" {
+			t.Errorf("the config lists package.json's dependency: %+v", f)
+		}
 	}
 }
 

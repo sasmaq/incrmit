@@ -31,6 +31,7 @@ to a different path.
 [[files]]
   path = "package.json"
   version = "0.1.0"
+  key = "version"
 
 [[files]]
   path = "internal/buildinfo/buildinfo.go"
@@ -60,10 +61,12 @@ A prerelease or build section is recorded in its own key rather than inside
 
 An entry may also set `parser` to choose how its file is read: `"json"`,
 `"toml"`, or `"text"`. Omitted, the file's extension decides (see
-[How a file is read](#how-a-file-is-read)).
+[How a file is read](#how-a-file-is-read)). And it may set `key` to say which
+occurrence is the project's version, so a bump leaves a dependency pinned at
+the same version alone (see [Which occurrence: `key`](#which-occurrence-key)).
 
 That rewrite regenerates the file from its parsed contents in a fixed layout, so
-your `[[files]]` entries (with their `parser`) and `ignore` list are preserved
+your `[[files]]` entries (with their `parser` and `key`) and `ignore` list are preserved
 but hand-written comments and custom formatting are not. Keep notes you want to survive a bump
 outside `incrmit.toml`.
 
@@ -158,8 +161,8 @@ under, written the way TOML writes a dotted key (`package.version`,
 a dot), and `discover --dry-run` prints it next to the line number.
 
 A dependency pinned at the project's version is a whole string value as well
-(`"left-pad": "1.2.3"`, `serde = "1.0.200"`), so it still counts, and is bumped
-along with the project's version.
+(`"left-pad": "1.2.3"`, `serde = "1.0.200"`), so it still counts. An entry's
+[`key`](#which-occurrence-key) is what tells the two apart.
 
 A value that is a version only once its escapes are decoded, such as
 `"1\u002e2.3"`, does not count: `incrmit` rewrites a version's bytes in place
@@ -224,6 +227,85 @@ writes anything. None of those versions was the project's: run
 an entry to keep the old behavior for that file. `undo` reads each file with the
 parser the bump used, which the state file records, so a bump made by an earlier
 version is undone as text, the way it was made.
+
+### Which occurrence: `key`
+
+An entry names a path and a version, and without more a bump rewrites every
+occurrence of that version in the file. In a manifest that is often more than
+the project's version: a `package.json` at `1.2.3` that pins
+`"left-pad": "1.2.3"` would bump the dependency too. `key` says which
+occurrence is the project's, and an entry with one rewrites exactly the
+occurrences it names and nothing else in the file:
+
+```toml
+[[files]]
+  path = "package.json"
+  version = "1.2.3"
+  key = "version"            # not dependencies.left-pad
+
+[[files]]
+  path = "Cargo.toml"
+  version = "0.4.0"
+  key = "package.version"    # not anyhow = { version = "0.4.0" }
+
+[[files]]
+  path = "Makefile"
+  version = "1.2.3"
+  key = "VERSION ?= "        # not .../tool-1.2.3.tar.gz
+```
+
+A key is read the way its file is (see [How a file is read](#how-a-file-is-read)):
+
+- **In a JSON or TOML file** it is a path from the top of the document,
+  written the way TOML writes a dotted key: bare parts made of letters,
+  digits, `_`, and `-`; any other part in double quotes, with TOML's escapes;
+  and an array index as `[N]` after the part it indexes. So
+  `key = "bin[0].version"` names the first `[[bin]]` table's `version`,
+  `key = 'dependencies."@types/node"'` a key holding a slash, and
+  `key = '"."'` the `.` key of a `.release-please-manifest.json`. The path is
+  matched whole, never as a suffix: `version` is the top-level key alone, never
+  `dependencies.version`. The value there must be a string holding the entry's
+  version.
+- **In any other file** it is the text right before the version on its line,
+  with no pattern language: `key = "VERSION ?= "` names the version in
+  `VERSION ?= 1.2.3` and not the one in `.../tool-1.2.3.tar.gz`. Matching is
+  byte for byte, so case and whitespace count, and it names every occurrence
+  that text comes before. A `v` prefix is part of the version, so the key for
+  `TAG=v1.2.3` is `"TAG="`.
+
+An entry with a key and no `version` starts from the version its key names.
+
+A key that does not name a version the bump can rewrite fails while planning,
+with exit `3` and nothing written, naming the file and the key:
+
+```text
+incrmit: package.json: key dependencies.version is not in the file
+incrmit: package.json: key engines holds an object, not a version
+incrmit: package.json: key version holds 1.2.3, not 1.2.4
+incrmit: package.json: key name appears twice in the file, so it names no one value
+incrmit: Makefile: key "VERSION = " is not followed by a version anywhere in the file
+```
+
+A key its parser cannot read is a config error naming the entry (exit `1`): an
+empty key, a text key holding a line break, and anything that is not a path in
+a JSON or TOML file, such as `key = "VERSION ?= "` on a `package.json`. So is a
+pair of entries that would both rewrite one occurrence, such as a keyed entry
+and one without a key for the same version, or two keys naming the same value;
+that one is found while planning, since it takes the file to tell:
+
+```text
+incrmit: config: files[0] (key version) and files[1] (no key) both claim the 1.2.3 on line 2 of package.json; remove one, or give each a key that names its own occurrence
+```
+
+Since a key is read by the entry's parser, it changes meaning when the parser
+does, through `parser` or `discover`'s fallback to text. That fails rather than
+rewrite another occurrence: a path read as text names nothing, since a version
+never comes right after a word, and text read as a path is either not a path or
+names a key the file does not have.
+
+With `--file`, give the key as `--key` (see [Bumping](#bumping)). A bump keeps
+each entry's `key` when it rewrites the config, and records it in the state
+file, so `undo` reverts the same occurrences.
 
 ### Ignoring folders and files
 
@@ -300,6 +382,7 @@ incrmit [flags]
 | ---- | ----- | ----------- | ------- |
 | `--config` | `-c` | Path to the TOML config file | `incrmit.toml` |
 | `--file` | `-f` | Bump the version in one file (skips config) | *none* |
+| `--key` | `-k` | With `--file`, the [key](#which-occurrence-key) that names the version | *none* |
 | `--major` | `-M` | Bump the major version (resets minor and patch) | `false` |
 | `--minor` | `-m` | Bump the minor version (resets patch) | `false` |
 | `--patch` | `-p` | Bump the patch version | `true` |
@@ -314,7 +397,13 @@ applied. If more than one component flag is supplied, the highest wins (major
 > minor > patch).
 
 Using `--file` bypasses the config entirely: only that file is updated and
-`incrmit.toml` is not rewritten.
+`incrmit.toml` is not rewritten. A file holding several versions is ambiguous
+on its own; `--key` names the one to bump, read as an entry's
+[`key`](#which-occurrence-key) is, so
+`incrmit --file package.json --key version` and
+`incrmit --file Makefile --key 'VERSION ?= '` work without a config. `--key`
+without `--file`, an empty one, and one that is not a path for a JSON or TOML
+file are usage errors (exit `2`).
 
 ### Examples
 
@@ -507,12 +596,33 @@ scanned. A file's name decides only how it is read: a `.json` or `.toml` file
 by its format, where only a whole string value counts, and anything else as
 text (see [How a file is read](#how-a-file-is-read)).
 
-A file may contain a version in more than one place. Discovery captures every
-occurrence and records **one `[[files]]` entry per distinct version**: if all
-the occurrences agree, that is a single entry (and a bump rewrites every copy);
-if a file holds several *different* versions, it gets one entry per version, all
-sharing the same `path`. Each such version is bumped independently, and all of
-its occurrences in the file are updated in a single pass.
+A file may contain a version in more than one place. In a JSON or TOML file,
+discovery records **one `[[files]]` entry per occurrence, with its
+[`key`](#which-occurrence-key)**, so each entry rewrites exactly one value, can
+be deleted on its own, and says in the config what it is. In a manifest it
+knows, it records the project's own version alone:
+
+| Manifest | The project's version is at |
+| -------- | --------------------------- |
+| `package.json`, `composer.json`, `deno.json`, `jsr.json` | `version` |
+| `Cargo.toml` | `package.version` or `workspace.package.version` |
+| `pyproject.toml` | `project.version` or `tool.poetry.version` |
+
+Every other version in such a manifest is a dependency's, and `--dry-run` lists
+it as skipped with the key that would track it. A known manifest with none of
+those keys holding a version, such as a private monorepo root, gets no entry,
+and `--dry-run` says so rather than writing an entry per dependency.
+
+In any other file, discovery records **one `[[files]]` entry per distinct
+version**, with no key: if all the occurrences agree, that is a single entry
+(and a bump rewrites every copy); if a file holds several *different* versions,
+it gets one entry per version, all sharing the same `path`. Each such version is
+bumped independently, and all of its occurrences in the file are updated in a
+single pass. The text in front of a version is often prose, and rewording the
+sentence would break a key, so add one by hand where you want it.
+
+Running `discover` again over a config written before keys existed writes them
+in, keeping its `ignore` list.
 
 A version token may carry an optional leading `v` or `V` (for example
 `v1.2.3` or `V1.2.3`, as commonly used by tags and `VERSION` files). The
@@ -559,8 +669,8 @@ incrmit discover
 ```
 
 This writes an `incrmit.toml` listing each discovered file along with the
-version value(s) that were found. A file with two differing versions appears
-once per distinct version:
+version value(s) that were found. A text file with two differing versions
+appears once per distinct version:
 
 ```toml
 # incrmit.toml (generated by `incrmit discover`)
@@ -572,6 +682,7 @@ once per distinct version:
 [[files]]
   path = "package.json"
   version = "1.2.3"
+  key = "version"
 
 [[files]]
   path = "notes.md"
@@ -599,17 +710,23 @@ Wrote release/incrmit.toml with 1 file(s):
 
 `--dry-run` prints each occurrence it finds, with its line number and the text
 of the line for context, rather than writing the config. In a JSON or TOML
-file, each occurrence's key comes after its line number:
+file, each occurrence's key comes after its line number, and a manifest's
+dependencies are listed as skipped:
 
 ```text
-Discovered 2 file(s) under . (no config written):
+Discovered 3 file(s) under . (no config written):
   Cargo.toml:
     L3 package.version: version = "0.4.0" # was 0.3.9
-    L8 dependencies.anyhow.version: anyhow = { version = "0.4.0" }
+    L8 dependencies.anyhow.version: skipped, not the project's own version; to track it, add an entry with key = "dependencies.anyhow.version"
   notes.md:
     L1: release 1.2.3
     L5: legacy 2.0.0
+  packages/package.json: no entry, since key version holds no version
+    L4 devDependencies.typescript: skipped, not the project's own version; to track it, add an entry with key = "devDependencies.typescript"
 ```
+
+The summary of a real run names each entry's key after its path
+(`Cargo.toml package.version: 0.4.0`).
 
 A file read as text when its name says JSON or TOML is headed by the reason
 (`tsconfig.json: not JSON (line 2: ...), scanned as text`), and the summary of
@@ -738,13 +855,23 @@ history. A few details:
 - **A file listed once per version it contains** (see
   [Discovery](#discovery)) gets one row per version; an identical `path` and
   `version` is never printed twice.
+- **An entry's [`key`](#which-occurrence-key) gets a `KEY` column**, so you see
+  which value a bump will move. A text key is quoted, since its spaces count. A
+  config without keys has no such column.
+
+  ```text
+  PATH          KEY              CURRENT  PATCH  MINOR  MAJOR
+  package.json  version          1.2.3    1.2.4  1.3.0  2.0.0
+  Cargo.toml    package.version  1.2.3    1.2.4  1.3.0  2.0.0
+  Makefile      "VERSION ?= "    1.2.3    1.2.4  1.3.0  2.0.0
+  ```
 - **A bump past the limit shows `n/a`**: a component already at
   9223372036854775807 cannot be bumped (see
   [Prereleases and build metadata](#prereleases-and-build-metadata)), so its
   column reads `n/a`, with a note under the table. The other columns still show
   what a bump would write, and `preview` still exits `0`.
 - **`--file` previews a single target** without a config, with the same
-  semantics as a `--file` bump.
+  semantics as a `--file` bump, `--key` included.
 - **`--max-file-size` applies**, exactly as it does to a bump: no cap by
   default, and an oversized target is reported rather than read.
 
@@ -774,6 +901,7 @@ since the tool cannot tell it apart from drift.
 | ---- | ----- | ----------- | ------- |
 | `--config` | `-c` | Path to the TOML config file | `incrmit.toml` |
 | `--file` | `-f` | Preview one file (skips config) | *none* |
+| `--key` | `-k` | With `--file`, the [key](#which-occurrence-key) that names the version | *none* |
 | `--max-file-size` | `-s` | [Refuse to read a target larger than this](#limiting-how-much-is-read) | *no limit* |
 
 Exit codes follow the rest of the tool: a missing config exits `1` with a hint
@@ -856,6 +984,10 @@ A few details worth knowing:
   `parser`, so the same occurrences are put back. An entry written before the
   parser was recorded is read as text, which is how that bump was made. A file
   that parser cannot read any more is refused (exit `3`), with nothing written.
+  It records each entry's [`key`](#which-occurrence-key) the same way, and
+  `undo` reverts exactly the occurrences that key names, even if the config's
+  key has been edited or removed since; a keyed value changed since the bump
+  counts as the file being changed.
 - **Nothing to undo is not an error.** With no recorded history, `undo` prints a
   friendly message and exits `0`.
 - **`--dry-run` previews the revert** (`new -> old`) without writing anything.
@@ -1026,7 +1158,7 @@ scripts and CI pipelines:
 | 0    | Success.                                                                                                  |
 | 1    | Generic runtime error (e.g. missing config, filesystem error).                                            |
 | 2    | Invalid arguments or flags.                                                                               |
-| 3    | No version found, an ambiguous/unparseable version, a file its parser cannot read, or one too large to bump. |
+| 3    | No version found, an ambiguous/unparseable version, a key that names no version to bump, a file its parser cannot read, or one too large to bump. |
 
 A run that finds the project already held by another `incrmit` also exits `1`,
 having written nothing — see [Concurrent runs](#concurrent-runs).

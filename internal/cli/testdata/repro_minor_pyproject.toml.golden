@@ -13,4 +13,4 @@ Changelog = "https://example.com/changelog/2.1.0"
 
 [tool.example]
 # Pinned until 2.2.0 ships.
-schema-version = "2.2.0"
+schema-version = "2.1.0"

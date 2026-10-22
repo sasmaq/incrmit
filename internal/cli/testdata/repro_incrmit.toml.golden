@@ -8,19 +8,14 @@
 [[files]]
   path = "Cargo.toml"
   version = "0.4.0"
-
-[[files]]
-  path = "Cargo.toml"
-  version = "1.0.200"
+  key = "package.version"
 
 [[files]]
   path = "package.json"
   version = "1.2.3"
-
-[[files]]
-  path = "package.json"
-  version = "4.17.21"
+  key = "version"
 
 [[files]]
   path = "pyproject.toml"
   version = "2.1.0"
+  key = "project.version"

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -141,6 +142,7 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 type bumpOptions struct {
 	configPath  string
 	file        string
+	key         *string // --key, nil when not given
 	major       bool
 	minor       bool
 	patch       bool
@@ -169,6 +171,9 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	}
 
 	bump, label, err := resolveBump(opts)
+	if err == nil {
+		err = checkKeyFlag(opts.file, opts.key)
+	}
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		fprint(stderr, bumpHelp)
@@ -191,7 +196,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		defer func() { _ = lk.Release() }()
 	}
 
-	targets, cfgPath, ignore, err := resolveTargets(opts.configPath, opts.file)
+	targets, cfgPath, ignore, err := resolveTargets(opts.configPath, opts.file, opts.key)
 	if err != nil {
 		fprintln(stderr, "incrmit:", err)
 		return classify(err)
@@ -256,7 +261,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 		fprintf(stdout, "Dry run: would apply a %s (no files changed)\n", label)
 		for _, g := range groups {
 			for _, e := range g.entries {
-				fprintf(stdout, "  %s: %s -> %s\n", displayName(g.display), e.oldVer, e.newVer)
+				fprintf(stdout, "  %s%s: %s -> %s\n", displayName(g.display), keyLabel(e.key), e.oldVer, e.newVer)
 			}
 		}
 		return ExitOK
@@ -291,7 +296,7 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 	fprintf(stdout, "Applied a %s to %d file(s):\n", label, len(groups))
 	for _, g := range groups {
 		for _, e := range g.entries {
-			fprintf(stdout, "  %s: %s -> %s\n", displayName(g.display), e.oldVer, e.newVer)
+			fprintf(stdout, "  %s%s: %s -> %s\n", displayName(g.display), keyLabel(e.key), e.oldVer, e.newVer)
 		}
 	}
 	return ExitOK
@@ -300,10 +305,30 @@ func runBump(args []string, stdout, stderr io.Writer) int {
 // entryPlan is a single version bump within a file: the old token and its
 // computed replacement, and the entry's `parser` value as the config wrote it
 // ("" when the extension decides), which the config rewrite carries through.
+// An entry with a key also holds it, read by the file's parser, and the
+// occurrences it claims (files.Located.Claim); the config rewrite and the
+// journal record the key as written.
 type entryPlan struct {
 	oldVer    version.Version
 	newVer    version.Version
 	parserKey string
+	key       *files.Key
+	at        []int
+	index     int // the entry's index in the config's files, or -1 for --file
+}
+
+// replacement is the files.Replacement e asks of its file.
+func (e entryPlan) replacement() files.Replacement {
+	return files.Replacement{Old: e.oldVer, New: e.newVer, Keyed: e.key != nil, At: e.at}
+}
+
+// rawKey returns e's key as written, or nil when it has none.
+func (e entryPlan) rawKey() *string {
+	if e.key == nil {
+		return nil
+	}
+	raw := e.key.Raw()
+	return &raw
 }
 
 // fileGroup is one target file plus every version bump planned for it. A file
@@ -314,6 +339,7 @@ type fileGroup struct {
 	fsPath  string
 	parser  files.Parser      // the parser the file was read with
 	data    []byte            // contents as read, put back if a later write fails
+	loc     *files.Located    // what the parser found in data
 	cands   []files.Candidate // the candidates the parser found in data
 	updated []byte            // contents with every entry bumped, set by planGroups
 	entries []entryPlan
@@ -331,9 +357,9 @@ type fileGroup struct {
 // The pinned-version check used to run as each file was written, so a config
 // out of sync with its third file left the first two bumped.
 //
-// Only the parser's candidates are rewritten, and for JSON and TOML the
-// rewritten bytes are decoded again and checked against the plan
-// (files.Rewrite) before anything is written.
+// Only the parser's candidates are rewritten, an entry with a key only the
+// ones it claims, and for JSON and TOML the rewritten bytes are decoded again
+// and checked against the plan (files.Rewrite) before anything is written.
 func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	groups, code := readGroups(targets, maxBytes, stderr)
 	if code != ExitOK {
@@ -354,15 +380,15 @@ func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Write
 		g := &groups[i]
 		repl := make([]files.Replacement, 0, len(g.entries))
 		for _, e := range g.entries {
-			repl = append(repl, files.Replacement{Old: e.oldVer, New: e.newVer})
+			repl = append(repl, e.replacement())
 		}
 		updated, counts, err := files.Rewrite(g.parser, g.data, g.cands, repl)
 		if err != nil {
 			fprintf(stderr, "incrmit: %s: %v\n", displayName(g.display), err)
 			return nil, classify(err)
 		}
-		for _, e := range g.entries {
-			if counts[e.oldVer.String()] == 0 {
+		for i, e := range g.entries {
+			if counts[i] == 0 {
 				fprintf(stderr, "incrmit: %s: %v\n", displayName(g.display), fmt.Errorf("%w: %s", files.ErrVersionNotFound, e.oldVer))
 				return nil, ExitNoVersion
 			}
@@ -374,15 +400,16 @@ func planGroups(targets []target, bump bumpFunc, maxBytes int64, stderr io.Write
 
 // bumpedConfig renders the config a bump writes back: each entry at its new
 // version, so the next bump reads the correct current version. One entry is
-// written per (path, version), so files with several versions keep all of
-// their entries, each keeps its `parser`, and the user-authored ignore list is
-// carried through so a bump never drops it.
+// written per entry read, so files with several versions keep all of their
+// entries, each keeps its `parser` and its `key` as written, and the
+// user-authored ignore list is carried through so a bump never drops it.
 func bumpedConfig(groups []fileGroup, ignore []string) ([]byte, error) {
 	updated := &config.Config{Ignore: ignore}
 	for _, g := range groups {
 		for _, e := range g.entries {
 			entry := config.EntryFor(g.display, e.newVer)
 			entry.Parser = e.parserKey
+			entry.Key = e.rawKey()
 			updated.Files = append(updated.Files, entry)
 		}
 	}
@@ -402,6 +429,12 @@ func bumpedConfig(groups []fileGroup, ignore []string) ([]byte, error) {
 // guessing is how a bump goes wrong silently. A --file target has no such
 // record, so it is read the way discover would read it for the first time,
 // falling back to text with a note.
+//
+// An entry with a key claims its occurrences here: a key that names no
+// candidate holding the entry's version fails with exit 3 (a *files.KeyError),
+// and so do two entries that would both rewrite one occurrence, since one of
+// them is wrong and which cannot be told. A key with no version recorded
+// starts from the version it names.
 func readGroups(targets []target, maxBytes int64, stderr io.Writer) ([]fileGroup, int) {
 	var groups []fileGroup
 	index := make(map[string]int, len(targets))
@@ -424,32 +457,126 @@ func readGroups(targets []target, maxBytes int64, stderr io.Writer) ([]fileGroup
 				fprintf(stderr, "incrmit: %s: %v; to read it as text, set parser = \"text\" on its [[files]] entry\n", displayName(tgt.display), err)
 				return nil, classify(err)
 			}
-			groups = append(groups, fileGroup{display: tgt.display, fsPath: tgt.fsPath, parser: parser, data: data, cands: loc.Candidates})
+			groups = append(groups, fileGroup{display: tgt.display, fsPath: tgt.fsPath, parser: parser, data: data, loc: loc, cands: loc.Candidates})
 			gi = len(groups) - 1
 			index[tgt.fsPath] = gi
+		}
+		g := &groups[gi]
+		e := entryPlan{parserKey: tgt.parserKey, index: tgt.index}
+
+		// A key is read by the parser the file was read with. Load checked a
+		// config entry's against its parser; --key is checked here, since a
+		// --file target that falls back to text reads it as text.
+		if tgt.key != nil {
+			k, err := files.ParseKey(g.parser, *tgt.key)
+			if err != nil {
+				if tgt.fileMode {
+					fprintf(stderr, "incrmit: --key: %v\n", err)
+					return nil, ExitUsage
+				}
+				fprintf(stderr, "incrmit: %s: %v\n", displayName(tgt.display), err)
+				return nil, ExitError
+			}
+			e.key = &k
 		}
 
 		// Prefer the version recorded in the config: it pins the exact token to
 		// bump, so files containing several version-like strings are handled
-		// unambiguously. Fall back to scanning the file when none is recorded.
-		var oldVer version.Version
+		// unambiguously. Fall back to the one version the key names, or to
+		// scanning the file, when none is recorded.
 		var err error
-		if tgt.knownVer != "" {
-			oldVer, err = version.Parse(tgt.knownVer)
+		switch {
+		case tgt.knownVer != "":
+			e.oldVer, err = version.Parse(tgt.knownVer)
 			if err != nil {
 				fprintf(stderr, "incrmit: %s: invalid version %q in config: %v\n", displayName(tgt.display), tgt.knownVer, err)
 				return nil, ExitNoVersion
 			}
-		} else {
-			oldVer, err = files.FindVersion(groups[gi].cands)
-			if err != nil {
-				fprintf(stderr, "incrmit: %s: %v\n", displayName(tgt.display), err)
-				return nil, classify(err)
+		case e.key != nil:
+			var named []files.Candidate
+			if named, err = g.loc.Named(*e.key); err == nil {
+				e.oldVer, err = files.FindVersion(named)
 			}
+		default:
+			e.oldVer, err = files.FindVersion(g.cands)
 		}
-		groups[gi].entries = append(groups[gi].entries, entryPlan{oldVer: oldVer, parserKey: tgt.parserKey})
+		if err == nil && e.key != nil {
+			e.at, err = g.loc.Claim(*e.key, e.oldVer)
+		}
+		if err != nil {
+			fprintf(stderr, "incrmit: %s: %v\n", displayName(tgt.display), err)
+			return nil, classify(err)
+		}
+		g.entries = append(g.entries, e)
+	}
+	for _, g := range groups {
+		if code := checkClaims(g, stderr); code != ExitOK {
+			return nil, code
+		}
 	}
 	return groups, ExitOK
+}
+
+// checkClaims refuses a file two of whose entries would rewrite one
+// occurrence, where at least one has a key: two keys that name it, or a key
+// and an entry without one for the same version. One rewrite each is all an
+// occurrence gets, so one of the entries is wrong, and which cannot be told.
+// Only the config can list two entries for a file.
+func checkClaims(g fileGroup, stderr io.Writer) int {
+	repls := make([]files.Replacement, len(g.entries))
+	for i, e := range g.entries {
+		repls[i] = e.replacement()
+	}
+	i, j, c, overlap := files.Overlap(g.data, g.cands, repls)
+	if !overlap {
+		return ExitOK
+	}
+	entry := func(e entryPlan) string {
+		if e.key == nil {
+			return fmt.Sprintf("files[%d] (no key)", e.index)
+		}
+		return fmt.Sprintf("files[%d] (key %s)", e.index, e.key)
+	}
+	fprintf(stderr, "incrmit: config: %s and %s both claim the %s on line %d of %s; remove one, or give each a key that names its own occurrence\n",
+		entry(g.entries[i]), entry(g.entries[j]), c.Version, files.LineOf(g.data, c.Start), displayName(g.display))
+	return ExitError
+}
+
+// keyLabel renders an entry's key for a summary line, after the path:
+// " package.version" for a JSON or TOML key, ` "VERSION ?= "` for a text key,
+// whose spaces count, and nothing for an entry without one.
+func keyLabel(k *files.Key) string {
+	if k == nil {
+		return ""
+	}
+	return " " + k.String()
+}
+
+// keyVar registers --key and its shorthand -k on fs. *key stays nil unless
+// one is given, so an empty --key is told apart from none and refused.
+func keyVar(fs *flag.FlagSet, key **string) {
+	set := func(s string) error {
+		*key = &s
+		return nil
+	}
+	fs.Func("key", "with --file, the key that names the version", set)
+	fs.Func("k", "with --file, the key that names the version (shorthand)", set)
+}
+
+// checkKeyFlag refuses a --key the bump or preview cannot use: one given
+// without --file, since a config entry carries its own, and an empty one,
+// which names nothing whatever the file. Whether it is a path is checked once
+// the file's parser is known (readGroups).
+func checkKeyFlag(file string, key *string) error {
+	switch {
+	case key == nil:
+		return nil
+	case file == "":
+		return usagef("--key needs --file; in config mode, set key on the [[files]] entry")
+	case *key == "":
+		return usagef("--key is empty; give the key that names the version in %s", displayName(file))
+	}
+	return nil
 }
 
 // parseBumpFlags registers the bump flags (each with a long and short name)
@@ -483,6 +610,7 @@ func parseBumpFlags(args []string, stdout, stderr io.Writer) (bumpOptions, int) 
 	fs.BoolVar(&opts.wait, "wait", false, "wait for another incrmit run to finish instead of failing")
 	fs.BoolVar(&opts.wait, "w", false, "wait for another incrmit run to finish (shorthand)")
 	maxFileSizeVar(fs, &opts.maxFileSize, 0, "refuse to read a target larger than this size")
+	keyVar(fs, &opts.key)
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -614,6 +742,8 @@ type target struct {
 	knownVer  string       // current version recorded in the config ("" if none)
 	parser    files.Parser // the parser the file is read with
 	parserKey string       // the entry's `parser` value as written ("" if none)
+	key       *string      // the entry's `key`, or --key, as written (nil if none)
+	index     int          // the entry's index in the config's files (-1 for --file)
 	fileMode  bool         // named by --file rather than by a config entry
 }
 
@@ -625,10 +755,10 @@ type target struct {
 // file. When a config entry records a version, it is carried through so the
 // caller can target that exact version and avoid re-scanning files that contain
 // several version-like strings. It is shared by `bump` and `preview` so both
-// resolve targets identically.
-func resolveTargets(configPath, file string) ([]target, string, []string, error) {
+// resolve targets identically. key is --key, which only a --file target takes.
+func resolveTargets(configPath, file string, key *string) ([]target, string, []string, error) {
 	if file != "" {
-		return []target{{display: file, fsPath: file, parser: files.ParserFor(file), fileMode: true}}, "", nil, nil
+		return []target{{display: file, fsPath: file, parser: files.ParserFor(file), key: key, index: -1, fileMode: true}}, "", nil, nil
 	}
 
 	cfgPath := config.ResolvePath(configPath)
@@ -639,7 +769,7 @@ func resolveTargets(configPath, file string) ([]target, string, []string, error)
 
 	baseDir := filepath.Dir(cfgPath)
 	targets := make([]target, 0, len(cfg.Files))
-	for _, f := range cfg.Files {
+	for i, f := range cfg.Files {
 		// Load validated every entry's parser, so this cannot fail.
 		parser, err := f.FileParser()
 		if err != nil {
@@ -651,6 +781,8 @@ func resolveTargets(configPath, file string) ([]target, string, []string, error)
 			knownVer:  f.Token(),
 			parser:    parser,
 			parserKey: f.Parser,
+			key:       f.Key,
+			index:     i,
 		})
 	}
 	return targets, cfgPath, cfg.Ignore, nil
@@ -715,7 +847,7 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 	// say why, but gives the config no entry.
 	listed := 0
 	for _, r := range results {
-		if len(r.Occurrences) > 0 {
+		if len(r.Entries()) > 0 {
 			listed++
 		}
 	}
@@ -733,13 +865,25 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 			fprintf(stdout, "  (ignoring: %s)\n", strings.Join(displayNames(ignore), ", "))
 		}
 		for _, r := range results {
-			if r.Fallback != nil {
+			switch {
+			case r.Fallback != nil:
 				fprintf(stdout, "  %s: %v, scanned as text\n", displayName(r.Path), r.Fallback)
-			} else {
+			case r.ProjectKeys != nil && len(r.Entries()) == 0:
+				fprintf(stdout, "  %s: no entry, since %s\n", displayName(r.Path), noProjectVersion(r.ProjectKeys))
+			default:
 				fprintf(stdout, "  %s:\n", displayName(r.Path))
 			}
 			for _, o := range r.Occurrences {
-				fprintf(stdout, "    L%d%s: %s\n", o.Line, keySuffix(o.Key), o.Text)
+				where := fmt.Sprintf("L%d%s", o.Line, keySuffix(o.Key))
+				switch o.Skip {
+				case discovery.NotProject:
+					fprintf(stdout, "    %s: skipped, not the project's own version; to track it, add an entry with key = %s\n",
+						where, tomlString(o.Key.String()))
+				case discovery.RepeatedKey:
+					fprintf(stdout, "    %s: skipped, %s appears more than once in the file, so no key names this one alone\n", where, o.Key)
+				default:
+					fprintf(stdout, "    %s: %s\n", where, o.Text)
+				}
 			}
 			for _, sk := range r.Skipped {
 				fprintf(stdout, "    %s: skipped, %q is a version only once its escapes are decoded; incrmit rewrites a version written out plainly\n",
@@ -768,11 +912,36 @@ func runDiscover(args []string, stdout, stderr io.Writer) int {
 		case r.Fallback != nil:
 			note = fmt.Sprintf(" (not %s, scanned as text)", strings.ToUpper(string(r.Fallback.Parser)))
 		}
-		for _, v := range distinctVersions(r.Occurrences) {
-			fprintf(stdout, "  %s: %s%s\n", displayName(r.Path), v, note)
+		for _, e := range r.Entries() {
+			key := ""
+			if e.Key != nil {
+				key = " " + *e.Key
+			}
+			fprintf(stdout, "  %s%s: %s%s\n", displayName(r.Path), key, e.Token(), note)
 		}
 	}
 	return ExitOK
+}
+
+// noProjectVersion says why a known manifest gets no entry: none of its
+// project keys holds a version, as in a private monorepo root.
+func noProjectVersion(keys []string) string {
+	if len(keys) == 1 {
+		return "key " + keys[0] + " holds no version"
+	}
+	return "neither key " + strings.Join(keys, " nor ") + " holds a version"
+}
+
+// tomlString renders s as a TOML string for a message that says what to add
+// to a config. A key path's own double quotes read best in a literal string
+// ('dependencies."@types/node"'); anything else is a basic string. Key paths
+// hold no control characters (KeyPath.String escapes them), so Go's quoting
+// is TOML's here.
+func tomlString(s string) string {
+	if strings.Contains(s, `"`) && !strings.Contains(s, "'") {
+		return "'" + s + "'"
+	}
+	return strconv.Quote(s)
 }
 
 // keySuffix renders an occurrence's key for the dry run, after its line
@@ -792,23 +961,6 @@ func skippedWhere(sk files.Skipped) string {
 		where = fmt.Sprintf("L%d%s", sk.Line, keySuffix(sk.Key))
 	}
 	return where
-}
-
-// distinctVersions returns the version strings in occurrences with duplicates
-// removed, in first-seen order, matching how Generate maps a file to config
-// entries (one per distinct version).
-func distinctVersions(occ []discovery.Occurrence) []string {
-	seen := make(map[string]struct{}, len(occ))
-	var out []string
-	for _, o := range occ {
-		v := o.Version.String()
-		if _, dup := seen[v]; dup {
-			continue
-		}
-		seen[v] = struct{}{}
-		out = append(out, v)
-	}
-	return out
 }
 
 func parseDiscoverFlags(args []string, stdout, stderr io.Writer) (discoverOptions, int) {
@@ -897,12 +1049,16 @@ func startEntry(statePath string, h *history.History, groups []fileGroup, stderr
 	entry := history.Entry{Timestamp: time.Now().UTC(), Status: history.StatusPending}
 	for _, g := range groups {
 		for _, e := range g.entries {
-			entry.Changes = append(entry.Changes, history.Change{
+			change := history.Change{
 				Path:   g.display,
 				Old:    e.oldVer.String(),
 				New:    e.newVer.String(),
 				Parser: string(g.parser),
-			})
+			}
+			if e.key != nil {
+				change.Key = e.key.Raw()
+			}
+			entry.Changes = append(entry.Changes, change)
 		}
 	}
 
@@ -981,7 +1137,7 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	}
 	listed := make(map[listing]bool, len(cfg.Files))
 	for _, f := range cfg.Files {
-		listed[listing{f.Path, f.Token()}] = true
+		listed[listing{f.Path, f.Token(), ""}] = true
 	}
 
 	// The config is trusted input and the journal is not: a repository can
@@ -997,7 +1153,7 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 	pending := entry.Pending()
 	atNew, atOld := true, true
 	for _, c := range entry.Changes {
-		isNew, isOld := listed[listing{c.Path, c.New}], listed[listing{c.Path, c.Old}]
+		isNew, isOld := listed[listing{c.Path, c.New, ""}], listed[listing{c.Path, c.Old, ""}]
 		atNew, atOld = atNew && isNew, atOld && isOld
 		switch {
 		case isNew, pending && isOld:
@@ -1038,13 +1194,23 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if atNew {
-		revert := make(map[listing]string, len(entry.Changes))
+		// An entry is matched to its change by key as well where it can be:
+		// two keyed entries for one file may reach one version from two (a
+		// patch bump takes 1.2.3 and 1.2.3-rc.1 both to 1.2.4). A config
+		// whose keys were edited since still matches by path and version.
+		exact := make(map[listing]string, len(entry.Changes))
+		loose := make(map[listing]string, len(entry.Changes))
 		for _, c := range entry.Changes {
-			revert[listing{c.Path, c.New}] = c.Old
+			exact[listing{c.Path, c.New, c.Key}] = c.Old
+			loose[listing{c.Path, c.New, ""}] = c.Old
 		}
 		for i := range cfg.Files {
 			f := &cfg.Files[i]
-			if old, ok := revert[listing{f.Path, f.Token()}]; ok {
+			old, ok := exact[listing{f.Path, f.Token(), f.KeyText()}]
+			if !ok {
+				old, ok = loose[listing{f.Path, f.Token(), ""}]
+			}
+			if ok {
 				f.SetToken(old)
 			}
 		}
@@ -1119,19 +1285,20 @@ func runUndo(args []string, stdout, stderr io.Writer) int {
 // "already at" the old version for a file the unfinished bump never wrote.
 func printReverts(w io.Writer, groups []revertGroup) {
 	for _, g := range groups {
-		for _, c := range g.changes {
+		for i, c := range g.changes {
 			if g.unwritten {
-				fprintf(w, "  %s: already at %s\n", displayName(c.Path), c.Old)
+				fprintf(w, "  %s%s: already at %s\n", displayName(c.Path), keyLabel(g.keys[i]), c.Old)
 				continue
 			}
-			fprintf(w, "  %s: %s -> %s\n", displayName(c.Path), c.New, c.Old)
+			fprintf(w, "  %s%s: %s -> %s\n", displayName(c.Path), keyLabel(g.keys[i]), c.New, c.Old)
 		}
 	}
 }
 
 // listing is a config entry as undo matches it against the journal: the path
-// as written and the full version token.
-type listing struct{ path, version string }
+// as written, the full version token, and, where it matters, the key as
+// written ("" for none or for a match that ignores it).
+type listing struct{ path, version, key string }
 
 // revertGroup is one file plus every recorded change to undo in it, along with
 // the reverted bytes computed during planning (written verbatim in phase 2).
@@ -1142,6 +1309,7 @@ type revertGroup struct {
 	data    []byte       // contents as read, put back if a later write fails
 	updated []byte       // contents with every change reverted
 	changes []history.Change
+	keys    []*files.Key // each change's key, read by parser (nil for none)
 	// unwritten marks a file of a pending entry that holds the versions the
 	// bump started from: the run never wrote it, or put it back, so there is
 	// nothing to revert.
@@ -1165,7 +1333,10 @@ type revertGroup struct {
 // Each file is read with the parser the journal records for it, the one the
 // bump read it with, and an entry from before the parser was recorded is read
 // as text, which is what wrote it. A file that parser cannot read any more is
-// refused, as is a parser this version does not know or two for one file.
+// refused, as is a parser this version does not know or two for one file. A
+// change the journal records a key for reverts only the occurrences that key
+// names, as the bump rewrote only those; a key that no longer names the
+// version the bump wrote counts as that version missing.
 func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]revertGroup, int) {
 	var groups []revertGroup
 	index := make(map[string]int, len(entry.Changes))
@@ -1197,7 +1368,17 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 				displayName(c.Path), groups[gi].parser, parser)
 			return nil, ExitError
 		}
+		var key *files.Key
+		if c.Key != "" {
+			k, err := files.ParseKey(parser, c.Key)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: the journal records a key it cannot use: %v (refusing to undo)\n", displayName(c.Path), err)
+				return nil, ExitError
+			}
+			key = &k
+		}
 		groups[gi].changes = append(groups[gi].changes, c)
+		groups[gi].keys = append(groups[gi].keys, key)
 	}
 
 	for i := range groups {
@@ -1208,7 +1389,8 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 			return nil, classify(err)
 		}
 		back := make([]files.Replacement, 0, len(g.changes))
-		for _, c := range g.changes {
+		forward := make([]files.Replacement, 0, len(g.changes))
+		for i, c := range g.changes {
 			// The journal stores whole tokens; parse them back so the revert
 			// matches the same way the bump did, prerelease suffix included.
 			oldVer, oldErr := version.Parse(c.Old)
@@ -1217,7 +1399,17 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 				fprintf(stderr, "incrmit: %s: recorded versions %q -> %q are not valid (refusing to undo)\n", displayName(g.display), c.Old, c.New)
 				return nil, ExitNoVersion
 			}
-			back = append(back, files.Replacement{Old: newVer, New: oldVer})
+			r, err := claimed(loc, g.keys[i], newVer, oldVer)
+			if err != nil {
+				fprintf(stderr, "incrmit: %s: %v (refusing to undo)\n", displayName(g.display), err)
+				return nil, ExitError
+			}
+			back = append(back, r)
+			if r, err = claimed(loc, g.keys[i], oldVer, newVer); err != nil {
+				fprintf(stderr, "incrmit: %s: %v (refusing to undo)\n", displayName(g.display), err)
+				return nil, ExitError
+			}
+			forward = append(forward, r)
 		}
 		updated, newCounts, err := files.Rewrite(g.parser, g.data, loc.Candidates, back)
 		if err != nil {
@@ -1235,12 +1427,7 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 			continue
 		}
 
-		forward := make([]files.Replacement, len(back))
-		for j, r := range back {
-			forward[j] = files.Replacement{Old: r.New, New: r.Old}
-		}
-		_, oldCounts := files.SetKnownVersions(g.data, loc.Candidates, forward)
-		missingOld := firstMissing(forward, oldCounts)
+		missingOld := firstMissing(forward, files.Matches(g.data, loc.Candidates, forward))
 		switch {
 		case missingNew == nil && missingOld != nil:
 			// Written: revert it as for a finished bump.
@@ -1259,15 +1446,35 @@ func planReverts(entry history.Entry, baseDir string, stderr io.Writer) ([]rever
 	return groups, ExitOK
 }
 
-// firstMissing returns the first replacement in repls whose Old version
-// SetKnownVersions counted no occurrence of, or nil when every one occurs.
-func firstMissing(repls []files.Replacement, counts map[string]int) *files.Replacement {
+// firstMissing returns the first replacement in repls that rewrote nothing,
+// given how many candidates each rewrote, or nil when every one did.
+func firstMissing(repls []files.Replacement, counts []int) *files.Replacement {
 	for i := range repls {
-		if counts[repls[i].Old.String()] == 0 {
+		if counts[i] == 0 {
 			return &repls[i]
 		}
 	}
 	return nil
+}
+
+// claimed returns the replacement of from by to that a journal change asks
+// of a file: every candidate holding from, or, for a change with a key, the
+// ones key claims. A key that claims none (the value it names was changed or
+// removed since) gives a replacement that rewrites nothing, which the caller
+// reports as the version missing.
+func claimed(loc *files.Located, key *files.Key, from, to version.Version) (files.Replacement, error) {
+	r := files.Replacement{Old: from, New: to}
+	if key == nil {
+		return r, nil
+	}
+	r.Keyed = true
+	at, err := loc.Claim(*key, from)
+	var keyErr *files.KeyError
+	if err != nil && !errors.As(err, &keyErr) {
+		return r, err
+	}
+	r.At = at
+	return r, nil
 }
 
 // parseUndoFlags registers the undo flags (long and short names) and parses
@@ -1310,6 +1517,7 @@ func classify(err error) int {
 	var ambiguous *files.AmbiguousError
 	var overflow *version.OverflowError
 	var parse *files.ParseError
+	var key *files.KeyError
 	var usage *usageError
 	switch {
 	case errors.As(err, &usage):
@@ -1318,7 +1526,8 @@ func classify(err error) int {
 		errors.Is(err, files.ErrVersionNotFound),
 		errors.As(err, &ambiguous),
 		errors.As(err, &overflow),
-		errors.As(err, &parse):
+		errors.As(err, &parse),
+		errors.As(err, &key):
 		return ExitNoVersion
 	default:
 		return ExitError

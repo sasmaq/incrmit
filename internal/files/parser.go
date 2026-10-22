@@ -84,10 +84,15 @@ type Skipped struct {
 }
 
 // Located is what a parser found in a file: its candidates in byte order,
-// and the values it skipped.
+// and the values it skipped. It keeps the file and the parser too, so an
+// entry's key can be looked up in it (Named, Claim).
 type Located struct {
 	Candidates []Candidate
 	Skipped    []Skipped
+
+	data   []byte
+	parser Parser
+	keys   *keyIndex // built by the first key looked up (key.go)
 }
 
 // Locate reads data with p and returns what it found. The text parser always
@@ -95,16 +100,23 @@ type Located struct {
 // not their format, and the TOML parser also for TOML its probe cannot place
 // versions in (see locateTOML).
 func (p Parser) Locate(data []byte) (*Located, error) {
+	var loc *Located
+	var err error
 	switch p {
 	case ParserText:
-		return &Located{Candidates: TextCandidates(data)}, nil
+		loc = &Located{Candidates: TextCandidates(data)}
 	case ParserJSON:
-		return locateJSON(data)
+		loc, err = locateJSON(data)
 	case ParserTOML:
-		return locateTOML(data)
+		loc, err = locateTOML(data)
 	default:
-		return nil, fmt.Errorf("files: unknown parser %q", string(p))
+		err = fmt.Errorf("files: unknown parser %q", string(p))
 	}
+	if err != nil {
+		return nil, err
+	}
+	loc.data, loc.parser = data, p
+	return loc, nil
 }
 
 // TextCandidates returns the text parser's candidates in data: every token
@@ -252,15 +264,22 @@ func lineAt(data []byte, offset int) int {
 }
 
 // Rewrite returns data with repls applied to cands, exactly as
-// SetKnownVersions does, and the same counts. For JSON and TOML it then
-// decodes the result and checks it against data: every value must be as it
-// was except the ones the rewrite planned, which must now hold the planned
-// versions. A rewrite that would change anything else is an error, and the
-// caller writes nothing. The check costs a decode of each side, and it is
-// what makes the TOML probe's answer something a bump can trust: the probe
-// reasons about where values are, and the decoder confirms it.
-func Rewrite(p Parser, data []byte, cands []Candidate, repls []Replacement) ([]byte, map[string]int, error) {
+// SetKnownVersions does, and how many candidates each replacement rewrote, in
+// repls' order. A keyed replacement must rewrite every candidate it claims.
+// For JSON and TOML it then decodes the result and checks it against data:
+// every value must be as it was except the ones the rewrite planned, which
+// must now hold the planned versions. A rewrite that would change anything
+// else is an error, and the caller writes nothing. The check costs a decode
+// of each side, and it is what makes the TOML probe's answer something a bump
+// can trust: the probe reasons about where values are, and the decoder
+// confirms it.
+func Rewrite(p Parser, data []byte, cands []Candidate, repls []Replacement) ([]byte, []int, error) {
 	out, counts, done := setKnownVersions(data, cands, repls)
+	for i, r := range repls {
+		if r.Keyed && counts[i] != len(r.At) {
+			return nil, nil, fmt.Errorf("files: the rewrite reached %d of the %d occurrences of %s its key names", counts[i], len(r.At), r.Old)
+		}
+	}
 	if len(done) == 0 || p == ParserText {
 		return out, counts, nil
 	}

@@ -24,6 +24,12 @@ import (
 // wrong key each break one of the two. Input the decoder rejects must be
 // refused, never panicked on.
 //
+// Every candidate's key path, written out and read back as a key (ParseKey),
+// must also claim exactly that candidate's range, unless the document holds
+// more than one value at the path, as a JSON key written twice does, which no
+// key can name and Claim must refuse. That is what discover relies on when it
+// writes a candidate's key into a config.
+//
 // The seeds are the golden fixtures (parser_test.go) and the shapes that
 // matter to each reader.
 
@@ -31,6 +37,33 @@ import (
 // decoded again, so a large input costs the fuzzer a bounded number of
 // decodes.
 const maxRewrites = 8
+
+// assertKeyResolves checks that c's key path, rendered and read back as a key
+// for p, claims c's range alone in the file loc was located in, or, where the
+// document holds n > 1 values at that path, is refused as naming no one value.
+// A candidate with no key (a document that is one string) has nothing to read
+// back.
+func assertKeyResolves(t *testing.T, p Parser, loc *Located, c Candidate, n int, data []byte) {
+	t.Helper()
+	if len(c.Key) == 0 {
+		return
+	}
+	k, err := ParseKey(p, c.Key.String())
+	if err != nil {
+		t.Fatalf("the key %s reported in %q does not read back: %v", c.Key, data, err)
+	}
+	at, err := loc.Claim(k, c.Version)
+	if n > 1 {
+		var keyErr *KeyError
+		if !errors.As(err, &keyErr) || !strings.Contains(err.Error(), "no one value") {
+			t.Fatalf("the key %s names %d values in %q, but Claim gave %v, %v", c.Key, n, data, at, err)
+		}
+		return
+	}
+	if err != nil || len(at) != 1 || at[0] != c.Start {
+		t.Fatalf("the key %s claims %v, %v in %q, want the candidate at %d", c.Key, at, err, data, c.Start)
+	}
+}
 
 // addFixtureSeeds adds every golden fixture the parser reads to f's corpus.
 func addFixtureSeeds(f *testing.F, p Parser) {
@@ -105,6 +138,7 @@ func FuzzLocateJSON(f *testing.F) {
 	f.Add([]byte(`["1.2.3",[["4.5.6"]],"",{}]`))
 	f.Add([]byte(`"1.2.3"`))
 	f.Add([]byte("{\n  // comment 1.2.3\n}"))
+	f.Add([]byte(`{"a":{"v":"1.2.3"},"a":{"v":"1.2.3"},"a.v":"1.2.3","\"":{"\u0001":"2.0.0"}}`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		loc, err := ParserJSON.Locate(data)
@@ -132,6 +166,13 @@ func FuzzLocateJSON(f *testing.F) {
 			if !found {
 				t.Fatalf("no string %q at %s in %q", tok, c.Key, data)
 			}
+			n := 0
+			for _, l := range leaves {
+				if l.path == c.Key.String() {
+					n++
+				}
+			}
+			assertKeyResolves(t, ParserJSON, loc, c, n, data)
 		}
 
 		for _, c := range loc.Candidates[:min(len(loc.Candidates), maxRewrites)] {
@@ -233,6 +274,7 @@ func FuzzLocateTOML(f *testing.F) {
 	f.Add([]byte("notes = \"\"\"\nversion = \"1.2.3\"\n\"\"\"\nv = '''1.2.4'''\nesc = \"1\\u002e2.3\"\n"))
 	f.Add([]byte("987654321 = { 987654321 = \"1.2.3\" }\n# 987654321.987654321.000000001\n"))
 	f.Add([]byte(bomUTF8 + "a.b.\"c.d\" = \"v1.2.3-rc.1+b.5\"\r\n"))
+	f.Add([]byte("\"\\u0001\\\\ \\\"\" = { \"\" = [\"1.2.3\", [\"2.0.0\"]] }\n"))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		loc, err := ParserTOML.Locate(data)
@@ -261,6 +303,8 @@ func FuzzLocateTOML(f *testing.F) {
 			if v, ok := tomlAt(doc, c.Key); !ok || v != tok {
 				t.Fatalf("value at %s is %#v (found %v), want the candidate's %q, in %q", c.Key, v, ok, tok, data)
 			}
+			// TOML has no key written twice, so a path names one value.
+			assertKeyResolves(t, ParserTOML, loc, c, 1, data)
 		}
 
 		before := map[string]any{}

@@ -8,7 +8,7 @@
 .Sh SYNOPSIS
 .Nm incrmit
 .Op Fl c Ar config
-.Op Fl f Ar file
+.Op Fl f Ar file Op Fl k Ar key
 .Op Fl M | m | p
 .Op Fl r | e Ar id
 .Op Fl s Ar size
@@ -26,7 +26,7 @@
 .Nm incrmit
 .Cm preview
 .Op Fl c Ar config
-.Op Fl f Ar file
+.Op Fl f Ar file Op Fl k Ar key
 .Op Fl s Ar size
 .Pp
 .Nm incrmit
@@ -175,8 +175,11 @@ dotted key
 which
 .Cm discover Fl -dry-run
 prints next to its line number.
-A dependency pinned at the project's version is a whole string value too, so it
-is bumped with it.
+A dependency pinned at the project's version is a whole string value too; an
+entry's
+.Sy key
+tells the two apart
+.Pq see Sx KEYS .
 A value that holds a version only once its escapes are decoded
 .Pq Sy \(dq1\eu002e2.3\(dq
 does not count, since
@@ -225,6 +228,100 @@ Run
 again, or set
 .Sy parser = \(dqtext\(dq
 on the entry.
+.Sh KEYS
+Without more, an entry rewrites every occurrence of its version in its file,
+so a
+.Pa package.json
+at
+.Sy 1.2.3
+that pins
+.Sy \(dqleft-pad\(dq: \(dq1.2.3\(dq
+bumps the dependency too.
+The optional
+.Sy key
+of a
+.Sy [[files]]
+entry says which occurrence is the project's version, and an entry with one
+rewrites exactly the occurrences it names.
+It is read by the entry's parser:
+.Bl -tag -width Ds
+.It JSON and TOML
+A path from the top of the document, written the way TOML writes a dotted key:
+bare parts of letters, digits,
+.Sq _ ,
+and
+.Sq - ;
+any other part double-quoted, with TOML's escapes; and an array index as
+.Sy [N] .
+The path is matched whole, never as a suffix, and the value there must be a
+string holding the entry's version.
+.It text
+The text right before the version on its line, matched byte for byte, case and
+whitespace included, with no pattern language.
+It names every occurrence it comes before.
+.El
+.Pp
+For example:
+.Bd -literal -offset indent
+[[files]]
+  path = "package.json"
+  version = "1.2.3"
+  key = "version"           # not dependencies.left-pad
+
+[[files]]
+  path = "Cargo.toml"
+  version = "0.4.0"
+  key = "package.version"   # not anyhow = { version = "0.4.0" }
+
+[[files]]
+  path = "Makefile"
+  version = "1.2.3"
+  key = "VERSION ?= "       # not .../tool-1.2.3.tar.gz
+.Ed
+.Pp
+A key that is absent, holds anything but a string with the entry's version, or
+names a path the file holds twice fails with exit 3, naming the file and the
+key, before anything is written; so does a text key no occurrence of the
+version follows.
+A key its parser cannot read
+.Pq empty, holding a line break, or not a path in a JSON or TOML file
+is a config error, as are two entries that would rewrite one occurrence
+(exit 1).
+An entry with a key and no
+.Sy version
+starts from the version the key names.
+A bump keeps each entry's key when it rewrites the config and records it in the
+state file, so
+.Cm undo
+reverts the same occurrences.
+.Pp
+.Cm discover
+writes a key for each version in a JSON or TOML file, one entry per value.
+In
+.Pa package.json ,
+.Pa composer.json ,
+.Pa deno.json ,
+and
+.Pa jsr.json
+the project's version is at
+.Sy version ,
+in
+.Pa Cargo.toml
+at
+.Sy package.version
+or
+.Sy workspace.package.version ,
+and in
+.Pa pyproject.toml
+at
+.Sy project.version
+or
+.Sy tool.poetry.version ;
+in those, it writes only the project's version and lists every other version
+in the dry run as skipped, with the key that would track it.
+Such a manifest with no version at those keys, such as a private monorepo root,
+gets no entry.
+It writes no key for a text file; add one by hand.
 .Sh COMMANDS
 .Bl -tag -width Ds
 .It Cm bump
@@ -250,6 +347,9 @@ The config's ignore patterns are matched against the same paths.
 Each file is read with its parser
 .Pq see Sx PARSERS ,
 and the dry run prints a JSON or TOML occurrence's key next to its line number.
+Each JSON or TOML value gets an entry with its key, and a known manifest only
+its own version
+.Pq see Sx KEYS .
 .It Cm preview
 Show, for every file in the config, the version it holds today alongside what a
 .Fl -patch ,
@@ -266,6 +366,11 @@ A
 prefix is carried into every projected version, and a prerelease or build
 section is dropped by all three bumps, exactly as a real bump would.
 A file listed once per version it contains gets one row per version.
+When an entry has a key, a
+.Sy KEY
+column after
+.Sy PATH
+shows it, a text key quoted.
 Rows whose version differs from the one most entries hold are marked
 .Sq *
 and explained under the table; only semver precedence counts as a difference, so
@@ -333,6 +438,20 @@ Accepted by
 .Cm preview
 with the same meaning
 .Pq preview that one file .
+.It Fl k , Fl -key Ar key
+With
+.Fl f ,
+the key that names the version in the file, read as an entry's
+.Sy key
+is
+.Pq see Sx KEYS ,
+for a file that holds several versions.
+Accepted by
+.Cm preview
+too.
+Without
+.Fl f ,
+empty, or not a path for a JSON or TOML file, it is a usage error (exit 2).
 .It Fl M , Fl -major
 Bump the major version (resets minor and patch).
 .It Fl m , Fl -minor
@@ -486,6 +605,10 @@ An optional
 .Sy parser
 key chooses how the file is read; see
 .Sx PARSERS .
+An optional
+.Sy key
+names the occurrence that is the project's version; see
+.Sx KEYS .
 .It Pa .incrmit.state.toml
 Bump-history state file written next to the config, used by
 .Cm undo .
@@ -495,6 +618,9 @@ Each change records the parser the bump read its file with, and
 .Cm undo
 reads the file with that parser; an entry from before parsers were recorded is
 read as text.
+It records the entry's key too, and
+.Cm undo
+reverts the occurrences that key names, whatever the config says by then.
 It is local, tool-maintained working state and is not meant to be committed
 .Pq add it to Pa .gitignore .
 A bump reads it before writing anything, so one that cannot be read stops the
@@ -585,8 +711,9 @@ run).
 .It 2
 Invalid arguments or flags.
 .It 3
-No version found, an ambiguous or unparseable version, a file its parser
-cannot read, or a version with a number too large to bump.
+No version found, an ambiguous or unparseable version, a key that names no
+version to bump, a file its parser cannot read, or a version with a number too
+large to bump.
 .El
 .Sh EXAMPLES
 Bump the patch version in all configured files:
@@ -610,6 +737,11 @@ Start a release candidate, then iterate on it, then ship it:
 Generate a config from the current tree:
 .Pp
 .Dl incrmit discover
+.Pp
+Bump a manifest's own version without a config, leaving its dependencies:
+.Pp
+.Dl incrmit --file package.json --key version
+.Dl "incrmit --file Makefile --key 'VERSION ?= '"
 .Pp
 See every file's current version and its next patch, minor, and major:
 .Pp

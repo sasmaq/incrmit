@@ -1,0 +1,16 @@
+[project]
+name = "example"
+version = "2.2.0"
+description = "Example tools; 2.1.0 adds the report command"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31.0",
+    "click==8.1.7",
+]
+
+[project.urls]
+Changelog = "https://example.com/changelog/2.1.0"
+
+[tool.example]
+# Pinned until 2.2.0 ships.
+schema-version = "2.2.0"

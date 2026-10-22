@@ -10,6 +10,8 @@ or more files and increments it, keeping them all in sync (increment + commit).
 - Discovers files containing version strings and generates a config for you.
 - Reads `.json` and `.toml` files by their format, so a version inside a URL,
   a range such as `^18.3.1`, or a comment is never mistaken for the project's.
+- Bumps the project's own version and not the dependencies pinned beside it:
+  each config entry can say where the version is (`key = "version"`).
 - Bumps the major, minor, or patch component in every configured file at once.
 - Handles prereleases: start or advance one with `--pre rc`, promote it with
   `--release`.
@@ -163,11 +165,33 @@ or you can write it by hand:
 [[files]]
   path = "package.json"
   version = "1.2.3"
+  key = "version"
+
+[[files]]
+  path = "Cargo.toml"
+  version = "1.2.3"
+  key = "package.version"
+
+[[files]]
+  path = "Makefile"
+  version = "1.2.3"
+  key = "VERSION ?= "
 ```
 
 Paths are relative to the config file. `version` pins the exact value to bump,
 which matters when a file holds several version-like strings. After each bump
 `incrmit` rewrites the config with the new versions.
+
+`key` says which occurrence is the project's version, so a bump leaves the
+rest of the file alone: in the `package.json` above, `"left-pad": "1.2.3"` keeps
+its version when `"version": "1.2.3"` moves. For a `.json` or `.toml` file the
+key is a path from the top of the document, written like a TOML dotted key
+(`package.version`, `bin[0].version`, `'dependencies."@types/node"'`). For any
+other file it is the text right before the version on its line, matched byte
+for byte: `"VERSION ?= "` names `VERSION ?= 1.2.3` and not a download URL
+ending in `tool-1.2.3.tar.gz`. An entry without a key bumps every occurrence of
+its version. A key that names nothing holding the entry's version fails the
+bump before anything is written.
 
 A `.json` or `.toml` file is read by its format: a version counts only where it
 is a whole string value, such as `"version": "1.2.3"`, so a `$schema` URL, a
@@ -177,9 +201,16 @@ optional `parser` key (`"json"`, `"toml"`, or `"text"`) chooses for that file,
 for a `tsconfig.json` with comments or TOML under another name such as
 `Pipfile`. `discover` scans a `.json` or `.toml` file that does not parse as
 text and writes `parser = "text"` into its entries; a bump never guesses, and
-an entry whose parser cannot read its file fails with nothing written. A
-dependency pinned at the project's version (`"left-pad": "1.2.3"`) is a whole
-string value too, so it is still bumped along with it. An optional `ignore` list
+an entry whose parser cannot read its file fails with nothing written.
+
+`discover` writes a key for every version in a `.json` or `.toml` file. In
+`package.json`, `composer.json`, `deno.json`, `jsr.json`, `Cargo.toml`, and
+`pyproject.toml` it writes only the project's own version and lists each
+dependency in `--dry-run` as skipped, with the key that would track it; such a
+manifest with no version of its own, like a private monorepo root, gets no
+entry. It writes no key for a text file, so add one by hand where a file holds
+the version more than once. Running `discover` again adds the keys to a config
+written before they existed. An optional `ignore` list
 tells `discover` which folders and files to skip; its patterns are relative to
 the config file too. `discover` writes every path relative to the config it
 writes, so `incrmit discover --path src -o release/incrmit.toml` lists
@@ -208,6 +239,7 @@ Flags for the default bump command:
 | ---- | ----- | ----------- | ------- |
 | `--config` | `-c` | Path to the TOML config file | `incrmit.toml` |
 | `--file` | `-f` | Bump the version in one file (skips config) | *none* |
+| `--key` | `-k` | With `--file`, the key that names the version | *none* |
 | `--major` | `-M` | Bump the major version (resets minor and patch) | `false` |
 | `--minor` | `-m` | Bump the minor version (resets patch) | `false` |
 | `--patch` | `-p` | Bump the patch version | `true` |
@@ -221,6 +253,7 @@ Flags for the default bump command:
 incrmit --minor            # 1.2.3 -> 1.3.0
 incrmit --major            # 1.2.3 -> 2.0.0
 incrmit --file VERSION     # bump one file without a config
+incrmit --file package.json --key version   # its version, not its dependencies
 incrmit --pre rc           # 1.2.3 -> 1.2.4-rc.1
 incrmit --release          # 1.2.4-rc.1 -> 1.2.4
 incrmit --dry-run          # show the change without writing it

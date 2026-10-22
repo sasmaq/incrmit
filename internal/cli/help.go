@@ -13,6 +13,7 @@ import "io"
 // drifts out of sync or gets duplicated across help strings.
 const bumpFlags = `  -c, --config string       path to the TOML config file (default "incrmit.toml")
   -f, --file string         bump the version in one file (skips config)
+  -k, --key string          with --file, the key that names the version
   -M, --major               bump the major version (resets minor and patch)
   -m, --minor               bump the minor version (resets patch)
   -p, --patch               bump the patch version (default)
@@ -32,6 +33,7 @@ const discoverFlags = `  -P, --path string         root directory to scan (defau
 
 const previewFlags = `  -c, --config string       path to the TOML config file (default "incrmit.toml")
   -f, --file string         preview one file (skips config)
+  -k, --key string          with --file, the key that names the version
   -s, --max-file-size size  refuse to read a larger target (default no limit)
 `
 
@@ -53,6 +55,28 @@ it is an error (exit 2) on a version that has no prerelease. Use --pre to
 start or advance one: 1.2.3 -> 1.2.4-rc.1, then 1.2.4-rc.1 -> 1.2.4-rc.2.
 Naming a component alongside --pre opens a new line instead, so --minor --pre
 rc gives 1.3.0-rc.1. --release and --pre cannot be combined.
+`
+
+// keyNote documents an entry's key and --key. It is appended to the bump
+// help, since the bump is what a key steers.
+const keyNote = `
+An entry with a key rewrites only the occurrences the key names; without one,
+it rewrites every occurrence of its version. A key is read the way its file
+is. In a .json or .toml file it is a path from the top of the document, and
+in any other file it is the text right before the version on its line,
+matched byte for byte:
+
+  package.json   key = "version"           not dependencies.left-pad
+  Cargo.toml     key = "package.version"   not anyhow = { version = ... }
+  Makefile       key = "VERSION ?= "       not .../tool-1.2.3.tar.gz
+
+A path is written like a TOML dotted key: quote a part that holds anything
+but letters, digits, "_", and "-" ('"."', 'dependencies."@types/node"'), and
+write an array index as [N] (bin[0].version). A key that names no value
+holding the entry's version, or a path the file has twice, fails with exit 3,
+and two entries that claim one occurrence are a config error (exit 1); either
+way nothing is written. With --file, pass the key as --key:
+incrmit --file package.json --key version.
 `
 
 // concurrencyNote explains the one-writer-per-project rule once, and is
@@ -120,6 +144,12 @@ A prerelease or build section is part of the version token: 1.2.3-rc.1 patches
 to 1.2.4 (both sections are dropped), --release promotes it to 1.2.3, and
 --pre rc starts or advances one (1.2.3 -> 1.2.4-rc.1 -> 1.2.4-rc.2).
 
+An entry's key says which occurrence in its file is the project's version, so
+a bump leaves the rest alone: a path in a .json or .toml file
+(key = "package.version"), and the text right before the version in any other
+(key = "VERSION ?= "). discover writes keys for JSON and TOML; with --file,
+pass one as --key. See "incrmit help bump".
+
 A --max-file-size value is a plain byte count (1048576) or a value with a unit
 suffix such as 512KB, 32MiB, or 2G. A size of 0 means no limit.
 
@@ -137,7 +167,7 @@ const bumpHelp = `usage: incrmit [flags]
 Bump the semantic version in the configured files.
 
 Flags:
-` + bumpFlags + prereleaseNote + sizeNote + concurrencyNote
+` + bumpFlags + keyNote + prereleaseNote + sizeNote + concurrencyNote
 
 // discoverHelp documents the discover command. It is shown by
 // `incrmit discover -h`, `incrmit help discover`, and on a discover usage error.
@@ -165,6 +195,21 @@ get parser = "text". An entry's parser key ("json", "toml", or "text")
 chooses for that file whatever its name. A bump never falls back: an entry
 whose parser cannot read its file fails with exit 3, naming the line, and
 nothing is written.
+
+Each version in a .json or .toml file gets an entry of its own with its key,
+so a bump moves that value and no other. In a manifest discover knows, only
+the project's own version gets one, and every other version, a dependency's,
+is listed by the dry run as skipped, with the key that would track it:
+
+  package.json, composer.json, deno.json, jsr.json   version
+  Cargo.toml       package.version or workspace.package.version
+  pyproject.toml   project.version or tool.poetry.version
+
+A known manifest with no version at those keys, such as a private monorepo
+root, gets no entry, and the dry run says so. A text file gets one entry per
+distinct version and no key, since the text before a version is often prose;
+add a key such as key = "VERSION ?= " by hand. Running discover again over a
+config written before keys existed writes them in.
 `
 
 // pathsNote says what the paths discover writes are relative to. It is
@@ -204,6 +249,10 @@ A "v" prefix is carried into every projected version (v1.2.3 previews as
 v1.2.4 / v1.3.0 / v2.0.0), and a prerelease or build section is dropped by all
 three bumps, exactly as a real bump would. A file listed once per version it
 contains gets one row per version.
+
+An entry with a key gets it in a KEY column, so the value a bump will move is
+plain; a text key is quoted, since its spaces count. With --file, --key names
+the version as it does for a bump.
 
 Rows whose version differs from the one most entries hold are marked "*" and
 explained under the table, so a file left behind by a partial bump is visible

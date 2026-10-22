@@ -3,6 +3,7 @@ package discovery
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -157,8 +158,9 @@ func TestDiscoverKeepsSkippedValues(t *testing.T) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Files) != 1 || cfg.Files[0] != (config.FileEntry{Path: "other.json", Version: "1.0.0"}) {
-		t.Errorf("generated entries %+v, want only other.json at 1.0.0", cfg.Files)
+	key := "a"
+	if !reflect.DeepEqual(cfg.Files, []config.FileEntry{{Path: "other.json", Version: "1.0.0", Key: &key}}) {
+		t.Errorf("generated entries %+v, want only other.json at 1.0.0, key a", cfg.Files)
 	}
 }
 

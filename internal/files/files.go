@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -107,16 +108,25 @@ func SetKnownVersion(data []byte, cands []Candidate, oldVer, newVer version.Vers
 // Replacement is one pinned version and the version to write in its place. Old
 // is the version as recorded in the config (or found in the file), New the
 // bumped result.
+//
+// A replacement without a key rewrites every candidate holding Old. One whose
+// entry has a key is Keyed, and rewrites only the candidates the key claims
+// (Located.Claim), whose start offsets At holds in byte order: in a
+// package.json that pins a dependency at the project's version, the entry
+// keyed to `version` leaves the dependency alone.
 type Replacement struct {
-	Old version.Version
-	New version.Version
+	Old   version.Version
+	New   version.Version
+	Keyed bool
+	At    []int
 }
 
 // SetKnownVersions applies several replacements in a single pass over data,
 // whose candidates a parser found as cands (in byte order). Every candidate
-// holding a Replacement's Old version is rewritten to its New version; all
-// other bytes (including version-like tokens that are not candidates, or that
-// no Replacement lists) are left untouched.
+// holding a Replacement's Old version is rewritten to its New version, a keyed
+// Replacement's only where it claims one; all other bytes (including
+// version-like tokens that are not candidates, or that no Replacement lists)
+// are left untouched.
 //
 // Doing this in one pass over the original data is what makes overlapping bumps
 // safe: replacing 1.2.3 -> 1.2.4 alongside 1.2.4 -> 1.2.5 does not cascade,
@@ -133,25 +143,38 @@ type Replacement struct {
 // consumed and the whole "1.2.3-rc.1" is rewritten, leaving ".zip" alone. A
 // JSON or TOML candidate is a whole string value, so no suffix follows one.
 func SetKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]byte, map[string]int) {
-	out, counts, _ := setKnownVersions(data, cands, repls)
+	out, perRepl, _ := setKnownVersions(data, cands, repls)
+	counts := make(map[string]int, len(repls))
+	for i, r := range repls {
+		counts[r.Old.String()] += perRepl[i]
+	}
 	return out, counts
 }
 
-// setKnownVersions is SetKnownVersions, also returning each rewrite it made,
-// for the check Rewrite makes afterwards.
-func setKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]byte, map[string]int, []rewrite) {
-	counts := make(map[string]int, len(repls))
-	for _, r := range repls {
-		counts[r.Old.String()] = 0
-	}
+// Matches returns how many candidates each of repls would rewrite, in repls'
+// order, matching exactly as SetKnownVersions does. Unlike its counts, two
+// replacements of one version are counted apart, which is what tells two keyed
+// entries for one version apart.
+func Matches(data []byte, cands []Candidate, repls []Replacement) []int {
+	_, counts, _ := setKnownVersions(data, cands, repls)
+	return counts
+}
+
+// setKnownVersions is SetKnownVersions, counting the rewrites of each
+// replacement apart, in repls' order, and also returning each rewrite it
+// made, for the check Rewrite makes afterwards.
+func setKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]byte, []int, []rewrite) {
+	counts := make([]int, len(repls))
 
 	// Try the most specific pin first: at one location a bare 1.2.3 also matches
 	// an occurrence carrying the recorded prerelease, and the pin that consumes
 	// the suffix is the one that means it.
-	ordered := make([]Replacement, len(repls))
-	copy(ordered, repls)
+	ordered := make([]int, len(repls))
+	for i := range ordered {
+		ordered[i] = i
+	}
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return len(suffixOf(ordered[i].Old)) > len(suffixOf(ordered[j].Old))
+		return len(suffixOf(repls[ordered[i]].Old)) > len(suffixOf(repls[ordered[j]].Old))
 	})
 
 	var b strings.Builder
@@ -166,7 +189,13 @@ func setKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]by
 		if start < prev {
 			continue
 		}
-		for _, r := range ordered {
+		for _, i := range ordered {
+			r := repls[i]
+			if r.Keyed {
+				if _, claimed := slices.BinarySearch(r.At, start); !claimed {
+					continue
+				}
+			}
 			matchEnd, ok := matchAt(data, start, end, r.Old)
 			if !ok {
 				continue
@@ -174,7 +203,7 @@ func setKnownVersions(data []byte, cands []Candidate, repls []Replacement) ([]by
 			b.Write(data[prev:start])
 			b.WriteString(r.New.String())
 			prev = matchEnd
-			counts[r.Old.String()]++
+			counts[i]++
 			done = append(done, rewrite{key: c.Key, old: string(data[start:matchEnd]), new: r.New.String()})
 			break
 		}

@@ -76,12 +76,20 @@ type Config struct {
 // a .json file with comments (tsconfig.json) to be read as text, or TOML under
 // another name (Pipfile) to be read as TOML. discover writes it only when it
 // differs from the extension's choice.
+//
+// Key says which occurrence in the file is the project's version, read by the
+// entry's parser (see files.Key): a path such as package.version for JSON and
+// TOML, the text right before the version (`VERSION ?= `) for text. An entry
+// with a key rewrites exactly the occurrences it names; one without rewrites
+// every candidate holding its version. It is a pointer so that `key = ""`,
+// which names nothing, is an error rather than read as no key.
 type FileEntry struct {
-	Path       string `toml:"path"`
-	Version    string `toml:"version,omitempty"`
-	Prerelease string `toml:"prerelease,omitempty"`
-	Build      string `toml:"build,omitempty"`
-	Parser     string `toml:"parser,omitempty"`
+	Path       string  `toml:"path"`
+	Version    string  `toml:"version,omitempty"`
+	Prerelease string  `toml:"prerelease,omitempty"`
+	Build      string  `toml:"build,omitempty"`
+	Parser     string  `toml:"parser,omitempty"`
+	Key        *string `toml:"key,omitempty"`
 }
 
 // FileParser returns the parser the entry's file is read with: the one its
@@ -93,6 +101,33 @@ func (f FileEntry) FileParser() (files.Parser, error) {
 		return files.ParserFor(f.Path), nil
 	}
 	return files.ParseParser(f.Parser)
+}
+
+// FileKey returns the entry's key as its parser reads it, or nil when the
+// entry has none. It fails for a key that parser cannot read, and for a
+// parser incrmit does not know, both of which Validate refuses, so a loaded
+// config's entries never fail here.
+func (f FileEntry) FileKey() (*files.Key, error) {
+	if f.Key == nil {
+		return nil, nil
+	}
+	p, err := f.FileParser()
+	if err != nil {
+		return nil, err
+	}
+	k, err := files.ParseKey(p, *f.Key)
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
+// KeyText returns the entry's key as written, or "" when it has none.
+func (f FileEntry) KeyText() string {
+	if f.Key == nil {
+		return ""
+	}
+	return *f.Key
 }
 
 // Token returns the full version token the entry pins, reassembled from its
@@ -350,14 +385,19 @@ func (c *Config) normalizeIgnore() {
 }
 
 // Validate checks that the config is usable: it must list at least one file,
-// each entry must have a non-empty path and a `parser` incrmit knows, and every
-// target must exist on disk as an ordinary file (not a directory, named pipe,
-// device, or socket). Entries that share a path must agree on its parser,
-// since the file is read once and rewritten in one pass.
+// each entry must have a non-empty path, a `parser` incrmit knows, and a `key`
+// that parser can read, and every target must exist on disk as an ordinary
+// file (not a directory, named pipe, device, or socket). Entries that share a
+// path must agree on its parser, since the file is read once and rewritten in
+// one pass.
 // A path may be listed in more than one entry as long as each such entry pins a
-// distinct, non-empty version (so a file containing several differing versions
-// can be tracked); exact (path, version) duplicates are rejected, as is a
-// repeated path where any entry omits the version (which would be ambiguous).
+// distinct, non-empty version or names a distinct key (so a file containing
+// several differing versions, or one version in several places, can be
+// tracked); exact (path, version, key) duplicates are rejected, as is a
+// repeated path where any entry has neither a version nor a key (which would
+// be ambiguous). Two entries whose keys name one occurrence, or a keyed entry
+// and one without a key for the same version, can only be told apart with the
+// file in hand, so the bump refuses those when it reads the file.
 // Relative target paths are resolved against baseDir (the directory containing
 // the config file).
 func (c *Config) Validate(baseDir string) error {
@@ -374,6 +414,7 @@ func (c *Config) Validate(baseDir string) error {
 	seen := make(map[string]struct{}, len(c.Files))
 	pathsSeen := make(map[string]struct{}, len(c.Files))
 	parsers := make(map[string]files.Parser, len(c.Files))
+	bareSeen := make(map[string]bool, len(c.Files))
 	for i, f := range c.Files {
 		if f.Path == "" {
 			return fmt.Errorf("config: files[%d] has an empty path", i)
@@ -387,26 +428,31 @@ func (c *Config) Validate(baseDir string) error {
 				i, f.Path, p, prev)
 		}
 		parsers[f.Path] = p
+		if _, err := f.FileKey(); err != nil {
+			return fmt.Errorf("config: files[%d] (%s): %w", i, f.Path, err)
+		}
 		token := f.Token()
-		key := f.Path + "\x00" + token
-		if _, dup := seen[key]; dup {
-			if token == "" {
+		id := f.Path + "\x00" + token + "\x00" + f.KeyText()
+		if _, dup := seen[id]; dup {
+			switch {
+			case f.Key != nil:
+				return fmt.Errorf("config: duplicate path %q with version %q and key %q", f.Path, token, *f.Key)
+			case token == "":
 				return fmt.Errorf("config: duplicate path %q", f.Path)
+			default:
+				return fmt.Errorf("config: duplicate path %q with version %q", f.Path, token)
 			}
-			return fmt.Errorf("config: duplicate path %q with version %q", f.Path, token)
 		}
 		// A repeated path is only allowed when every entry for it pins a
-		// distinct version; a bare (version-less) repeat is ambiguous.
-		if _, repeat := pathsSeen[f.Path]; repeat && token == "" {
+		// distinct version or names its own key; a bare (version-less and
+		// key-less) repeat is ambiguous.
+		bare := token == "" && f.Key == nil
+		if _, repeat := pathsSeen[f.Path]; repeat && (bare || bareSeen[f.Path]) {
 			return fmt.Errorf("config: duplicate path %q", f.Path)
 		}
-		if _, repeat := pathsSeen[f.Path]; repeat {
-			if _, bare := seen[f.Path+"\x00"]; bare {
-				return fmt.Errorf("config: duplicate path %q", f.Path)
-			}
-		}
-		seen[key] = struct{}{}
+		seen[id] = struct{}{}
 		pathsSeen[f.Path] = struct{}{}
+		bareSeen[f.Path] = bareSeen[f.Path] || bare
 
 		info, err := os.Stat(TargetPath(baseDir, f.Path))
 		if err != nil {

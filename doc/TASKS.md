@@ -2341,10 +2341,18 @@ file the key is the literal text in front of the version (in a Makefile,
 `VERSION ?=` and the space after it). An entry with a key rewrites exactly the
 occurrences it names and nothing else in the file.
 
-- [ ] Reproduce first, on Milestone 39's fixtures: assert that a bump moves
+- [x] Reproduce first, on Milestone 39's fixtures: assert that a bump moves
       the dependency pins listed above. Add a text case, a `Makefile` holding
       `VERSION ?= 1.2.3` and a line that downloads a tool at `1.2.3`.
-- [ ] Add one optional `key` field to `[[files]]`, read according to the
+      `TestReproductionPinsMoveWithoutAKey` (`internal/cli/keys_test.go`) bumps
+      the config Milestone 39's discover wrote, kept as
+      `repro_unkeyed_incrmit.toml.golden`, with `--minor`: `left-pad` goes to
+      `1.3.0`, `anyhow` to `0.5.0`, `lodash` to `4.18.0`, and `serde` to
+      `1.1.0`, all with exit `0`. The goldens are Milestone 39's, renamed
+      `repro_unkeyed_*`, since they record exactly that bump; omitting `key`
+      keeps it. The `Makefile` is `internal/files/testdata/repro/Makefile`, and
+      without a key its bump moves the tool's URL directory and archive name.
+- [x] Add one optional `key` field to `[[files]]`, read according to the
       entry's parser, so there is one thing to learn whatever the file. The
       cost is that a key changes meaning when its entry's parser does (a
       `parser` override, or Milestone 39's fallback to text), so make sure
@@ -2355,7 +2363,17 @@ occurrences it names and nothing else in the file.
       names a key the file does not have. Either way it is an error, never a
       rewrite of the wrong occurrence; test both directions. Omitting `key`
       keeps today's behavior: every candidate holding the pinned version.
-- [ ] Define `key` for JSON and TOML: a dotted path from the document root,
+      `FileEntry.Key` is a `*string`, so `key = ""` is refused rather than
+      read as no key; `FileEntry.FileKey` reads it with the entry's parser
+      (`files.ParseKey`, `internal/files/key.go`). `Validate` refuses a key the
+      parser cannot read (exit `1`), and uniqueness is now by
+      `(path, version, key)`, so one version may be listed once per key.
+      `TestKeyWhoseParserChangedFails` runs both directions: `version` on a
+      `package.json` with `parser = "text"` is `key "version" is not followed
+      by a version anywhere in the file` (exit `3`), and `v=` on a JSON file,
+      or `VERSION ?= ` with `parser = "toml"`, is not a key path (exit `1`);
+      a text key that happens to be a path names a key the file lacks.
+- [x] Define `key` for JSON and TOML: a dotted path from the document root,
       written the way TOML writes a dotted key, with bare segments,
       double-quoted segments for keys that hold a dot or a space
       (`key = '"."'` for the `.` key in `.release-please-manifest.json`), and
@@ -2366,7 +2384,18 @@ occurrences it names and nothing else in the file.
       A key that is absent, holds anything else, or appears twice (a duplicate
       JSON key) is an error that names the file and the key, with exit `3`,
       raised in phase 1 so nothing is written.
-- [ ] Define `key` for text: literal bytes that must come right before the
+      `files.ParsePath` reads what `KeyPath.String` writes: bare parts, double
+      quoted parts with TOML's basic-string escapes, and `[N]` without leading
+      zeros, with no whitespace. `Located.Named` looks the path up in an index
+      of every value of the document, built on first use (one more decode, paid
+      only by a file with a keyed entry), and `Located.Claim` keeps what holds
+      the pinned version. Each failure is a `*files.KeyError` saying what the
+      path holds: `key dependencies.version is not in the file`, `holds an
+      object, not a version`, `holds a number; a version is a string`,
+      `holds "^1.2.3", which is not a version`, `holds 1.2.3, not 1.2.4`,
+      `holds "1.2.3" only once its escapes are decoded`, `appears twice in the
+      file, so it names no one value`. `classify` maps it to exit `3`.
+- [x] Define `key` for text: literal bytes that must come right before the
       token on the same line, with no pattern language. `key = "VERSION ?= "`
       matches `VERSION ?= 1.2.3` and not `.../tool-1.2.3.tar.gz`. Matching is
       byte-exact and case-sensitive, and whitespace counts. An empty key, or
@@ -2377,7 +2406,14 @@ occurrences it names and nothing else in the file.
       but a literal covers the common cases without a pattern language in the
       config; replace that bullet with a pointer here and leave patterns for
       later.
-- [ ] Make `discover` write `key` where it can. Every JSON and TOML candidate
+      `bytes.HasSuffix` on the bytes before each candidate; a key names every
+      occurrence it precedes. A key that precedes no candidate is `key
+      "VERSION = " is not followed by a version anywhere in the file`, and one
+      that precedes only other versions `is followed by 2.0.0, not 1.2.3`.
+      A key is the bytes right before the version wherever they start, so
+      `VERSION := ` also ends `TOOL_VERSION := `; the test keeps that case. The
+      §14 bullet now points at §9.3.
+- [x] Make `discover` write `key` where it can. Every JSON and TOML candidate
       now has a key path, so write one entry per candidate with its `key`:
       each entry then rewrites exactly one value, can be deleted on its own,
       and shows in the config what it is. For manifests whose project version
@@ -2391,7 +2427,21 @@ occurrences it names and nothing else in the file.
       than an entry per dependency. Do not infer a `key` for text files: the
       text in front of a version is often prose, and rewording the sentence
       would break the entry. A user adds one by hand.
-- [ ] Plan keyed entries by occurrence: a `files.Replacement` carries the
+      As recommended, in `discovery.projectKeys`, by exact file name.
+      `Result.Entries` gives a file's entries (shared by `Generate` and the
+      summary), and `Occurrence.Skip` marks what gets none: `NotProject` for a
+      known manifest's other candidates, and `RepeatedKey` for a candidate
+      whose key names more than one value (a JSON key written twice), which a
+      key would fail on. A manifest with both of its project keys (Poetry 2's
+      `project.version` and `tool.poetry.version`) gets both. A document that
+      is one string has no key path and gets an entry without one. The dry run
+      prints `L6 dependencies.left-pad: skipped, not the project's own version;
+      to track it, add an entry with key = "dependencies.left-pad"`, a key
+      holding quotes as a literal string (`'dependencies."@types/node"'`), and
+      heads a manifest with no project version `package.json: no entry, since
+      key version holds no version`. Summary lines name the key after the path
+      (`Cargo.toml package.version: 0.4.0`).
+- [x] Plan keyed entries by occurrence: a `files.Replacement` carries the
       ranges its entry claims, so `SetKnownVersions` rewrites exactly those,
       still in one pass so overlapping bumps do not cascade. Two entries that
       claim the same occurrence (an entry without a key and a keyed one for
@@ -2400,13 +2450,35 @@ occurrences it names and nothing else in the file.
       after a bump (the same `config.EntryFor` problem as Milestone 39's
       `parser`) and through the journal, so `undo` reverts the same
       occurrences even after the config has been edited.
-- [ ] Extend `--file` mode and `preview`. Add `--key` to the bump, so
+      `Replacement` gains `Keyed` and `At` (the claimed candidates' start
+      offsets); `setKnownVersions` counts per replacement, so two keyed entries
+      for one version are told apart, and `Rewrite` returns those counts and
+      refuses a keyed replacement that did not reach every claim.
+      `SetKnownVersions` keeps its per-version map, and `Matches` gives the
+      per-replacement counts `undo`'s pending check needs. `readGroups` claims
+      each entry's occurrences and runs `files.Overlap`, which `preview`
+      shares: `config: files[0] (key version) and files[1] (no key) both claim
+      the 1.2.3 on line 2 of package.json; remove one, or give each a key that
+      names its own occurrence`, exit `1`. Two entries without keys are left
+      to the most specific pin, as before. `bumpedConfig` writes the key as
+      written, `history.Change` gains `key`, and `planReverts` reverts what the
+      journal's key claims, counting a key that claims nothing as the version
+      missing. One case the item did not name: undo's config rewrite matches an
+      entry to its change by key first, since a patch bump can take
+      `1.2.3` and `1.2.3-rc.1` under two keys both to `1.2.4`.
+- [x] Extend `--file` mode and `preview`. Add `--key` to the bump, so
       `incrmit --file package.json --key version` and
       `incrmit --file Makefile --key 'VERSION ?= '` work without a config,
       where today both files are ambiguous. A `--key` that is not a valid path
       for a JSON or TOML file, or an empty one, is exit `2`. `preview` shows
       each entry's key, so the user sees which value will move.
-- [ ] Test each fixture bumped with and without `key`, asserting that no
+      `--key`/`-k` on the bump and on `preview` (whose `--file` was ambiguous
+      the same way). It is read once the file's parser is known, so a
+      `tsconfig.json` that falls back to text takes a text key, and a path on
+      it names nothing (exit `3`). `--key` without `--file` is exit `2` too.
+      `preview` adds a `KEY` column after `PATH` when any entry has a key, a
+      text key Go-quoted since its spaces count.
+- [x] Test each fixture bumped with and without `key`, asserting that no
       dependency pin moves once the project's key is given. Cover path
       matching (top level only, quoted segments, `[N]` indexes, a JSON key
       containing a dot) and text matching (whitespace counts, case counts,
@@ -2418,13 +2490,35 @@ occurrences it names and nothing else in the file.
       keeping `key`; and the new `--file` flag. Extend Milestone 39's fuzz
       targets so every key path a parser reports resolves back to the same
       range.
-- [ ] Document `key` in `README.md`, `doc/USAGE.md`, `incrmit help`,
+      `internal/cli/keys_test.go` (`TestKeyStopsPinsMoving` over the
+      reproduction files and the `Makefile`, byte for byte, then `undo`; each
+      error with a snapshot; `discover` over every known manifest; `--file`;
+      `preview`), `internal/files/key_test.go`, `internal/discovery/keys_test.go`,
+      and `internal/config/key_test.go`. Milestone 39's
+      `TestReproductionReadsManifestsByFormat` now checks the keyed config and
+      that no pin moves. `FuzzLocateJSON` and `FuzzLocateTOML` read every
+      candidate's key path back with `ParseKey` and require `Claim` to give
+      exactly its range, or, where the reference holds the path twice, to
+      refuse it; 45 s of each found nothing (5.2 million JSON and 6.9 million
+      TOML inputs). `FuzzLoad` gained key seeds and checks a loaded key reads.
+- [x] Document `key` in `README.md`, `doc/USAGE.md`, `incrmit help`,
       `incrmit help discover`, and the man page, with an example per parser:
       `package.json` (the motivating case), `Cargo.toml`, and a `Makefile`.
       In `doc/DEVELOPMENT.md`, cover it in §6.1, §8.1, and §8.2, and extend
       §9.3: the config now says where the version is, not only what it is.
       Add an `Added` entry to `CHANGELOG.md` saying that running
       `incrmit discover` again writes the keys into an existing config.
+      README (Features, Configuration, the flag table), USAGE (a "Which
+      occurrence: `key`" section, Configuration, Bumping, Discovery, Preview,
+      Undo, exit codes), `incrmit help` (the overview, `keyNote` in the bump
+      help, the `--key` flag lines), `incrmit help discover` (the manifest
+      table in `parsersNote`), `incrmit help preview`, and the man page (a KEYS
+      section, plus SYNOPSIS, `--key`, `discover`, `preview`, FILES, EXIT
+      STATUS, and EXAMPLES). DEVELOPMENT.md: §1, §5, §6.1, §6.2, §8.1, §8.2,
+      §8.4, §8.5, §9.3 (the design), §9.6, §10, §11, §12, §12.1, and §14.
+      `CHANGELOG.md` has `Added`, `Changed` (summary lines name the key), and
+      `Fixed` under Unreleased. `make check` passes, and coverage is 97.4%
+      (97.6% before).
 
 ## Milestone 41 — YAML Parser
 

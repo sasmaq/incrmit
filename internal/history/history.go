@@ -57,11 +57,16 @@ const MaxEntries = 20
 // the parser the bump read the file with (see files.Parser), which undo reads
 // it with too. Entries written before the parser was recorded were written by
 // the text scanner, so an empty Parser means text.
+//
+// Key is the entry's key as written, empty for an entry without one (an empty
+// key is never valid). undo reverts exactly the occurrences it names, read
+// with Parser, whatever the config says by then.
 type Change struct {
 	Path   string `toml:"path"`
 	Old    string `toml:"old"`
 	New    string `toml:"new"`
 	Parser string `toml:"parser,omitempty"`
+	Key    string `toml:"key,omitempty"`
 }
 
 // The values Entry.Status takes.
