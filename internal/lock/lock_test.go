@@ -83,10 +83,9 @@ func TestReleaseIsIdempotent(t *testing.T) {
 	}
 }
 
-// The lock file is left behind on purpose — unlinking it would let the next run
-// lock a fresh file at the same name while this one still held the old inode —
-// and it explains itself to whoever finds it.
-func TestLockFileIsExplainedAndKept(t *testing.T) {
+// The lock file explains itself to whoever finds it while a run holds it, and
+// goes when the run releases it.
+func TestLockFileIsExplainedAndRemoved(t *testing.T) {
 	dir := t.TempDir()
 	l := acquire(t, dir)
 	path := filepath.Join(dir, config.LockFileName)
@@ -106,9 +105,7 @@ func TestLockFileIsExplainedAndKept(t *testing.T) {
 	if err := l.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("lock file removed on release: %v", err)
-	}
+	assertRemoved(t, path)
 }
 
 // The note must never read as a bump target, or incrmit's own lock file could
@@ -327,9 +324,14 @@ func TestAcquireDoesNotWriteNoteThroughHardLink(t *testing.T) {
 	}
 
 	l := acquire(t, dir)
-	defer func() { _ = l.Release() }()
 	if got, _ := os.ReadFile(other); len(got) != 0 {
 		t.Errorf("the other name now holds %q, want it left empty", got)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, config.LockFileName)); err != nil {
+		t.Errorf("Release removed a lock file known by another name: %v", err)
 	}
 }
 

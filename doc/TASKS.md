@@ -2779,7 +2779,7 @@ only one who can remove the name, so once a run's check passes, every newcomer
 opens the same file and contends. A crash still skips the release and can
 leave the file behind, but the next clean run removes it.
 
-- [ ] Reproduce the race before fixing it, as Milestones 29 and 32 did, so the
+- [x] Reproduce the race before fixing it, as Milestones 29 and 32 did, so the
       fix has something to prove. Add test seams in `lock.Acquire` after the
       open and after the lock (unexported function variables the tests swap),
       make `Release` unlink the file with no other change, and drive the
@@ -2789,7 +2789,15 @@ leave the file behind, but the next clean run removes it.
       Goroutines are fair here, since a flock belongs to the open file
       description (Milestone 29). Assert the invariant rather than the damage
       (at most one run holds the project), so the same test proves the fix.
-- [ ] Check after locking. Once `tryLock` succeeds, `Stat` the descriptor and
+      `internal/lock/remove_test.go` drives it with the seams `afterOpen` and
+      `afterLock`. No goroutines are needed: a seam runs the next run inline,
+      and since a lock belongs to the open file description, three locks in
+      one goroutine contend as three processes would. Before the fix, both
+      orders ended with B and C each holding the project. Through `cli.Main`,
+      Milestone 29's eight queued `--wait` bumps lost a bump in 5 of 30
+      repetitions: all eight exited `0`, and the tree held `1.0.7` with seven
+      journal entries.
+- [x] Check after locking. Once `tryLock` succeeds, `Stat` the descriptor and
       `Lstat` the path, and keep the lock only when `os.SameFile` says they are
       the same file. A missing name or a different file means a previous
       holder removed the name after this run opened it: unlock, close, and
@@ -2797,7 +2805,17 @@ leave the file behind, but the next clean run removes it.
       name never matches and the reopen refuses it as Milestone 32 does. The
       check must come after the lock, not before: until this run holds it, the
       holder can still remove the name between the check and the lock.
-- [ ] Decide how many times `Acquire` starts over. Each mismatch means another
+      `acquireOnce` does it through `named`, which reuses the descriptor's
+      `Stat` from the regular-file check. An `Lstat` that fails for a reason
+      other than a missing name cannot answer the question, and that is not
+      contention, so the lock degrades with that error rather than starting
+      over (`TestCheckAfterLockDegradesOnLstatError` replaces the project
+      directory with a file between the lock and the check).
+      `TestCheckAfterLockRejectsALinkSwappedIn` moves the locked file aside and
+      links the name to it: `Stat` would match, `Lstat` does not, and the
+      reopen degrades with "is a symbolic link". Changing `Lstat` to `Stat`
+      fails that test.
+- [x] Decide how many times `Acquire` starts over. Each mismatch means another
       run finished in between, so the loop ends on its own in practice, but a
       name that keeps changing would spin. Recommend a small cap, past which
       `Acquire` reports `ErrContended`: a name that keeps moving means other
@@ -2805,7 +2823,13 @@ leave the file behind, but the next clean run removes it.
       `Acquire` reports (Milestone 29). `AcquireWait` already retries
       `Acquire`, so a waiting run keeps queueing. Record the decision and the
       reason.
-- [ ] Remove the name in `Release` while the lock is still held, then unlock
+      Four opens (`maxOpens`), then `ErrContended`. Each extra open needs
+      another run to take and release the project inside this run's window
+      between open and lock, so a second one is already rare, and the CLI
+      already words contention correctly. `TestAcquireCapsItsOpens` removes
+      the name at every lock and asserts four locks and then `ErrContended`.
+      Recorded on the constant and in `doc/DEVELOPMENT.md` §6.4.
+- [x] Remove the name in `Release` while the lock is still held, then unlock
       and close. Remove it only when the name still leads to the held file
       (`os.SameFile` again): if someone deleted or replaced it by hand, the
       file there now may be another run's lock. Removing after the unlock
@@ -2813,7 +2837,16 @@ leave the file behind, but the next clean run removes it.
       the unlock and the removal, passes its check, then loses the name to a
       newcomer), so add a seam between the two steps and a test that fails
       when they are swapped.
-- [ ] Delete only a file incrmit made. Milestone 32 decided that a regular file
+      `afterRemove` sits between the two steps. In
+      `TestReleaseRemovesBeforeUnlocking`, B arrives at that seam and C after
+      it. Swapping the two steps leaves both holding the project, which was
+      checked by swapping them. The `SameFile` check is covered by
+      `TestReleaseLeavesAnotherRunsFile`, but only by its "moved aside" case.
+      Deleting the file by hand drops its link count to zero, which the
+      one-name check already refuses. A file moved aside keeps one name and
+      the note, so only `SameFile` stops `Release` from removing the other
+      run's file.
+- [x] Delete only a file incrmit made. Milestone 32 decided that a regular file
       already at the lock path is used as the lock but never rewritten, and
       deleting it is a bigger change than rewriting it. Remove the file only
       when it has one name and holds exactly the note or nothing, which is the
@@ -2821,7 +2854,13 @@ leave the file behind, but the next clean run removes it.
       holding anything else, or hard-linked from elsewhere, is unlocked and
       left as it was. A file left by a crashed run holds the note, so the next
       clean run removes it.
-- [ ] Decide what Windows does. `openLockFile` opens without
+      `madeByIncrmit`, called by `Release`, never reads a file over a
+      kilobyte. Checking the contents exposed a gap the task did not name.
+      Every project already holds the note that every earlier incrmit wrote,
+      and this milestone changes the note, so `notes` keeps the earlier text
+      as well, and the next run removes a file an older version left. A file
+      holding the note plus more, or only the start of it, is kept.
+- [x] Decide what Windows does. `openLockFile` opens without
       `FILE_SHARE_DELETE`, so the holder cannot delete the file while it, or a
       polling run, has it open. Adding the flag is not enough on its own: with
       classic delete semantics the name stays, "delete pending", until the last
@@ -2835,12 +2874,24 @@ leave the file behind, but the next clean run removes it.
       `removeLockFile` that does nothing there, while the check after locking
       runs on every platform so the code path is shared. A leftover file costs
       less than an unlocked run. Record the decision and the reason.
-- [ ] Confirm the rest of the lock's users still hold with the file now
+      Kept on Windows, as recommended. POSIX semantics was evaluated and set
+      aside. It needs NTFS on Windows 10 1607 or later and falls back to
+      classic semantics elsewhere. It also needs every open handle to share
+      delete, which no earlier incrmit's does, so a queue of mixed versions
+      would fail the removal. The Windows path also cannot be run here.
+      Recorded on `removeLockFile` in `lock_windows.go` and in §6.4.
+- [x] Confirm the rest of the lock's users still hold with the file now
       transient. The walk keeps skipping `.incrmit.lock` by name, since a run
       in progress or a crashed one still leaves it in the tree. `SweepTemps`
       still runs only under a held lock, a degraded lock has nothing to
       remove, and `preview` and every `--dry-run` still never create the file.
-- [ ] Cover the change with tests: the reproduction above now ends with one
+      Confirmed. The walk's skip by name matters more now: `discover` holds
+      the lock while it walks, so its own lock file is in the tree it scans.
+      `sweepTemps` is unchanged and still returns early on a degraded or
+      absent lock. A degraded `Lock` has no file open, so `Release` has
+      nothing to remove. `TestReadOnlyCommandsCreateNoLockFile` asserts that
+      `preview` and each `--dry-run` leave no file, on every platform.
+- [x] Cover the change with tests: the reproduction above now ends with one
       holder in both orders; `Release` removes a file incrmit created and
       leaves one holding other text or a second name; a file left by a crash
       (locked, then closed without `Release`) is reused and then removed; and
@@ -2850,11 +2901,31 @@ leave the file behind, but the next clean run removes it.
       then leave no file. Build and vet all six release platforms, run the
       suite under `-race` and `make check`, and record coverage before and
       after.
-- [ ] Document the change in `README.md` (the `.gitignore` advice now covers a
+      The `internal/lock` cases are in `remove_test.go`: removal of a file
+      this run made, an empty one, and one holding either note; files kept
+      for other text, the note with more, the start of the note, or a second
+      name; and the crash case. Through `cli.Main`,
+      `TestWritingCommandsLeaveNoLockFile` covers `bump`, `undo`, `discover`, a
+      bump that fails with the lock held, and bumps over an empty file and
+      over the earlier note. The fail-fast, `--wait`, and `--file` concurrency
+      tests now also end with no file. `runLockPlant` tolerates the file being
+      gone after its setup bump. Each check in the fix was then removed or
+      swapped in turn, and a test failed every time. The suite passes under
+      `-race`, as did 200 runs of `internal/lock` under `-race` and 30 of the
+      CLI concurrency tests. All six release platforms build and vet, with
+      the Windows path compiled but not run. `make check` passes; coverage
+      97.5% -> 97.5% (`internal/lock` 96.9% -> 97.9%).
+- [x] Document the change in `README.md` (the `.gitignore` advice now covers a
       file left only by a crashed run, or by any run on Windows),
       `doc/DEVELOPMENT.md` §6.4 and §8.6, the man page's FILES and CONCURRENT
       RUNS sections, the `internal/lock` package comment, `Release`'s comment,
       and the note itself. Add a `CHANGELOG.md` entry under `Changed`.
+      Done, along with `doc/USAGE.md` ("Concurrent runs"), which said the
+      file stays between runs. §6.4 now covers the race, the two rules, the
+      cap, what is removed, and Windows. §8.6 gains a "lock file is
+      transient" bullet, §12 mentions the seam tests, and the comment on
+      `config.LockFileName` no longer says the file is kept. The `CHANGELOG.md`
+      entry opens a new `[Unreleased]` section.
 
 ## Milestone 43 — Release Tagging Helper (the `tag` command)
 

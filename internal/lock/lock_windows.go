@@ -80,3 +80,20 @@ func unlock(f *os.File) error {
 	var ol windows.Overlapped
 	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &ol)
 }
+
+// removeLockFile does nothing on Windows: the lock file is kept between runs.
+// openLockFile shares the file without FILE_SHARE_DELETE, so it cannot be
+// removed while the holder, or a run polling for the lock, has it open. Adding
+// the flag is not enough on its own. With classic delete semantics the name
+// stays, "delete pending", until the last handle closes, and an open in the
+// meantime fails with ERROR_ACCESS_DENIED, which Acquire reports as a degraded
+// lock, so a run queued behind this one would go on unlocked.
+// POSIX-semantics deletion (FILE_DISPOSITION_FLAG_POSIX_SEMANTICS through
+// SetFileInformationByHandle) removes the name at once, but only on NTFS from
+// Windows 10 1607, and only when every open handle shares delete, which no
+// earlier incrmit's does. Elsewhere it falls back to classic semantics. A
+// leftover file costs less than an unlocked run. The check after locking
+// still runs here, so every platform shares that code path.
+func removeLockFile(string) error {
+	return nil
+}

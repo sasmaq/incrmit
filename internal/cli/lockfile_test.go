@@ -2,6 +2,7 @@ package cli
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -218,7 +219,8 @@ func runLockPlant(t *testing.T, p lockPlant) {
 				if code, _, stderr := runMain(t, "", "-c", cfgPath); code != ExitOK {
 					t.Fatalf("setup bump exit = %d, stderr = %q", code, stderr)
 				}
-				if err := os.Remove(lockPath); err != nil {
+				// The bump removes its lock file, except on Windows.
+				if err := os.Remove(lockPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 					t.Fatal(err)
 				}
 			}

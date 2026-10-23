@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +82,19 @@ func assertConsistent(t *testing.T, dir string, base string, applied int) {
 	}
 }
 
+// assertNoLockFile checks that no run left .incrmit.lock in dir: a run removes
+// the file when it releases the lock. Windows keeps it between runs (see
+// lock.removeLockFile), so there is nothing to check there.
+func assertNoLockFile(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if _, err := os.Lstat(filepath.Join(dir, config.LockFileName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("%s left in the project (lstat err = %v)", config.LockFileName, err)
+	}
+}
+
 // concurrentProject builds a one-file project at 1.0.0 and returns its
 // directory and the absolute path of its config.
 func concurrentProject(t *testing.T) (string, string) {
@@ -116,6 +132,7 @@ func TestConcurrentBumpsKeepStateConsistent(t *testing.T) {
 		t.Errorf("%d applied + %d refused != %d runs", applied, refused, n)
 	}
 	assertConsistent(t, dir, "1.0", applied)
+	assertNoLockFile(t, dir)
 }
 
 // The same eight runs with --wait queue up instead of failing, so every one of
@@ -133,6 +150,7 @@ func TestConcurrentBumpsWithWaitAllApply(t *testing.T) {
 		}
 	}
 	assertConsistent(t, dir, "1.0", n)
+	assertNoLockFile(t, dir)
 }
 
 // A contended run must write nothing at all: not the target, not the config,
@@ -237,6 +255,89 @@ func TestReadOnlyCommandsIgnoreTheLock(t *testing.T) {
 	}
 }
 
+// bump, undo, and discover remove the lock file when they finish, so a project
+// keeps no .incrmit.lock between runs: not after a failed run, and not when a
+// crashed run or an earlier incrmit left one there.
+func TestWritingCommandsLeaveNoLockFile(t *testing.T) {
+	// What every incrmit before Milestone 42 left in the projects it wrote in.
+	const earlierNote = "incrmit project lock (maintained by incrmit; safe to delete).\n" +
+		"Held only while a bump, undo, or discover is writing in this directory.\n"
+	bump := func(_, cfgPath string) []string { return []string{"-c", cfgPath} }
+	for _, tt := range []struct {
+		name  string
+		setup bool   // bump first, so undo has something to revert
+		plant bool   // put a file holding body at the lock path first
+		body  string // what the planted file holds
+		code  int
+		args  func(dir, cfgPath string) []string
+	}{
+		{name: "bump", args: bump},
+		{name: "undo", setup: true, args: func(_, cfgPath string) []string { return []string{"undo", "-c", cfgPath} }},
+		{name: "discover", args: func(dir, cfgPath string) []string {
+			return []string{"discover", "-P", dir, "-o", cfgPath}
+		}},
+		// The second config's target does not exist, so planning fails with the
+		// lock held, as in TestLockReleasedAfterFailedBump.
+		{name: "failed bump", code: ExitError, args: func(dir, _ string) []string {
+			broken := filepath.Join(dir, "broken.toml")
+			if err := os.WriteFile(broken, []byte("[[files]]\npath = \"MISSING\"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"-c", broken}
+		}},
+		// A run that crashed before writing the note left the file empty.
+		{name: "bump after a crash", plant: true, args: bump},
+		{name: "bump after an earlier incrmit", plant: true, body: earlierNote, args: bump},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, cfgPath := concurrentProject(t)
+			if tt.setup {
+				if code, _, stderr := runMain(t, "", "-c", cfgPath); code != ExitOK {
+					t.Fatalf("setup bump exit = %d, stderr = %q", code, stderr)
+				}
+			}
+			if tt.plant {
+				if err := os.WriteFile(filepath.Join(dir, config.LockFileName), []byte(tt.body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if code, _, stderr := runMain(t, "", tt.args(dir, cfgPath)...); code != tt.code {
+				t.Fatalf("exit = %d, want %d (stderr %q)", code, tt.code, stderr)
+			}
+			assertNoLockFile(t, dir)
+		})
+	}
+}
+
+// The read-only commands take no lock, so they never create its file either.
+func TestReadOnlyCommandsCreateNoLockFile(t *testing.T) {
+	dir, cfgPath := concurrentProject(t)
+	// A bump first, so undo --dry-run has a journal entry to plan from.
+	if code, _, stderr := runMain(t, "", "-c", cfgPath); code != ExitOK {
+		t.Fatalf("setup bump exit = %d, stderr = %q", code, stderr)
+	}
+	lockPath := filepath.Join(dir, config.LockFileName)
+	// The bump removes its lock file, except on Windows.
+	if err := os.Remove(lockPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"-c", cfgPath, "--dry-run"},
+		{"preview", "-c", cfgPath},
+		{"discover", "-P", dir, "-d"},
+		{"undo", "-c", cfgPath, "-d"},
+	} {
+		if code, _, stderr := runMain(t, "", args...); code != ExitOK {
+			t.Fatalf("incrmit %s: exit = %d, stderr = %q", strings.Join(args, " "), code, stderr)
+		}
+		if _, err := os.Lstat(lockPath); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("incrmit %s created %s (lstat err = %v)", strings.Join(args, " "), config.LockFileName, err)
+		}
+	}
+}
+
 // A bump that fails after taking the lock must still give it back, or the
 // project would stay locked until the shell exited.
 func TestLockReleasedAfterFailedBump(t *testing.T) {
@@ -308,6 +409,7 @@ func TestConcurrentFileModeBumps(t *testing.T) {
 	if got, _ := os.ReadFile(target); strings.TrimSpace(string(got)) != "1.0.4" {
 		t.Errorf("VERSION = %q after 4 serialized --file bumps, want 1.0.4", got)
 	}
+	assertNoLockFile(t, dir)
 }
 
 // A run that dies between writing its temp file and renaming it leaves the temp

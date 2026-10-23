@@ -704,13 +704,16 @@ Unlike the config it is not trusted input:
 writes only to files the config lists and to the config itself, whatever the
 state file records.
 .It Pa .incrmit.lock
-Project lock file kept next to the config, or next to the file being bumped
-under
-.Fl f .
+Project lock file, next to the config, or next to the file being bumped under
+.Fl f ,
+while a command writes.
 Its contents are only a note explaining what it is; what matters is the
-exclusive advisory lock held on it while a command writes.
-It is left in place between runs, is safe to delete, and is likewise local
-working state that is not meant to be committed.
+exclusive advisory lock held on it.
+The run removes it when it finishes.
+One is left only by a run that crashed, which the next run removes, or by any
+run on Windows, where the file is kept.
+It is safe to delete, and is likewise local working state that is not meant to
+be committed.
 See
 .Sx CONCURRENT RUNS .
 .El
@@ -773,6 +776,16 @@ leaves it as it is, warns naming it, and carries on unlocked; remove it to lock
 again.
 A regular file already at that name is used as the lock but never rewritten:
 the explanatory note is written only into a lock file that is empty.
+.Pp
+The lock file exists only while a run holds it.
+The run removes it before letting go of the lock, and a run that takes the lock
+keeps it only if the name still leads to the file it locked, so removing the
+file never lets two runs in at once.
+Only a file
+.Nm
+made is removed: one holding its note or nothing, with no other name.
+A file holding anything else is unlocked and left as it is.
+On Windows the file is kept between runs.
 .Sh EXIT STATUS
 .Bl -tag -width Ds
 .It 0

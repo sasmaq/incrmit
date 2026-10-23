@@ -361,18 +361,85 @@ type Version struct {
 
 ### 6.4 Project lock file (`internal/lock`)
 
-`.incrmit.lock` (`config.LockFileName`) sits next to the config and carries no
-state: what matters is the exclusive advisory lock held on it while a command
-writes (see [section 8.6](#86-concurrency-one-writer-per-project)). Its contents
-are a two-line note explaining what the file is, written once the lock is held,
-so someone who finds it in a tree is not left guessing. The note deliberately
+`.incrmit.lock` (`config.LockFileName`) sits next to the config while a command
+writes, and carries no state: what matters is the exclusive advisory lock held
+on it (see [section 8.6](#86-concurrency-one-writer-per-project)). Its contents
+are a short note explaining what the file is, written once the lock is held, so
+someone who finds it in a tree is not left guessing. The note deliberately
 contains no version-like token, and the walk skips the file by name, so incrmit
-can never discover its own lock as a target.
+can never discover its own lock as a target. That skip still matters with the
+file gone between runs: `discover` holds the lock while it walks, so its own
+lock file is in the tree it scans, and a crashed run can leave one behind.
 
-Like the state file it is local working state and belongs in `.gitignore`. It is
-never unlinked on release: removing it would let a second run create and lock a
-fresh file at the same name while the first still held a lock on the old inode,
-which is the exact race the lock exists to prevent.
+**Removed between runs.** Until Milestone 42 the file stayed in every project
+incrmit had written in, and every user had to add it to `.gitignore`. Removing
+the name on release, with nothing else, reopens the race the lock closes: a run
+that opened the file just before the holder removed the name goes on to lock
+the now nameless file, a run arriving after creates a fresh file at the name and
+locks that, and both proceed. `AcquireWait` opens the file again on every poll,
+so the window is the moment between any run's open and its lock, whether it
+waits or not. Reproduced before the fix: with `Release` removing the name and
+nothing else, `internal/lock`'s seam tests ended with two holders in both
+orders, and Milestone 29's eight queued `--wait` bumps lost a bump in 5 of 30
+repetitions (`1.0.7` and seven journal entries after eight runs reported
+success). The fix is the standard check after locking, under two rules:
+
+- **Only the holder removes the name, and before it unlocks.** `Release`
+  removes the name while the lock is still held, then unlocks and closes.
+  Removed after the unlock instead, a run could lock the file in between, pass
+  its check because the name still led there, and then lose the name to a
+  newcomer that created and locked a fresh one.
+- **A lock counts only if the name still leads to the file it is on.** Once
+  `tryLock` succeeds, `acquireOnce` compares the descriptor's `Stat` with an
+  `Lstat` of the path (`os.SameFile`). A missing name or a different file means
+  a holder removed the name after this run opened it: unlock, close, and open
+  the name again. `Lstat`, so a link swapped in at the name never matches and
+  the next open refuses it, as any link is refused. The check has to come after
+  the lock: until this run holds it, the holder can still remove the name
+  between the check and the lock. An `Lstat` that fails for any other reason
+  cannot answer the question, which is not contention, so the lock degrades.
+
+The holder is then the only one who can remove the name, so once a run's check
+passes, every newcomer opens the same file and contends. A crash still skips
+`Release` and can leave the file behind, but the next run to hold the lock
+removes it.
+
+**A cap on starting over.** Each mismatch means another run took the project
+and released it in the moment between this run's open and its lock, so the loop
+ends on its own in practice, but a name that kept moving would spin. `Acquire`
+opens the path at most four times (`maxOpens`) and then reports `ErrContended`:
+a name that keeps moving means other runs keep getting there first, which is
+contention, and contention stays the only error `Acquire` reports.
+`AcquireWait` already retries `Acquire`, so a waiting run keeps queueing.
+
+**Only a file incrmit made is removed.** Milestone 32 decided that a regular
+file already at the lock path is used as the lock but never rewritten, and
+deleting it is a bigger change than rewriting it. `Release` removes the file
+only when the name still leads to it, it has one name, and it holds a note or
+nothing: `writeNote`'s test plus a check of the contents (`madeByIncrmit`). The
+notes are the current one and the one every earlier incrmit wrote, so the file
+an earlier version left in a project goes at the next run like one left by a
+crash. A file holding anything else, or hard-linked from elsewhere, is unlocked
+and left as it was. The `SameFile` check matters when someone deleted or moved
+the file by hand while it was held: the file at the name may then be another
+run's lock.
+
+**Kept on Windows.** `openLockFile` opens without `FILE_SHARE_DELETE`, so the
+holder cannot delete the file while it, or a polling run, has it open. Adding
+the flag is not enough on its own: with classic delete semantics the name
+stays, "delete pending", until the last handle closes, and opening it meanwhile
+fails with `ERROR_ACCESS_DENIED`, which `Acquire` reports as a degraded lock, so
+a queued run would go on unlocked. POSIX-semantics deletion
+(`FILE_DISPOSITION_FLAG_POSIX_SEMANTICS` through `SetFileInformationByHandle`)
+removes the name at once, but only on NTFS from Windows 10 1607, only when every
+open handle shares delete (no earlier incrmit's does), and it falls back to
+classic semantics elsewhere. It also could not be run here, where the Windows
+path is compiled but not executed. So `removeLockFile` is build-tagged and does
+nothing on Windows, while the check after locking runs on every platform, so the
+code path is shared: a leftover file costs less than an unlocked run.
+
+Like the state file it is local working state, so `.gitignore` still lists it:
+a crashed run, or any run on Windows, leaves one behind.
 
 **Only a regular file, never through a link.** The lock file is the one path
 incrmit opens for writing instead of replacing by rename: `files.WriteAtomic`
@@ -401,9 +468,9 @@ so they can see what was put there.
 
 The note is written only into a lock file that is empty and has one name, which
 in practice means one a run just created. A regular file that happens to sit at
-the lock path is locked but never rewritten, whether it holds someone's text or
-is an empty file hard-linked from elsewhere: the note is a courtesy and must
-never be the reason a file loses data.
+the lock path is locked but never rewritten or removed, whether it holds
+someone's text or is an empty file hard-linked from elsewhere: the note is a
+courtesy and must never be the reason a file loses data.
 
 ## 7. Command-Line Interface
 
@@ -903,6 +970,11 @@ The rule is now **one writer per project at a time, readers unsynchronized**:
   process exits for any reason, `SIGKILL` and panics included, so there is never
   a leftover lock to clear by hand. A PID file outlives the crash and forces the
   tool to guess whether the owner is still alive.
+- **The lock file is transient.** The holder removes it before unlocking, and a
+  run keeps a lock only if the name still leads to the file it locked, starting
+  over otherwise (see [section 6.4](#64-project-lock-file-internallock)), so a
+  project keeps no `.incrmit.lock` between runs. A crashed run leaves one, which
+  the next run to hold the lock removes; Windows keeps it.
 - **Contention fails fast**, exiting `1` with a message naming the project and
   `--wait`. A bump takes milliseconds, so a second one arriving mid-run is
   usually a mistake rather than a queue, and a tool that blocks silently turns a
@@ -2024,7 +2096,10 @@ incrmit/
   implementation cannot pass by accident: eight queued bumps must land eight
   patch increments and eight journal entries. Alongside them: a contended run
   writes nothing, a failed bump still releases the lock, the read-only commands
-  run while it is held, and an unavailable lock degrades to a warning.
+  run while it is held, an unavailable lock degrades to a warning, and no
+  writing command leaves `.incrmit.lock` behind. `internal/lock`'s own race
+  tests stop runs between their steps through test seams (`afterOpen`,
+  `afterLock`, `afterRemove`) and assert that exactly one run holds the project.
 - Golden-file tests for the `preview` table, in sync and drifting
   (`internal/cli/testdata/preview_*.golden`, regenerated with
   `go test ./internal/cli/ -update`), alongside a test that asserts a preview

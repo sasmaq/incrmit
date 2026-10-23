@@ -1171,18 +1171,20 @@ the journal one entry, and the erased bump can never be undone.
 
 To prevent that, every writing command (`bump`, `discover`, `undo`) takes an
 exclusive lock on the project before it reads anything, and holds it until it is
-done. The lock is a file named `.incrmit.lock` kept next to `incrmit.toml`
-(with `--file`, next to the file being bumped), so separate projects never wait
-on each other. Add it to your `.gitignore` alongside the state file:
+done. The lock is a file named `.incrmit.lock` next to `incrmit.toml` (with
+`--file`, next to the file being bumped), so separate projects never wait on
+each other. It exists only while a run is writing: the run removes it when it
+finishes. You will only find one left by a run that crashed, which the next run
+removes, or on Windows, where it is kept between runs. Add it to your
+`.gitignore` alongside the state file for those cases:
 
 ```gitignore
 .incrmit.lock
 ```
 
-The file is left in place between runs and is safe to delete. There is no such
-thing as a stale lock to clear by hand: the lock is held by the operating
-system, which releases it when the process exits for **any** reason — including
-a crash or a `kill -9`.
+The file is safe to delete. There is no such thing as a stale lock to clear by
+hand: the lock is held by the operating system, which releases it when the
+process exits for **any** reason — including a crash or a `kill -9`.
 
 **A second run fails fast.** A bump takes milliseconds, so another one arriving
 mid-run is usually a mistake rather than a queue, and a tool that blocked
@@ -1225,7 +1227,8 @@ incrmit: warning: continuing unlocked; a concurrent incrmit run could erase this
 
 Remove it to lock again. A regular file already at that name is used as the
 lock but never rewritten: the explanatory note goes only into a lock file that
-is empty.
+is empty. Nor is it removed: a run removes only a lock file `incrmit` made, one
+holding its note or nothing, with no other name.
 
 ## Exit codes
 

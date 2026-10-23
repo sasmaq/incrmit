@@ -66,7 +66,7 @@ func ownFileCommands() []ownFileCommand {
 
 // snapshotProject records every file in the project the way snapshotOutside
 // does, except the lock file, which a writing command creates before it reads
-// anything else.
+// anything else and, on Windows, leaves behind.
 func snapshotProject(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	snap := snapshotOutside(t, dir, "")

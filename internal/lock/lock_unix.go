@@ -57,3 +57,10 @@ func tryLock(f *os.File) error {
 func unlock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 }
+
+// removeLockFile removes the lock file's name. Release calls it with the lock
+// still held, so a run that opened the file before it went finds the name
+// gone once it gets the lock, and starts over.
+func removeLockFile(path string) error {
+	return os.Remove(path)
+}

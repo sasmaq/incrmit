@@ -16,6 +16,17 @@
 // lock when the holder exits for any reason, SIGKILL and panics included, so
 // there is never a leftover lock to clear by hand.
 //
+// The lock file exists only while a run holds it. Removing a lock file's name
+// is a race of its own: a run that opened the file just before the name went
+// would lock the nameless file, a run arriving after would create and lock a
+// fresh one, and both would proceed. Two rules close it. Only the holder
+// removes the name, and it does so before it unlocks. A run that takes a lock
+// keeps it only if the name still leads to the file it locked, and otherwise
+// drops it and starts over. The holder is then the only one who can remove the
+// name, so once a run's check passes, every newcomer opens the same file and
+// contends. A crash skips the release and leaves the file, which the next run
+// to hold the lock removes. On Windows the file is kept (see removeLockFile).
+//
 // Acquisition fails only on contention. Any other failure — a filesystem with
 // no lock support, a directory that cannot be written, something other than a
 // regular file at the lock path — degrades to running unlocked (see
@@ -33,6 +44,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/sasmaq/incrmit/internal/config"
@@ -41,6 +53,11 @@ import (
 // ErrContended reports that another incrmit run holds the project lock. It is
 // the only error Acquire returns.
 var ErrContended = errors.New("lock: the project is locked by another incrmit run")
+
+// errMoved reports that a lock was taken on a file the lock path no longer led
+// to: a holder removed the name after this run opened the file. Acquire starts
+// over rather than return it.
+var errMoved = errors.New("lock: the lock file was removed after it was opened")
 
 // NotRegularError is the reason a lock is degraded when something other than a
 // regular file sits at the lock path: a symbolic link, a directory, a named
@@ -83,12 +100,42 @@ func notRegular(path string, mode fs.FileMode) error {
 // finds the file in their tree can tell what it is. It deliberately contains no
 // version-like token: a stray lock file must never read as a bump target.
 const note = "incrmit project lock (maintained by incrmit; safe to delete).\n" +
-	"Held only while a bump, undo, or discover is writing in this directory.\n"
+	"Held while a bump, undo, or discover is writing in this directory. The run\n" +
+	"removes it when it finishes, except on Windows, and the next run removes\n" +
+	"one left by a run that crashed.\n"
+
+// notes are what a lock file incrmit made can hold besides nothing: the note,
+// and the one written before the file was removed between runs, so the file an
+// earlier incrmit left in every project is removed like one left by a crash.
+var notes = []string{
+	note,
+	"incrmit project lock (maintained by incrmit; safe to delete).\n" +
+		"Held only while a bump, undo, or discover is writing in this directory.\n",
+}
 
 // pollInterval is how often AcquireWait retries a contended lock. A bump takes
 // milliseconds, so a short interval keeps queued runs responsive without
 // spinning.
 const pollInterval = 20 * time.Millisecond
+
+// maxOpens caps how many times one Acquire opens the lock path. Each open after
+// the first follows a lock taken on a file the name no longer led to, which
+// means another run took the project and released it in the moment between
+// this run's open and its lock. Twice in a row is already rare, but a name that
+// kept moving would otherwise spin. Past the cap, other runs keep getting there
+// first, which is contention, so Acquire reports ErrContended (still the only
+// error it reports) and AcquireWait polls again.
+const maxOpens = 4
+
+// Test seams: Acquire calls afterOpen once the lock file is open and afterLock
+// once the lock on it is taken, before it checks the name; Release calls
+// afterRemove between removing the name and unlocking. The tests swap them to
+// stop a run between those steps and let another one in.
+var (
+	afterOpen   = func() {}
+	afterLock   = func() {}
+	afterRemove = func() {}
+)
 
 // Lock is a held project lock, or — when Degraded reports true — a record that
 // the project is running unlocked because the lock could not be taken for a
@@ -120,17 +167,27 @@ func (l *Lock) Reason() error {
 	return l.reason
 }
 
-// Release drops the lock. The lock file itself is left behind: unlinking it
-// would let a second run create and lock a fresh file at the same name while
-// this one still holds a lock on the old inode, which is exactly the race the
-// lock exists to prevent. The file is empty apart from a note and costs
-// nothing to keep.
+// Release removes the lock file, then drops the lock. The name goes while the
+// lock is still held, which is what keeps the removal from reopening the race
+// it would otherwise cause: removed after the unlock, a run could lock the file
+// in between, pass its check because the name still led there, and then lose
+// the name to a newcomer that created and locked a fresh file, leaving two
+// runs holding the project. The file is removed only when the name still leads
+// to it and incrmit made it (see madeByIncrmit); anything else is unlocked and
+// left as it was. Removal is best-effort, since a file left behind costs only
+// its name, so only the unlock and the close are reported.
 func (l *Lock) Release() error {
 	if l == nil || l.f == nil {
 		return nil
 	}
 	f := l.f
 	l.f = nil
+	if info, err := f.Stat(); err == nil && madeByIncrmit(f, info) {
+		if same, err := named(l.path, info); err == nil && same {
+			_ = removeLockFile(l.path)
+		}
+	}
+	afterRemove()
 	err := unlock(f)
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -143,7 +200,19 @@ func (l *Lock) Release() error {
 // a usable *Lock — one that reports Degraded when locking was unavailable.
 func Acquire(dir string) (*Lock, error) {
 	path := filepath.Join(dir, config.LockFileName)
+	for range maxOpens {
+		l, err := acquireOnce(path)
+		if !errors.Is(err, errMoved) {
+			return l, err
+		}
+	}
+	return nil, ErrContended
+}
 
+// acquireOnce is one attempt of Acquire: it opens the lock path, locks what it
+// opened, and keeps the lock only if the name still leads there. It returns
+// errMoved when it did not, for Acquire to open the path again.
+func acquireOnce(path string) (*Lock, error) {
 	f, err := openLockFile(path)
 	if err != nil {
 		// The open refuses a link rather than following it, and a directory
@@ -154,6 +223,7 @@ func Acquire(dir string) (*Lock, error) {
 		}
 		return &Lock{path: path, reason: err}, nil
 	}
+	afterOpen()
 	// Check what was actually opened, through the descriptor: a FIFO or a
 	// device opens without complaint, and is no more a lock file than a link.
 	info, err := f.Stat()
@@ -167,8 +237,6 @@ func Acquire(dir string) (*Lock, error) {
 
 	switch err := tryLock(f); {
 	case err == nil:
-		writeNote(f)
-		return &Lock{path: path, f: f}, nil
 	case errors.Is(err, ErrContended):
 		_ = f.Close()
 		return nil, ErrContended
@@ -176,6 +244,25 @@ func Acquire(dir string) (*Lock, error) {
 		_ = f.Close()
 		return &Lock{path: path, reason: err}, nil
 	}
+	afterLock()
+
+	// The lock counts only if the name still leads to the file it is on. A
+	// missing name or a different file means a holder removed the name after
+	// this run opened it, so the lock is on a file no newcomer will ever open.
+	// The check has to come after the lock: until this run holds it, the holder
+	// can still remove the name between the check and the lock. Once it passes,
+	// only this run can remove the name.
+	same, err := named(path, info)
+	if err != nil || !same {
+		_ = unlock(f)
+		_ = f.Close()
+		if err != nil {
+			return &Lock{path: path, reason: err}, nil
+		}
+		return nil, errMoved
+	}
+	writeNote(f)
+	return &Lock{path: path, f: f}, nil
 }
 
 // AcquireWait is Acquire, but waits for a contended lock instead of failing.
@@ -194,6 +281,21 @@ func AcquireWait(dir string, timeout time.Duration) (*Lock, error) {
 	}
 }
 
+// named reports whether path still leads to the file info describes, which was
+// opened through it. A missing name is an answer rather than an error. It uses
+// Lstat, so a link swapped in at the name never matches, even one to this very
+// file, and the next open refuses it.
+func named(path string, info fs.FileInfo) (bool, error) {
+	cur, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(info, cur), nil
+}
+
 // writeNote stamps the explanatory note into the held lock file, but only into
 // one that is empty and has no other name — in practice, one this run or an
 // earlier one just created. A regular file that happens to sit at the lock path
@@ -207,4 +309,22 @@ func writeNote(f *os.File) {
 		return
 	}
 	_, _ = f.WriteAt([]byte(note), 0)
+}
+
+// madeByIncrmit reports whether the held lock file f, described by info, is one
+// incrmit made, and so one Release may remove: it has one name and holds a note
+// or nothing. That is writeNote's test plus a check of the contents, and it
+// keeps the file Milestone 32 decided to use but never rewrite: a regular file
+// that happened to sit at the lock path holds someone's text, and a hard link
+// is known by another name. A file left by a crashed run holds the note, so
+// the next run removes it.
+func madeByIncrmit(f *os.File, info fs.FileInfo) bool {
+	// Every note is a few hundred bytes, so a larger file is none of them and is
+	// never read.
+	if !soleName(f, info) || info.Size() > 1<<10 {
+		return false
+	}
+	buf := make([]byte, info.Size())
+	n, _ := f.ReadAt(buf, 0)
+	return n == len(buf) && (n == 0 || slices.Contains(notes, string(buf)))
 }

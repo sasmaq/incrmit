@@ -5,6 +5,21 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] - 2026-10-22
+
+### Changed
+
+- `.incrmit.lock` no longer stays in a project between runs. The run holding
+  the lock removes the file before it lets go, so one is left only by a run
+  that crashed, which the next run removes, or on Windows, where it is still
+  kept. The file an earlier version left in each project goes at the next
+  bump, undo, or discover. Only a file `incrmit` made is removed, one holding
+  its note or nothing and with no other name: a file holding anything else is
+  used as the lock and left as it was. A run that takes the lock now keeps it
+  only if the name still leads to the file it locked, and otherwise starts
+  over, so removing the file never lets two runs in at once. Keep the
+  `.gitignore` entry for the cases that still leave one.
+
 ## [0.3.13] - 2026-10-22
 
 ### Added
