@@ -5,6 +5,18 @@ All notable changes to `incrmit` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.15] - 2026-11-19
+
+### Changed
+
+- `incrmit` builds against `go.yaml.in/yaml/v3` v3.0.6, up from v3.0.5, and
+  `golang.org/x/sys` v0.50.0, up from v0.48.0. The YAML release changes only
+  how a map key spelled `<<` is written out, now quoted so it is not read back
+  as a merge key. `incrmit` reads YAML with the library but never writes it,
+  so YAML files, merge keys included, are read, bumped, and undone as before.
+  `golang.org/x/sys` is used only for the lock on Windows. Building still
+  requires Go 1.27 or later; CI builds with Go 1.27.4.
+
 ## [0.3.14] - 2026-10-23
 
 ### Changed
